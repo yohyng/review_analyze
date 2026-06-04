@@ -1,0 +1,12 @@
+# --- ingestion layer (steps 1-4) ---
+streamlit>=1.30
+pandas>=2.0
+openpyxl>=3.1        # .xlsx reading
+pytest>=8.0          # tests
+
+# --- reserved for later steps (5-9), not used yet ---
+# scikit-learn>=1.4  # step 7: TF-IDF
+# sudachipy>=0.6     # step 7: Japanese tokenizer
+# sudachidict-core
+# python-pptx>=0.6   # step 9: PowerPoint export
+# anthropic>=0.39    # step 8: LLM insights
