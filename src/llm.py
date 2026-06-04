@@ -1,4 +1,10 @@
-"""Step 8: LLM insight generation via Anthropic API.
+"""Step 8: LLM insight generation via Google Gemini API (REST).
+
+Uses requests directly — no extra SDK needed (google-generativeai has
+heavy gRPC deps that can break in restricted environments).
+
+Free tier: Gemini 1.5 Flash — 15 RPM / 1M tokens per day.
+API key  : https://aistudio.google.com/  (Google account, instant)
 
 Input  : TextProfile (⑦) + score diff Series (⑥)
 Output : InsightResult — まとめ / 強み / 弱み / 示唆 / 改善提案
@@ -11,6 +17,13 @@ import re
 from dataclasses import dataclass, field
 
 import pandas as pd
+import requests
+
+GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_ENDPOINT = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{GEMINI_MODEL}:generateContent"
+)
 
 
 @dataclass
@@ -24,21 +37,27 @@ class InsightResult:
     error: str = ""
 
 
+# --------------------------------------------------------------------------- #
+# API key resolution
+# --------------------------------------------------------------------------- #
 def get_api_key() -> str:
-    """Resolve API key: env var → streamlit secrets → empty string."""
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    """Resolve key: env var GEMINI_API_KEY → streamlit secrets → ''."""
+    key = os.environ.get("GEMINI_API_KEY", "")
     if key:
         return key
     try:
         import streamlit as st  # noqa: PLC0415
-        return st.secrets.get("ANTHROPIC_API_KEY", "")
+        return st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
         return ""
 
 
+# --------------------------------------------------------------------------- #
+# Prompt builder
+# --------------------------------------------------------------------------- #
 def build_prompt(
     facility_name: str,
-    score_diff: pd.Series | None,
+    score_diff: "pd.Series | None",
     tfidf_keywords: list[str],
     bigrams: list[str],
     high_reviews: list[str],
@@ -54,9 +73,9 @@ def build_prompt(
         return "\n".join(lines)
 
     high_block = "\n".join(f"  ・{r[:200]}" for r in high_reviews[:3]) or "（なし）"
-    low_block = "\n".join(f"  ・{r[:200]}" for r in low_reviews[:3]) or "（なし）"
-    kw_block = "、".join(tfidf_keywords[:15]) or "（なし）"
-    phrase_block = "、".join(bigrams[:10]) or "（なし）"
+    low_block  = "\n".join(f"  ・{r[:200]}" for r in low_reviews[:3])  or "（なし）"
+    kw_block   = "、".join(tfidf_keywords[:15]) or "（なし）"
+    phrase_block = "、".join(bigrams[:10])       or "（なし）"
 
     return f"""あなたは施設の口コミ分析の専門家です。以下のデータをもとに分析レポートを作成してください。
 
@@ -87,22 +106,35 @@ def build_prompt(
 }}"""
 
 
+# --------------------------------------------------------------------------- #
+# API call
+# --------------------------------------------------------------------------- #
 def generate_insights(prompt: str, api_key: str) -> InsightResult:
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 1500,
+        },
+    }
     try:
-        import anthropic  # noqa: PLC0415
-    except ImportError:
-        return InsightResult(error="anthropic ライブラリが見つかりません。pip install anthropic")
+        resp = requests.post(
+            GEMINI_ENDPOINT,
+            params={"key": api_key},
+            json=payload,
+            timeout=60,
+        )
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        msg = _extract_api_error(resp)
+        return InsightResult(error=f"API エラー ({resp.status_code}): {msg}")
+    except requests.exceptions.RequestException as e:
+        return InsightResult(error=f"通信エラー: {e}")
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model="claude-opus-4-8",
-            max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = msg.content[0].text.strip()
-    except Exception as e:  # noqa: BLE001
-        return InsightResult(error=f"API エラー: {e}")
+        raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError) as e:
+        return InsightResult(error=f"レスポンスの解析に失敗: {e}", raw=resp.text)
 
     # strip ``` fences if the model wrapped the JSON
     m = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
@@ -121,3 +153,10 @@ def generate_insights(prompt: str, api_key: str) -> InsightResult:
         improvements=data.get("改善提案", []),
         raw=raw,
     )
+
+
+def _extract_api_error(resp: requests.Response) -> str:
+    try:
+        return resp.json().get("error", {}).get("message", resp.text[:200])
+    except Exception:
+        return resp.text[:200]

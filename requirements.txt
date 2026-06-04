@@ -10,7 +10,7 @@ plotly>=5.18
 # --- text analysis + LLM (steps 7-8) ---
 janome>=0.4
 scikit-learn>=1.4
-anthropic>=0.39
+# Gemini API is called via requests (no extra SDK needed)
 
 # --- report export (step 9) ---
 python-pptx>=1.0

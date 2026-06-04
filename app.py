@@ -441,13 +441,14 @@ elif page.startswith("⑤"):
     api_key = llm.get_api_key()
     if not api_key:
         st.info(
-            "Anthropic API キーが設定されていません。\n\n"
-            "以下のいずれかで設定できます：\n"
-            "- 環境変数 `ANTHROPIC_API_KEY=sk-ant-...` を設定して再起動\n"
-            "- `.streamlit/secrets.toml` に `ANTHROPIC_API_KEY = \"sk-ant-...\"` を追記\n"
+            "Gemini API キーが設定されていません。\n\n"
+            "取得方法: https://aistudio.google.com/ → 「Get API key」（Googleアカウントで無料）\n\n"
+            "設定方法（いずれか）:\n"
+            "- 環境変数 `GEMINI_API_KEY=AIza...` を設定して再起動\n"
+            "- `.streamlit/secrets.toml` に `GEMINI_API_KEY = \"AIza...\"` を追記\n"
             "- 下のフォームに直接入力（このセッション限り）"
         )
-        api_key = st.text_input("API キーを直接入力（セッション限り）", type="password")
+        api_key = st.text_input("Gemini API キーを入力（セッション限り）", type="password")
 
     if not profile.empty:
         if st.button("✨ インサイトを生成する", type="primary", disabled=not api_key):
