@@ -1,21 +1,22 @@
-"""口コミ分析アプリ — 取り込み層 (steps 1-4).
+"""口コミ分析アプリ
 
     streamlit run app.py
 
-Three screens:
+Screens:
   1. 口コミCSV取り込み   (step 1-3)
   2. スコアExcel取り込み (step 4)
-  3. 取り込み状況         (DB の中身確認)
-Steps 5-9 (グラフ / 強み弱み / TF-IDF / LLM / パワポ) come later.
+  3. 取り込み状況
+  4. 強み・弱み分析      (step 5-6)  ← NEW
+Steps 7-9 (TF-IDF / LLM / パワポ) come next.
 """
 from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
 
-from src import config, db, review_csv, score_excel
+from src import analysis, charts, config, db, review_csv, score_excel
 
-st.set_page_config(page_title="口コミ分析 — 取り込み", page_icon="📊", layout="wide")
+st.set_page_config(page_title="口コミ分析", page_icon="📊", layout="wide")
 
 
 @st.cache_resource
@@ -30,9 +31,13 @@ conn = _conn()
 st.sidebar.title("📊 口コミ分析")
 page = st.sidebar.radio(
     "メニュー",
-    ["① 口コミCSV取り込み", "② スコアExcel取り込み", "③ 取り込み状況"],
+    [
+        "① 口コミCSV取り込み",
+        "② スコアExcel取り込み",
+        "③ 取り込み状況",
+        "④ 強み・弱み分析",
+    ],
 )
-st.sidebar.caption("取り込み層 (steps 1–4)。グラフ/分析は次フェーズ。")
 
 
 # --------------------------------------------------------------------------- #
@@ -54,7 +59,7 @@ if page.startswith("①"):
     if uploaded and facility_name.strip():
         try:
             result = review_csv.parse_reviews(uploaded)
-        except Exception as e:  # noqa: BLE001 - surface parse errors to the user
+        except Exception as e:  # noqa: BLE001
             st.error(f"パースに失敗しました: {e}")
             st.stop()
 
@@ -71,7 +76,7 @@ if page.startswith("①"):
             [
                 {
                     "★": r.rating,
-                    "日付": r.review_date[:10],
+                    "日付": r.review_date[:10] if len(r.review_date) >= 10 else r.review_date,
                     "本文": (r.text[:60] + "…") if len(r.text) > 60 else r.text,
                     "サブスコア": ", ".join(f"{a}:{int(v)}" for a, v in r.subscores) or "-",
                 }
@@ -163,9 +168,7 @@ elif page.startswith("②"):
                 use_container_width=True,
                 hide_index=True,
             )
-            st.caption(
-                "※ 施設名は①で手入力した名前と完全一致で紐付きます（無ければ新規作成）。"
-            )
+            st.caption("※ 施設名は①で手入力した名前と完全一致で紐付きます（無ければ新規作成）。")
             if st.button("💾 スコアをDBに保存", type="primary"):
                 total = 0
                 for fname, axes in scores.items():
@@ -179,7 +182,7 @@ elif page.startswith("②"):
 # --------------------------------------------------------------------------- #
 # 3) status
 # --------------------------------------------------------------------------- #
-else:
+elif page.startswith("③"):
     st.header("③ 取り込み状況")
     overview = db.facility_overview(conn)
     if not overview:
@@ -191,3 +194,126 @@ else:
             hide_index=True,
         )
         st.caption(f"DB: {config.DB_PATH}")
+
+
+# --------------------------------------------------------------------------- #
+# 4) 強み・弱み分析 (steps 5-6)
+# --------------------------------------------------------------------------- #
+else:
+    st.header("④ 強み・弱み分析")
+
+    mat = analysis.score_matrix(conn)
+    if mat.empty:
+        mat = analysis.google_matrix(conn)
+
+    if mat.empty:
+        st.info(
+            "スコアデータがありません。先に ② スコアExcel取り込み または "
+            "① 口コミCSV取り込み（review_details付き）を行ってください。"
+        )
+        st.stop()
+
+    all_names = list(mat.index)
+    target_name = st.selectbox("対象施設", all_names)
+
+    # ── overall heatmap (all facilities) ─────────────────────────────────── #
+    with st.expander("全施設スコア一覧（ヒートマップ）", expanded=False):
+        st.plotly_chart(
+            charts.score_heatmap(mat),
+            use_container_width=True,
+        )
+
+    st.divider()
+
+    # ── 3 comparison axes as tabs ─────────────────────────────────────────── #
+    tab_a, tab_b, tab_c = st.tabs(
+        ["A　比較施設の平均", "B　全体（DB内）の平均", "C　特定施設1つ"]
+    )
+
+    def _render_comparison(result: analysis.ComparisonResult | None, key: str) -> None:
+        if result is None:
+            st.warning("比較できるデータが不足しています。")
+            return
+
+        strengths, weaknesses = analysis.top_n(result.diff, n=5)
+
+        col_left, col_right = st.columns([1, 1])
+        with col_left:
+            st.subheader("レーダーチャート")
+            st.plotly_chart(
+                charts.radar(
+                    result.target,
+                    result.baseline,
+                    result.target_label,
+                    result.baseline_label,
+                ),
+                use_container_width=True,
+                key=f"radar_{key}",
+            )
+        with col_right:
+            st.subheader("差分バーチャート")
+            st.plotly_chart(
+                charts.diff_bar(result.diff, result.target_label, result.baseline_label),
+                use_container_width=True,
+                key=f"bar_{key}",
+            )
+
+        st.subheader("TOP5 強み・弱み")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**💪 強み TOP5**")
+            if strengths.empty:
+                st.caption("比較施設を上回る指標なし")
+            else:
+                st.dataframe(strengths, use_container_width=True, hide_index=True)
+        with c2:
+            st.markdown("**⚠️ 弱み TOP5**")
+            if weaknesses.empty:
+                st.caption("比較施設を下回る指標なし")
+            else:
+                st.dataframe(weaknesses, use_container_width=True, hide_index=True)
+
+        # raw numbers
+        with st.expander("数値詳細", expanded=False):
+            detail = pd.DataFrame(
+                {
+                    "対象": result.target.round(1),
+                    "比較基準": result.baseline.round(1),
+                    "差": result.diff.round(1),
+                }
+            )
+            detail.index.name = "指標"
+            st.dataframe(detail, use_container_width=True)
+            st.caption("単位: 正規化スコア（0-100pt）")
+
+    with tab_a:
+        st.caption("対象施設 vs 比較施設（②で「比較施設」として登録した施設）の平均")
+        result_a = analysis.build_comparison(conn, target_name, "comparison_avg")
+        if result_a is None:
+            comp_names = analysis.facilities_by_type(conn, "comparison")
+            if not comp_names:
+                st.warning(
+                    "比較施設が登録されていません。"
+                    "① 口コミCSV取り込み で「比較施設」を選んで取り込んでください。"
+                )
+            else:
+                st.warning(f"比較施設（{comp_names}）のスコアデータがありません。")
+        else:
+            _render_comparison(result_a, "a")
+
+    with tab_b:
+        st.caption("対象施設 vs DB内の全施設平均（対象施設自身は除く）")
+        result_b = analysis.build_comparison(conn, target_name, "all_avg")
+        _render_comparison(result_b, "b")
+
+    with tab_c:
+        st.caption("対象施設 vs 特定の1施設を直接比較")
+        others = [n for n in all_names if n != target_name]
+        if not others:
+            st.warning("比較できる他の施設がありません。")
+        else:
+            specific = st.selectbox("比較する施設", others, key="specific_select")
+            result_c = analysis.build_comparison(
+                conn, target_name, "specific", specific_name=specific
+            )
+            _render_comparison(result_c, "c")

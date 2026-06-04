@@ -4,7 +4,10 @@ pandas>=2.0
 openpyxl>=3.1        # .xlsx reading
 pytest>=8.0          # tests
 
-# --- reserved for later steps (5-9), not used yet ---
+# --- analysis layer (steps 5-6) ---
+plotly>=5.18
+
+# --- reserved for later steps (7-9), not used yet ---
 # scikit-learn>=1.4  # step 7: TF-IDF
 # sudachipy>=0.6     # step 7: Japanese tokenizer
 # sudachidict-core
