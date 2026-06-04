@@ -3,18 +3,19 @@
     streamlit run app.py
 
 Screens:
-  1. 口コミCSV取り込み   (step 1-3)
-  2. スコアExcel取り込み (step 4)
+  1. 口コミCSV取り込み      (step 1-3)
+  2. スコアExcel取り込み    (step 4)
   3. 取り込み状況
-  4. 強み・弱み分析      (step 5-6)  ← NEW
-Steps 7-9 (TF-IDF / LLM / パワポ) come next.
+  4. 強み・弱み分析         (step 5-6)
+  5. テキスト分析 & インサイト (step 7-8)  ← NEW
+Step 9 (パワポ) comes next.
 """
 from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
 
-from src import analysis, charts, config, db, review_csv, score_excel
+from src import analysis, charts, config, db, llm, review_csv, score_excel, text_analysis
 
 st.set_page_config(page_title="口コミ分析", page_icon="📊", layout="wide")
 
@@ -36,6 +37,7 @@ page = st.sidebar.radio(
         "② スコアExcel取り込み",
         "③ 取り込み状況",
         "④ 強み・弱み分析",
+        "⑤ テキスト分析 & インサイト",
     ],
 )
 
@@ -199,7 +201,7 @@ elif page.startswith("③"):
 # --------------------------------------------------------------------------- #
 # 4) 強み・弱み分析 (steps 5-6)
 # --------------------------------------------------------------------------- #
-else:
+elif page.startswith("④"):
     st.header("④ 強み・弱み分析")
 
     mat = analysis.score_matrix(conn)
@@ -317,3 +319,167 @@ else:
                 conn, target_name, "specific", specific_name=specific
             )
             _render_comparison(result_c, "c")
+
+
+# --------------------------------------------------------------------------- #
+# 5) テキスト分析 & インサイト (steps 7-8)
+# --------------------------------------------------------------------------- #
+elif page.startswith("⑤"):
+    st.header("⑤ テキスト分析 & インサイト")
+
+    all_names = analysis.facility_names(conn)
+    if not all_names:
+        st.info("施設データがありません。① 口コミCSV取り込みから始めてください。")
+        st.stop()
+
+    target_name = st.selectbox("対象施設", all_names)
+
+    # ── ⑦ Text analysis ──────────────────────────────────────────────────── #
+    st.subheader("⑦ テキスト分析")
+
+    with st.spinner("形態素解析 + TF-IDF を実行中…（初回は少し時間がかかります）"):
+        profile = text_analysis.build_profile(conn, target_name, top_n=20)
+
+    if profile.empty:
+        st.warning("口コミテキストがありません。① で口コミCSVを取り込んでください。")
+    else:
+        st.caption(f"分析対象: {profile.n_reviews} 件の口コミ")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**TF-IDF キーワード TOP20**")
+            st.caption("この施設に特徴的な単語（他施設と比べて相対的に多い語）")
+            if profile.tfidf_keywords.empty:
+                st.info("キーワードなし")
+            else:
+                import plotly.express as px
+                fig_kw = px.bar(
+                    profile.tfidf_keywords.head(20),
+                    x="スコア",
+                    y="単語",
+                    orientation="h",
+                    color="スコア",
+                    color_continuous_scale="Blues",
+                    height=500,
+                )
+                fig_kw.update_layout(
+                    yaxis=dict(autorange="reversed"),
+                    coloraxis_showscale=False,
+                    margin=dict(t=10, b=10),
+                )
+                st.plotly_chart(fig_kw, use_container_width=True)
+
+        with col2:
+            st.markdown("**頻出フレーズ（バイグラム TOP20）**")
+            st.caption("2語の組み合わせで頻繁に登場するフレーズ")
+            if profile.bigrams.empty:
+                st.info("フレーズなし（口コミ件数が少ない可能性があります）")
+            else:
+                fig_bi = px.bar(
+                    profile.bigrams.head(20),
+                    x="件数",
+                    y="フレーズ",
+                    orientation="h",
+                    color="件数",
+                    color_continuous_scale="Greens",
+                    height=500,
+                )
+                fig_bi.update_layout(
+                    yaxis=dict(autorange="reversed"),
+                    coloraxis_showscale=False,
+                    margin=dict(t=10, b=10),
+                )
+                st.plotly_chart(fig_bi, use_container_width=True)
+
+        with st.expander("トライグラム（3語フレーズ）TOP20", expanded=False):
+            if profile.trigrams.empty:
+                st.info("トライグラムなし")
+            else:
+                st.dataframe(profile.trigrams, use_container_width=True, hide_index=True)
+
+        with st.expander("代表的な口コミ", expanded=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**高評価 TOP3**")
+                for i, r in enumerate(profile.high_rated, 1):
+                    st.text_area(f"高評価 {i}", r, height=120, key=f"hi_{i}", disabled=True)
+            with c2:
+                st.markdown("**低評価 TOP3**")
+                if not profile.low_rated:
+                    st.caption("低評価（3★以下）の口コミなし")
+                for i, r in enumerate(profile.low_rated, 1):
+                    st.text_area(f"低評価 {i}", r, height=120, key=f"lo_{i}", disabled=True)
+
+    st.divider()
+
+    # ── ⑧ LLM Insights ───────────────────────────────────────────────────── #
+    st.subheader("⑧ LLMインサイト")
+
+    # Score context: use comparison_avg if available, else all_avg
+    score_diff = None
+    comp_result = analysis.build_comparison(conn, target_name, "comparison_avg")
+    if comp_result is None:
+        comp_result = analysis.build_comparison(conn, target_name, "all_avg")
+    if comp_result is not None:
+        score_diff = comp_result.diff
+        st.caption(f"スコア比較軸: {comp_result.baseline_label}")
+
+    api_key = llm.get_api_key()
+    if not api_key:
+        st.info(
+            "Anthropic API キーが設定されていません。\n\n"
+            "以下のいずれかで設定できます：\n"
+            "- 環境変数 `ANTHROPIC_API_KEY=sk-ant-...` を設定して再起動\n"
+            "- `.streamlit/secrets.toml` に `ANTHROPIC_API_KEY = \"sk-ant-...\"` を追記\n"
+            "- 下のフォームに直接入力（このセッション限り）"
+        )
+        api_key = st.text_input("API キーを直接入力（セッション限り）", type="password")
+
+    if not profile.empty:
+        if st.button("✨ インサイトを生成する", type="primary", disabled=not api_key):
+            kw_list = profile.tfidf_keywords["単語"].tolist() if not profile.tfidf_keywords.empty else []
+            bi_list = profile.bigrams["フレーズ"].tolist() if not profile.bigrams.empty else []
+
+            prompt = llm.build_prompt(
+                facility_name=target_name,
+                score_diff=score_diff,
+                tfidf_keywords=kw_list,
+                bigrams=bi_list,
+                high_reviews=profile.high_rated,
+                low_reviews=profile.low_rated,
+            )
+
+            with st.spinner("LLMが分析中です…"):
+                result = llm.generate_insights(prompt, api_key)
+
+            if result.error:
+                st.error(result.error)
+                if result.raw:
+                    with st.expander("raw レスポンス"):
+                        st.text(result.raw)
+            else:
+                st.success("インサイト生成完了")
+
+                st.markdown(f"### まとめ\n{result.summary}")
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**💪 強み**")
+                    for item in result.strengths:
+                        st.markdown(f"- {item}")
+                with c2:
+                    st.markdown("**⚠️ 弱み**")
+                    for item in result.weaknesses:
+                        st.markdown(f"- {item}")
+
+                st.markdown("**💡 示唆**")
+                for item in result.implications:
+                    st.markdown(f"- {item}")
+
+                st.markdown("**🔧 改善提案**")
+                for item in result.improvements:
+                    st.markdown(f"- {item}")
+
+                with st.expander("プロンプト（確認用）", expanded=False):
+                    st.text(prompt)
