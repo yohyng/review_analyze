@@ -12,10 +12,22 @@ Step 9 (パワポ) comes next.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
-from src import analysis, charts, config, db, llm, review_csv, score_excel, text_analysis
+from src import (
+    analysis,
+    charts,
+    config,
+    db,
+    llm,
+    report,
+    review_csv,
+    score_excel,
+    text_analysis,
+)
 
 st.set_page_config(page_title="口コミ分析", page_icon="📊", layout="wide")
 
@@ -38,6 +50,7 @@ page = st.sidebar.radio(
         "③ 取り込み状況",
         "④ 強み・弱み分析",
         "⑤ テキスト分析 & インサイト",
+        "⑥ レポート出力 (PPTX)",
     ],
 )
 
@@ -460,6 +473,9 @@ elif page.startswith("⑤"):
                         st.text(result.raw)
             else:
                 st.success("インサイト生成完了")
+                # stash for the report page (⑥)
+                st.session_state["insights"] = result
+                st.session_state["insights_facility"] = target_name
 
                 st.markdown(f"### まとめ\n{result.summary}")
 
@@ -483,3 +499,56 @@ elif page.startswith("⑤"):
 
                 with st.expander("プロンプト（確認用）", expanded=False):
                     st.text(prompt)
+
+
+# --------------------------------------------------------------------------- #
+# 6) レポート出力 (step 9)
+# --------------------------------------------------------------------------- #
+else:
+    import tempfile
+
+    st.header("⑥ レポート出力 (PPTX)")
+    st.caption("これまでの分析（スコア比較・強み弱み・テキスト分析・インサイト）を1つのPowerPointにまとめます。")
+
+    all_names = analysis.facility_names(conn)
+    if not all_names:
+        st.info("施設データがありません。① 口コミCSV取り込みから始めてください。")
+        st.stop()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        target_name = st.selectbox("対象施設", all_names)
+    with col2:
+        axis_label = st.radio(
+            "比較基準",
+            ["比較施設の平均", "全体（DB内）の平均"],
+            horizontal=True,
+        )
+    axis = "comparison_avg" if axis_label == "比較施設の平均" else "all_avg"
+
+    # reuse insights generated on page ⑤ if they match this facility
+    insights = None
+    if st.session_state.get("insights_facility") == target_name:
+        insights = st.session_state.get("insights")
+        st.success("⑤で生成したインサイトをレポートに含めます。")
+    else:
+        st.info(
+            "この施設のLLMインサイトは未生成です。⑤で生成するとレポートに反映されます"
+            "（未生成のままでも、グラフ・表・テキスト分析だけのレポートは作成できます）。"
+        )
+
+    if st.button("📑 レポート(PPTX)を生成", type="primary"):
+        with st.spinner("スライドを生成中…"):
+            tmp_path = Path(tempfile.mkdtemp()) / f"{target_name}_分析レポート.pptx"
+            report.build_report(
+                conn, target_name, axis=axis, insights=insights, output_path=tmp_path
+            )
+        with open(tmp_path, "rb") as f:
+            st.download_button(
+                "⬇️ ダウンロード",
+                data=f.read(),
+                file_name=tmp_path.name,
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                type="primary",
+            )
+        st.success("生成完了。上のボタンからダウンロードしてください。")

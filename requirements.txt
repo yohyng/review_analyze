@@ -12,7 +12,8 @@ janome>=0.4
 scikit-learn>=1.4
 anthropic>=0.39
 
-# --- reserved for later steps (9), not used yet ---
+# --- report export (step 9) ---
+python-pptx>=1.0
 # scikit-learn>=1.4  # step 7: TF-IDF
 # sudachipy>=0.6     # step 7: Japanese tokenizer
 # sudachidict-core

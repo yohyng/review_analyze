@@ -10,16 +10,23 @@
    → ⑤グラフ化 → ⑥強み弱みTOP5 → ⑦TF-IDF/N-gram → ⑧LLMインサイト → ⑨パワポ化
 ```
 
-## 現在の実装範囲：取り込み層（①〜④）✅
+## 実装状況：①〜⑨ すべて実装済み ✅
 
-口コミCSVとスコアExcelを投げ込んでSQLiteに格納し、状況を確認できる所まで。
-⑤〜⑨（グラフ・強み弱み・テキスト分析・LLM・パワポ）は次フェーズ。
+| ステップ | 内容 | 実装 |
+|---|---|---|
+| ①②③ | 施設名入力・比較施設・口コミCSV取込 | `src/review_csv.py` |
+| ④ | スコアExcel取込（汎用インポータ） | `src/score_excel.py` |
+| ⑤⑥ | グラフ化・強み弱みTOP5（3比較軸） | `src/analysis.py` `src/charts.py` |
+| ⑦ | TF-IDF + N-gram テキスト分析 | `src/text_analysis.py` |
+| ⑧ | LLMインサイト（まとめ/強み/弱み/示唆/改善提案） | `src/llm.py` |
+| ⑨ | パワポ化（編集可能なネイティブchart/table） | `src/report.py` |
 
 ## セットアップ & 起動
 
 ```bash
 pip install -r requirements.txt
-python samples/make_sample.py   # 動作確認用サンプル生成（任意）
+python samples/make_sample.py   # 取り込み用サンプル生成（任意）
+python samples/make_report.py   # 仮レポート samples/sample_report.pptx を生成（任意）
 streamlit run app.py
 ```
 
@@ -27,6 +34,20 @@ streamlit run app.py
 1. **口コミCSV取り込み** — 施設名を手入力し、CSV/TSVを投入
 2. **スコアExcel取り込み** — Excelを投入 → 列を確認して保存
 3. **取り込み状況** — DBの中身を一覧
+4. **強み・弱み分析** — レーダー/差分バー + TOP5（3比較軸タブ）
+5. **テキスト分析 & インサイト** — TF-IDF/N-gram + LLMインサイト
+6. **レポート出力 (PPTX)** — 全分析を1つのPowerPointに
+
+## LLM（⑧）の設定
+
+`ANTHROPIC_API_KEY` を環境変数 / `.streamlit/secrets.toml` / 画面入力 のいずれかで設定。
+
+## レポート（⑨）について
+
+`python-pptx` のネイティブchart/tableで生成するため、出力pptxは**PowerPoint上で
+編集可能**（画像埋め込みではない）。日本語フォントの問題も回避。全7スライド構成：
+タイトル → サマリー → スコア比較（レーダー+バー）→ 強み弱みTOP5 →
+テキスト分析 → インサイト①(強み/弱み) → インサイト②(示唆/改善提案)。
 
 ## データの扱い
 
@@ -67,12 +88,19 @@ python -m pytest -q
 ## 構成
 
 ```
-app.py                 # Streamlit UI（取り込み3画面）
+app.py                 # Streamlit UI（6画面）
 src/
   config.py            # パス・定数
   db.py                # SQLite スキーマ + CRUD
   review_csv.py        # ③ 口コミCSVパーサ
   score_excel.py       # ④ スコアExcel汎用インポータ
-samples/make_sample.py # サンプルデータ生成
-tests/                 # pytest
+  analysis.py          # ⑤⑥ スコア正規化・比較・TOP5
+  charts.py            # ⑤⑥ plotly グラフ
+  text_analysis.py     # ⑦ TF-IDF + N-gram
+  llm.py               # ⑧ LLMインサイト
+  report.py            # ⑨ PPTX生成
+samples/
+  make_sample.py       # 取り込み用サンプル生成
+  make_report.py       # 仮レポート生成
+tests/                 # pytest（26 tests）
 ```
