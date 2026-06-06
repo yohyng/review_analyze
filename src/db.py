@@ -187,6 +187,55 @@ def list_facilities(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM facility ORDER BY id").fetchall()
 
 
+def facility_stats(conn: sqlite3.Connection, facility_name: str) -> dict | None:
+    """Rich stats for the 施設を選ぶ overview card. Returns None if not found."""
+    row = conn.execute(
+        "SELECT * FROM facility WHERE name = ?", (facility_name,)
+    ).fetchone()
+    if not row:
+        return None
+    fid = row["id"]
+
+    rev = conn.execute(
+        """SELECT COUNT(*) as cnt,
+                  MIN(review_date) as oldest,
+                  MAX(review_date) as newest,
+                  AVG(CAST(rating AS REAL)) as avg_r
+           FROM review WHERE facility_id = ? AND text IS NOT NULL""",
+        (fid,),
+    ).fetchone()
+
+    score_axes = [
+        r["metric_name"]
+        for r in conn.execute(
+            "SELECT metric_name FROM score WHERE facility_id = ? ORDER BY metric_name",
+            (fid,),
+        ).fetchall()
+    ]
+
+    n = rev["cnt"] or 0
+    can_tfidf = n >= 3          # minimum for meaningful keyword extraction
+    can_score = bool(score_axes)
+
+    def _short_date(d: str | None) -> str:
+        return d[:7] if d and len(d) >= 7 else "-"
+
+    return {
+        "name": facility_name,
+        "type": config.FACILITY_TYPES.get(row["type"], row["type"] or "-"),
+        "n_reviews": n,
+        "date_oldest": _short_date(rev["oldest"]),
+        "date_newest": _short_date(rev["newest"]),
+        "avg_rating": round(rev["avg_r"], 2) if rev["avg_r"] else None,
+        "general_rating": row["general_rating"],
+        "total_reviews_platform": row["total_reviews"],
+        "score_axes": score_axes,
+        "can_analyze": n >= 1,
+        "can_tfidf": can_tfidf,
+        "can_score": can_score,
+    }
+
+
 def facility_overview(conn: sqlite3.Connection) -> list[dict]:
     """One row per facility with ingestion counts, for the dashboard."""
     out = []
