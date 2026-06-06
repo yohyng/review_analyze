@@ -67,7 +67,7 @@ def get_conn(db_path: Optional[Path | str] = None) -> sqlite3.Connection:
     """Open (and lazily create) the SQLite database."""
     path = Path(db_path) if db_path is not None else config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
