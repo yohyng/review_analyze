@@ -177,7 +177,8 @@ def _decode_query_name(input_cell: str, url_cell: str) -> str:
 
 def _facility_key_name(row: dict) -> tuple[str, str]:
     """Return (grouping_key, display_name) for one row."""
-    name = _col(row, "place_name")
+    # 'place_name' (KAIZODE) or '施設名' (simple JP format)
+    name = _col(row, "place_name", "施設名")
     if not name:
         name = _decode_query_name(_col(row, "input"), _col(row, "url"))
     key = _col(row, "place_id") or _col(row, "cid") or name
@@ -196,7 +197,7 @@ def infer_facilities(source) -> list[dict]:
     for row in df.to_dict("records"):
         if _col(row, "error", "error_code"):
             continue
-        if not _col(row, "review") and not _col(row, "review_rating"):
+        if not _col(row, "review", "クチコミ内容") and not _col(row, "review_rating"):
             continue
         key, name = _facility_key_name(row)
         key = key or "(不明)"
@@ -248,9 +249,11 @@ def parse_reviews(source, facility_key: Optional[str] = None) -> ParseResult:
         if facility_key is not None and _facility_key_name(row)[0] != facility_key:
             continue
 
-        text = _col(row, "review")
+        # 'review' (KAIZODE) or 'クチコミ内容' (simple JP format)
+        text = _col(row, "review", "クチコミ内容")
         date = _col(row, "review_date")
-        reviewer = _col(row, "reviewer_name")
+        # 'reviewer_name' (KAIZODE) or '投稿者' (simple JP format)
+        reviewer = _col(row, "reviewer_name", "投稿者")
         review_id = _col(row, "review_id") or _fallback_id(text, date, reviewer)
 
         # drop empty junk lines
