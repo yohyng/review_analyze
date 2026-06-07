@@ -25,6 +25,7 @@ from src import (
     analysis,
     charts,
     config,
+    csv_profiler,
     db,
     llm,
     report,
@@ -56,6 +57,7 @@ page = st.sidebar.radio(
     [
         "📥 データ登録",
         "📋 取り込み状況",
+        "🔬 CSVプロファイラ",
         "─────────",
         "🔍 施設を選ぶ",
         "📈 強み・弱み",
@@ -289,6 +291,57 @@ elif page == "📋 取り込み状況":
             use_container_width=True, hide_index=True,
         )
         st.caption(f"DB: {config.DB_PATH}")
+
+
+# ============================================================================
+# 🔬 CSVプロファイラ
+# ============================================================================
+elif page == "🔬 CSVプロファイラ":
+    st.header("🔬 CSVプロファイラ")
+    st.caption(
+        "CSVをアップロードするとデータ構造（列・型・統計・サンプル）を解析し、"
+        "Claude に貼り付けられるプロンプトを生成します。"
+    )
+
+    _pf_upload = st.file_uploader(
+        "CSV / TSV ファイル", type=["csv", "tsv", "txt"], key="pf_upload"
+    )
+
+    if _pf_upload:
+        try:
+            _pf_df = csv_profiler.load_df(_pf_upload)
+            _pf_upload.seek(0)
+        except Exception as _e:
+            st.error(f"読み込みに失敗しました: {_e}")
+            st.stop()
+
+        st.success(f"読み込み完了: **{len(_pf_df)} 行 × {len(_pf_df.columns)} 列**")
+
+        with st.expander("データプレビュー（先頭20行）", expanded=False):
+            st.dataframe(_pf_df.head(20), use_container_width=True)
+
+        _pf_question = st.text_area(
+            "Claudeへの質問（省略可）",
+            placeholder=(
+                "例: この口コミCSVの列構造を把握してください。\n"
+                "評価が空欄の行が多い理由と、テキスト分析に使える列を教えてください。"
+            ),
+            height=90,
+            key="pf_question",
+        )
+
+        _pf_prompt = csv_profiler.build_claude_prompt(
+            _pf_df,
+            filename=getattr(_pf_upload, "name", ""),
+            question=_pf_question,
+        )
+
+        st.subheader("📤 Claude用プロンプト")
+        st.caption(
+            "以下のテキストをコピーして Claude（claude.ai など）に貼り付けてください。"
+            "CSVを直接アップロードしなくてもデータ構造を共有できます。"
+        )
+        st.code(_pf_prompt, language="markdown")
 
 
 # ============================================================================
