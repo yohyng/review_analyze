@@ -103,7 +103,7 @@ if page == "📥 データ登録":
         )
 
         # ── Facility inference from CSV ──────────────────────────────────── #
-        facility_key_for_parse = None
+        inferred = []
         if uploaded:
             try:
                 inferred = review_csv.infer_facilities(uploaded)
@@ -111,107 +111,218 @@ if page == "📥 データ登録":
             except Exception:
                 inferred = []
 
-            if len(inferred) > 1:
-                st.info(f"このCSVには **{len(inferred)} 施設** のデータが含まれています。")
-                fac_opts = []
-                for _f in inferred:
+        if len(inferred) > 1:
+            st.info(f"このCSVには **{len(inferred)} 施設** のデータが含まれています。")
+            sel_key = "csv_facilities_checked"
+            if sel_key not in st.session_state:
+                st.session_state[sel_key] = {f["key"]: False for f in inferred}
+
+            col1, col2, col3 = st.columns([1, 1, 2])
+            with col1:
+                if st.button("✅ すべて選択", use_container_width=True):
+                    for k in st.session_state[sel_key]:
+                        st.session_state[sel_key][k] = True
+            with col2:
+                if st.button("❌ すべて解除", use_container_width=True):
+                    for k in st.session_state[sel_key]:
+                        st.session_state[sel_key][k] = False
+            with col3:
+                pass
+
+            st.divider()
+            for _f in inferred:
+                col1, col2 = st.columns([0.8, 3])
+                with col1:
+                    st.session_state[sel_key][_f["key"]] = st.checkbox(
+                        "",
+                        value=st.session_state[sel_key].get(_f["key"], False),
+                        key=f"fac_check_{_f['key']}",
+                    )
+                with col2:
                     _r = f" / ★{_f['avg_rating']}" if _f["avg_rating"] else ""
-                    fac_opts.append(f"{_f['name']} ({_f['count']}件{_r})")
-                picked = st.selectbox(
-                    "取り込む施設を選択", range(len(inferred)),
-                    format_func=lambda i: fac_opts[i], key="fac_pick",
-                )
-                chosen_fac = inferred[picked]
-                facility_key_for_parse = chosen_fac["key"]
-                if chosen_fac["name"] and st.button(
-                    f"施設名に「{chosen_fac['name']}」を使う", key="autofill_multi"
-                ):
-                    st.session_state["csv_fac_confirm"] = chosen_fac["name"]
+                    st.caption(f"**{_f['name']}** — {_f['count']}件{_r}")
+
+            selected_fac = [f for f in inferred if st.session_state[sel_key].get(f["key"], False)]
+
+            if selected_fac:
+                col1, col2 = st.columns(2)
+                with col1:
+                    ftype_label = st.radio(
+                        "種別", list(config.FACILITY_TYPES.values()), horizontal=True, key="csv_ftype_multi"
+                    )
+                with col2:
+                    pass
+                ftype = next(k for k, v in config.FACILITY_TYPES.items() if v == ftype_label)
+
+                if st.button(f"💾 選択した {len(selected_fac)} 施設を保存", type="primary", key="csv_save_multi"):
+                    saved_count = 0
+                    for chosen_fac in selected_fac:
+                        try:
+                            result = review_csv.parse_reviews(uploaded, facility_key=chosen_fac["key"])
+                            uploaded.seek(0)
+                        except Exception as e:
+                            st.error(f"「{chosen_fac['name']}」のパース失敗: {e}")
+                            continue
+
+                        fid = db.upsert_facility(
+                            conn, chosen_fac["name"], ftype=ftype,
+                            category=result.category,
+                            general_rating=result.general_rating,
+                            total_reviews=result.total_reviews,
+                        )
+                        inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
+                        n_axes = scoring.compute_and_store(conn, fid)
+                        st.success(
+                            f"✅ 「{chosen_fac['name']}」に {inserted} 件保存"
+                            f"（重複スキップ {skipped} 件）"
+                            + (f" / スコア {n_axes} 軸自動算出" if n_axes else "")
+                        )
+                        saved_count += 1
+                    st.balloons()
+            else:
+                st.info("施設を選択してください（チェックボックス）。")
+
+        elif len(inferred) == 1:
+            _f = inferred[0]
+            _r = f" / 平均 ★{_f['avg_rating']}" if _f["avg_rating"] else ""
+            st.info(f"📍 推定施設: **{_f['name']}** — {_f['count']}件{_r}")
+            if _f["name"] and not st.session_state.get("csv_fac_confirm"):
+                if st.button(f"施設名に「{_f['name']}」を使う", key="autofill_single"):
+                    st.session_state["csv_fac_confirm"] = _f["name"]
                     st.rerun()
-            elif len(inferred) == 1:
-                _f = inferred[0]
-                _r = f" / 平均 ★{_f['avg_rating']}" if _f["avg_rating"] else ""
-                st.info(f"📍 推定施設: **{_f['name']}** — {_f['count']}件{_r}")
-                if _f["name"] and not st.session_state.get("csv_fac_confirm"):
-                    if st.button(f"施設名に「{_f['name']}」を使う", key="autofill_single"):
-                        st.session_state["csv_fac_confirm"] = _f["name"]
-                        st.rerun()
 
-        col1, col2 = st.columns(2)
-        with col1:
-            facility_name_input = st.text_input(
-                "施設名（手入力・必須）", placeholder="例: 風の海",
-                key="csv_fac_input",
-            )
-        with col2:
-            ftype_label = st.radio(
-                "種別", list(config.FACILITY_TYPES.values()), horizontal=True
-            )
-        ftype = next(k for k, v in config.FACILITY_TYPES.items() if v == ftype_label)
-
-        # fuzzy suggestion
-        if facility_name_input.strip():
-            existing = analysis.facility_names(conn)
-            hints = search.suggest(facility_name_input.strip(), existing)
-            if hints:
-                st.info("DBにこんな施設が見つかりました")
-                cols = st.columns(len(hints))
-                for col, h in zip(cols, hints):
-                    with col:
-                        if st.button(f"✅ {h}", key=f"hint_{h}"):
-                            st.session_state["csv_fac_confirm"] = h
-
-        facility_name = st.session_state.get(
-            "csv_fac_confirm", facility_name_input
-        ).strip()
-
-        if facility_name and facility_name != facility_name_input.strip():
-            st.success(f"施設名: **{facility_name}** を使用します")
-
-        if uploaded and facility_name:
-            try:
-                result = review_csv.parse_reviews(uploaded, facility_key=facility_key_for_parse)
-            except Exception as e:
-                st.error(f"パースに失敗しました: {e}")
-                st.stop()
-
-            st.success(
-                f"解析: {len(result.reviews)} 件の口コミ "
-                f"（生 {result.n_raw} 行 / スキップ {result.n_skipped} 行）"
-            )
-            m1, m2, m3 = st.columns(3)
-            m1.metric("総合評点", result.general_rating or "-")
-            m2.metric("口コミ総数(施設)", result.total_reviews or "-")
-            m3.metric("カテゴリ", result.category or "-")
-
-            preview = pd.DataFrame([
-                {
-                    "★": r.rating,
-                    "日付": r.review_date[:10] if len(r.review_date) >= 10 else r.review_date,
-                    "本文": (r.text[:60] + "…") if len(r.text) > 60 else r.text,
-                    "サブスコア": ", ".join(f"{a}:{int(v)}" for a, v in r.subscores) or "-",
-                }
-                for r in result.reviews[:20]
-            ])
-            st.dataframe(preview, use_container_width=True, hide_index=True)
-
-            if st.button("💾 DBに保存", type="primary", key="csv_save"):
-                fid = db.upsert_facility(
-                    conn, facility_name, ftype=ftype,
-                    category=result.category,
-                    general_rating=result.general_rating,
-                    total_reviews=result.total_reviews,
+            col1, col2 = st.columns(2)
+            with col1:
+                facility_name_input = st.text_input(
+                    "施設名（手入力・必須）", placeholder="例: 風の海",
+                    key="csv_fac_input",
                 )
-                inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
-                n_axes = scoring.compute_and_store(conn, fid)
+            with col2:
+                ftype_label = st.radio(
+                    "種別", list(config.FACILITY_TYPES.values()), horizontal=True
+                )
+            ftype = next(k for k, v in config.FACILITY_TYPES.items() if v == ftype_label)
+
+            # fuzzy suggestion
+            if facility_name_input.strip():
+                existing = analysis.facility_names(conn)
+                hints = search.suggest(facility_name_input.strip(), existing)
+                if hints:
+                    st.info("DBにこんな施設が見つかりました")
+                    cols = st.columns(len(hints))
+                    for col, h in zip(cols, hints):
+                        with col:
+                            if st.button(f"✅ {h}", key=f"hint_{h}"):
+                                st.session_state["csv_fac_confirm"] = h
+
+            facility_name = st.session_state.get(
+                "csv_fac_confirm", facility_name_input
+            ).strip()
+
+            if facility_name and facility_name != facility_name_input.strip():
+                st.success(f"施設名: **{facility_name}** を使用します")
+
+            if uploaded and facility_name:
+                try:
+                    result = review_csv.parse_reviews(uploaded, facility_key=_f["key"])
+                except Exception as e:
+                    st.error(f"パースに失敗しました: {e}")
+                    st.stop()
+
                 st.success(
-                    f"✅ 「{facility_name}」に {inserted} 件保存"
-                    f"（重複スキップ {skipped} 件）"
-                    + (f" / 定量スコア {n_axes} 軸を自動算出しました" if n_axes else "")
+                    f"解析: {len(result.reviews)} 件の口コミ "
+                    f"（生 {result.n_raw} 行 / スキップ {result.n_skipped} 行）"
                 )
-                st.session_state.pop("csv_fac_confirm", None)
-        elif uploaded and not facility_name:
-            st.warning("先に施設名を入力してください。")
+                m1, m2, m3 = st.columns(3)
+                m1.metric("総合評点", result.general_rating or "-")
+                m2.metric("口コミ総数(施設)", result.total_reviews or "-")
+                m3.metric("カテゴリ", result.category or "-")
+
+                preview = pd.DataFrame([
+                    {
+                        "★": r.rating,
+                        "日付": r.review_date[:10] if len(r.review_date) >= 10 else r.review_date,
+                        "本文": (r.text[:60] + "…") if len(r.text) > 60 else r.text,
+                        "サブスコア": ", ".join(f"{a}:{int(v)}" for a, v in r.subscores) or "-",
+                    }
+                    for r in result.reviews[:20]
+                ])
+                st.dataframe(preview, use_container_width=True, hide_index=True)
+
+                if st.button("💾 DBに保存", type="primary", key="csv_save"):
+                    fid = db.upsert_facility(
+                        conn, facility_name, ftype=ftype,
+                        category=result.category,
+                        general_rating=result.general_rating,
+                        total_reviews=result.total_reviews,
+                    )
+                    inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
+                    n_axes = scoring.compute_and_store(conn, fid)
+                    st.success(
+                        f"✅ 「{facility_name}」に {inserted} 件保存"
+                        f"（重複スキップ {skipped} 件）"
+                        + (f" / 定量スコア {n_axes} 軸を自動算出しました" if n_axes else "")
+                    )
+                    st.session_state.pop("csv_fac_confirm", None)
+            elif uploaded and not facility_name:
+                st.warning("先に施設名を入力してください。")
+
+        elif uploaded:
+            col1, col2 = st.columns(2)
+            with col1:
+                facility_name_input = st.text_input(
+                    "施設名（手入力・必須）", placeholder="例: 風の海",
+                    key="csv_fac_input",
+                )
+            with col2:
+                ftype_label = st.radio(
+                    "種別", list(config.FACILITY_TYPES.values()), horizontal=True
+                )
+            ftype = next(k for k, v in config.FACILITY_TYPES.items() if v == ftype_label)
+
+            facility_name = st.text_input("施設名", value=facility_name_input, key="csv_fac_manual").strip()
+
+            if facility_name:
+                try:
+                    result = review_csv.parse_reviews(uploaded)
+                except Exception as e:
+                    st.error(f"パースに失敗しました: {e}")
+                    st.stop()
+
+                st.success(
+                    f"解析: {len(result.reviews)} 件の口コミ "
+                    f"（生 {result.n_raw} 行 / スキップ {result.n_skipped} 行）"
+                )
+                m1, m2, m3 = st.columns(3)
+                m1.metric("総合評点", result.general_rating or "-")
+                m2.metric("口コミ総数(施設)", result.total_reviews or "-")
+                m3.metric("カテゴリ", result.category or "-")
+
+                preview = pd.DataFrame([
+                    {
+                        "★": r.rating,
+                        "日付": r.review_date[:10] if len(r.review_date) >= 10 else r.review_date,
+                        "本文": (r.text[:60] + "…") if len(r.text) > 60 else r.text,
+                        "サブスコア": ", ".join(f"{a}:{int(v)}" for a, v in r.subscores) or "-",
+                    }
+                    for r in result.reviews[:20]
+                ])
+                st.dataframe(preview, use_container_width=True, hide_index=True)
+
+                if st.button("💾 DBに保存", type="primary", key="csv_save_manual"):
+                    fid = db.upsert_facility(
+                        conn, facility_name, ftype=ftype,
+                        category=result.category,
+                        general_rating=result.general_rating,
+                        total_reviews=result.total_reviews,
+                    )
+                    inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
+                    n_axes = scoring.compute_and_store(conn, fid)
+                    st.success(
+                        f"✅ 「{facility_name}」に {inserted} 件保存"
+                        f"（重複スキップ {skipped} 件）"
+                        + (f" / 定量スコア {n_axes} 軸を自動算出しました" if n_axes else "")
+                    )
 
     # ── Excel tab ───────────────────────────────────────────────────────── #
     with tab_excel:
