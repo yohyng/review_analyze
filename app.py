@@ -117,19 +117,19 @@ if page == "📥 データ登録":
             if sel_key not in st.session_state:
                 st.session_state[sel_key] = {f["key"]: False for f in inferred}
 
+            st.subheader("施設を選択")
             col1, col2, col3 = st.columns([1, 1, 2])
             with col1:
                 if st.button("✅ すべて選択", use_container_width=True):
                     for k in st.session_state[sel_key]:
                         st.session_state[sel_key][k] = True
+                    st.rerun()
             with col2:
                 if st.button("❌ すべて解除", use_container_width=True):
                     for k in st.session_state[sel_key]:
                         st.session_state[sel_key][k] = False
-            with col3:
-                pass
+                    st.rerun()
 
-            st.divider()
             for _f in inferred:
                 col1, col2 = st.columns([0.8, 3])
                 with col1:
@@ -144,18 +144,19 @@ if page == "📥 データ登録":
 
             selected_fac = [f for f in inferred if st.session_state[sel_key].get(f["key"], False)]
 
+            st.divider()
+
             if selected_fac:
-                col1, col2 = st.columns(2)
-                with col1:
-                    ftype_label = st.radio(
-                        "種別", list(config.FACILITY_TYPES.values()), horizontal=True, key="csv_ftype_multi"
-                    )
-                with col2:
-                    pass
+                st.subheader("保存設定")
+                st.caption(f"選択: {', '.join(f['name'] for f in selected_fac)}")
+
+                ftype_label = st.radio(
+                    "種別", list(config.FACILITY_TYPES.values()), horizontal=True, key="csv_ftype_multi"
+                )
                 ftype = next(k for k, v in config.FACILITY_TYPES.items() if v == ftype_label)
 
+                st.divider()
                 if st.button(f"💾 選択した {len(selected_fac)} 施設を保存", type="primary", key="csv_save_multi"):
-                    saved_count = 0
                     for chosen_fac in selected_fac:
                         try:
                             result = review_csv.parse_reviews(uploaded, facility_key=chosen_fac["key"])
@@ -177,7 +178,6 @@ if page == "📥 データ登録":
                             f"（重複スキップ {skipped} 件）"
                             + (f" / スコア {n_axes} 軸自動算出" if n_axes else "")
                         )
-                        saved_count += 1
                     st.balloons()
             else:
                 st.info("施設を選択してください（チェックボックス）。")
