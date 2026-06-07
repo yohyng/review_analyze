@@ -59,6 +59,7 @@ page = st.sidebar.radio(
         "📋 取り込み状況",
         "🔬 CSVプロファイラ",
         "─────────",
+        "⚡ クイックレポート",
         "🔍 施設を選ぶ",
         "📈 強み・弱み",
         "💬 テキスト & インサイト",
@@ -342,6 +343,135 @@ elif page == "🔬 CSVプロファイラ":
             "CSVを直接アップロードしなくてもデータ構造を共有できます。"
         )
         st.code(_pf_prompt, language="markdown")
+
+
+# ============================================================================
+# ⚡ クイックレポート
+# ============================================================================
+elif page == "⚡ クイックレポート":
+    st.header("⚡ クイックレポート")
+    st.caption(
+        "施設を選ぶだけで、スコア算出 → テキスト分析 → トピック分析 → "
+        "インサイト生成（任意）→ PPTX書き出しまで一気通貫で実行します。"
+    )
+
+    _q_names = analysis.facility_names(conn)
+    if not _q_names:
+        st.info("施設データがありません。📥 データ登録から口コミCSVを投入してください。")
+        st.stop()
+
+    _qc1, _qc2 = st.columns([3, 1])
+    with _qc1:
+        _q_target = st.selectbox(
+            "対象施設",
+            _q_names,
+            index=_q_names.index(st.session_state["analysis_target"])
+            if st.session_state.get("analysis_target") in _q_names else 0,
+            key="q_target",
+        )
+    with _qc2:
+        _q_n_topics = st.slider("トピック数", 2, 10, 5, key="q_n_topics")
+
+    _q_api_key = llm.get_api_key()
+    if not _q_api_key:
+        _q_api_key = st.text_input(
+            "Gemini API キー（省略可 — なしでもレポートを生成できます）",
+            type="password", key="q_api",
+            help="aistudio.google.com で無料取得できます",
+        )
+
+    if st.button("🚀 レポートを一気通貫生成", type="primary",
+                 use_container_width=True, key="q_run"):
+        _q_fid = conn.execute(
+            "SELECT id FROM facility WHERE name = ?", (_q_target,)
+        ).fetchone()
+        if not _q_fid:
+            st.error("施設データが見つかりません。")
+            st.stop()
+        _q_fid = _q_fid["id"]
+
+        _q_insights = None
+        _q_topic_list = []
+
+        with st.status("分析・生成中…", expanded=True) as _status:
+
+            # ① スコア算出
+            st.write("📊 スコア算出中…")
+            _q_n_axes = scoring.compute_and_store(conn, _q_fid)
+            st.write(f"✅ スコア {_q_n_axes} 軸算出完了")
+
+            # ② テキスト分析
+            st.write("💬 テキスト分析中…")
+            _q_profile = text_analysis.build_profile(conn, _q_target, top_n=20)
+            if _q_profile.empty:
+                st.write("⚠️ テキスト付き口コミが不足のためスキップ")
+            else:
+                st.write(f"✅ テキスト分析完了（キーワード {len(_q_profile.tfidf_keywords)} 件）")
+
+            # ③ トピック分析
+            st.write("🗂️ トピック分析中…")
+            _q_rev_rows = conn.execute(
+                "SELECT rating, text FROM review WHERE facility_id = ?",
+                (_q_fid,),
+            ).fetchall()
+            _q_revs = [(_r["rating"], _r["text"] or "") for _r in _q_rev_rows]
+            _q_topic_list = topics.extract_topics(_q_revs, n_topics=_q_n_topics)
+            if _q_topic_list:
+                st.write(f"✅ トピック {len(_q_topic_list)} 件抽出完了")
+            else:
+                st.write("⚠️ トピック抽出には本文付き口コミが不足")
+
+            # ④ LLMインサイト（任意）
+            if _q_api_key and not _q_profile.empty:
+                st.write("✨ LLMインサイト生成中…")
+                _q_comp = (
+                    analysis.build_comparison(conn, _q_target, "comparison_avg")
+                    or analysis.build_comparison(conn, _q_target, "all_avg")
+                )
+                _q_diff = _q_comp.diff if _q_comp else None
+                _q_kw = _q_profile.tfidf_keywords["単語"].tolist()
+                _q_bi = (
+                    _q_profile.bigrams["フレーズ"].tolist()
+                    if not _q_profile.bigrams.empty else []
+                )
+                _q_prompt = llm.build_prompt(
+                    _q_target, _q_diff, _q_kw, _q_bi,
+                    _q_profile.high_rated, _q_profile.low_rated,
+                )
+                _q_result = llm.generate_insights(_q_prompt, _q_api_key)
+                if _q_result.error:
+                    st.write(f"⚠️ インサイト生成失敗: {_q_result.error}")
+                else:
+                    _q_insights = _q_result
+                    st.write("✅ インサイト生成完了")
+            elif not _q_api_key:
+                st.write("⏭️ API キー未設定のためインサイト生成をスキップ")
+
+            # ⑤ PPTX生成
+            st.write("📑 PPTX生成中…")
+            _q_tmp = Path(tempfile.mkdtemp()) / f"{_q_target}_分析レポート.pptx"
+            report.build_report(
+                conn, _q_target,
+                insights=_q_insights,
+                topic_list=_q_topic_list if _q_topic_list else None,
+                output_path=_q_tmp,
+            )
+            st.write("✅ PPTX生成完了")
+            _status.update(label="✅ 完了！", state="complete")
+
+        with open(_q_tmp, "rb") as _f:
+            st.download_button(
+                f"⬇️ {_q_target}_分析レポート.pptx をダウンロード",
+                data=_f.read(),
+                file_name=_q_tmp.name,
+                mime=(
+                    "application/vnd.openxmlformats-officedocument"
+                    ".presentationml.presentation"
+                ),
+                type="primary",
+                use_container_width=True,
+                key="q_dl",
+            )
 
 
 # ============================================================================

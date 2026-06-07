@@ -23,6 +23,7 @@ from pptx.util import Inches, Pt
 
 from . import analysis, text_analysis
 from .llm import InsightResult
+from .topics import Topic
 
 # --- palette --------------------------------------------------------------- #
 NAVY = RGBColor(0x1F, 0x3A, 0x5F)
@@ -314,6 +315,45 @@ def _slide_insights_action(prs, insights):
              insights.improvements or ["（なし）"], size=15)
 
 
+def _slide_topics(prs, topic_list: list[Topic]) -> None:
+    slide = _blank(prs)
+    _title_bar(
+        slide, "トピック分析",
+        f"{len(topic_list)} トピックを抽出（TF-IDF + KMeans / 仮 BERTopic）",
+    )
+
+    rows = []
+    for t in topic_list[:8]:
+        rows.append([
+            f"#{t.id + 1}",
+            t.label,
+            f"{t.count} 件",
+            f"{t.share}%",
+            "　/　".join(t.keywords[:5]),
+        ])
+    row_h = min(Inches(0.44), Inches(4.5 / max(len(rows), 1)))
+    if rows:
+        _table(
+            slide, Inches(0.5), Inches(1.4), Inches(12.3), row_h * len(rows),
+            ["#", "トピック", "件数", "割合", "代表キーワード"], rows,
+            header_fill=BLUE,
+        )
+
+    # sample quotes for top-2 topics
+    y = Inches(1.4) + row_h * len(rows) + Inches(0.25)
+    for t in topic_list[:2]:
+        if not t.samples or y > Inches(6.8):
+            break
+        _textbox(slide, Inches(0.5), y, Inches(12.3), Inches(0.3),
+                 f"【{t.label}】", size=12, bold=True, color=NAVY)
+        y += Inches(0.32)
+        sample = t.samples[0]
+        display = (sample[:150] + "…") if len(sample) > 150 else sample
+        _textbox(slide, Inches(0.8), y, Inches(11.8), Inches(0.45),
+                 f"「{display}」", size=11, color=GREY)
+        y += Inches(0.52)
+
+
 # --------------------------------------------------------------------------- #
 # public entry point
 # --------------------------------------------------------------------------- #
@@ -322,6 +362,7 @@ def build_report(
     target_name: str,
     axis: str = "comparison_avg",
     insights: Optional[InsightResult] = None,
+    topic_list: Optional[list[Topic]] = None,
     output_path: str | Path = "report.pptx",
 ) -> Path:
     prs = Presentation()
@@ -347,6 +388,8 @@ def build_report(
         _slide_top5(prs, comp)
     if not profile.empty:
         _slide_text_analysis(prs, profile)
+    if topic_list:
+        _slide_topics(prs, topic_list)
     _slide_insights_sw(prs, insights)
     _slide_insights_action(prs, insights)
 
