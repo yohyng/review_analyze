@@ -335,7 +335,13 @@ elif page == "🔍 施設を選ぶ":
             st.subheader(f"📋 {selected}")
 
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("口コミ件数", f"{stats['n_reviews']} 件")
+            _n_text = stats.get("n_text_reviews", stats["n_reviews"])
+            _n_delta = stats["n_reviews"] - _n_text
+            _count_label = (
+                f"{stats['n_reviews']} 件（本文あり {_n_text} 件）"
+                if _n_delta > 0 else f"{stats['n_reviews']} 件"
+            )
+            c1.metric("口コミ件数", _count_label)
             c2.metric(
                 "期間",
                 f"{stats['date_oldest']} 〜 {stats['date_newest']}"
@@ -360,9 +366,9 @@ elif page == "🔍 施設を選ぶ":
             else:
                 badges.append("⚠️ 口コミなし")
             if stats["can_tfidf"]:
-                badges.append("✅ テキスト分析可")
+                badges.append(f"✅ テキスト分析可（本文あり {_n_text} 件）")
             else:
-                badges.append("⚠️ テキスト分析には口コミ3件以上必要")
+                badges.append(f"⚠️ テキスト分析には本文付き口コミ3件以上必要（現在 {_n_text} 件）")
             if stats["can_score"]:
                 badges.append("✅ スコア比較可")
             else:
@@ -440,13 +446,21 @@ elif page == "🔍 施設を選ぶ":
                 st.info("施設データが見つかりません。")
             else:
                 _rev_rows = conn.execute(
-                    """SELECT rating, text FROM review
-                       WHERE facility_id = ? AND text IS NOT NULL AND text != ''""",
+                    "SELECT rating, text FROM review WHERE facility_id = ?",
                     (_fid_row["id"],),
                 ).fetchall()
-                _revs = [(_r["rating"], _r["text"]) for _r in _rev_rows]
-                if len(_revs) < 2:
-                    st.info("トピック分析には口コミが2件以上必要です。")
+                _revs = [(_r["rating"], _r["text"] or "") for _r in _rev_rows]
+                _n_text = sum(1 for _, t in _revs if t and t.strip())
+                if _n_text < 2:
+                    _n_total = len(_revs)
+                    if _n_total > _n_text:
+                        st.info(
+                            f"テキスト付き口コミが {_n_text} 件です"
+                            f"（全 {_n_total} 件のうち {_n_total - _n_text} 件は評価のみ）。"
+                            f"トピック分析には本文が2件以上必要です。"
+                        )
+                    else:
+                        st.info("トピック分析には口コミの本文が2件以上必要です。")
                 else:
                     _n = st.slider("トピック数", 2, 10, 5, key=f"topic_n_{target}")
                     with st.spinner("トピック分析中…（TF-IDF + KMeans / 仮 BERTopic）"):

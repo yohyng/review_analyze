@@ -201,9 +201,14 @@ def facility_stats(conn: sqlite3.Connection, facility_name: str) -> dict | None:
                   MIN(review_date) as oldest,
                   MAX(review_date) as newest,
                   AVG(CAST(rating AS REAL)) as avg_r
-           FROM review WHERE facility_id = ? AND text IS NOT NULL""",
+           FROM review WHERE facility_id = ?""",
         (fid,),
     ).fetchone()
+
+    n_text = conn.execute(
+        "SELECT COUNT(*) FROM review WHERE facility_id = ? AND text IS NOT NULL AND text != ''",
+        (fid,),
+    ).fetchone()[0]
 
     score_axes = [
         r["metric_name"]
@@ -214,7 +219,7 @@ def facility_stats(conn: sqlite3.Connection, facility_name: str) -> dict | None:
     ]
 
     n = rev["cnt"] or 0
-    can_tfidf = n >= 3          # minimum for meaningful keyword extraction
+    can_tfidf = n_text >= 3     # minimum for meaningful keyword extraction
     can_score = bool(score_axes)
 
     def _short_date(d: str | None) -> str:
@@ -224,6 +229,7 @@ def facility_stats(conn: sqlite3.Connection, facility_name: str) -> dict | None:
         "name": facility_name,
         "type": config.FACILITY_TYPES.get(row["type"], row["type"] or "-"),
         "n_reviews": n,
+        "n_text_reviews": n_text,
         "date_oldest": _short_date(rev["oldest"]),
         "date_newest": _short_date(rev["newest"]),
         "avg_rating": round(rev["avg_r"], 2) if rev["avg_r"] else None,
