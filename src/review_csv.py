@@ -16,11 +16,25 @@ from __future__ import annotations
 import ast
 import hashlib
 import io
+import re
+import urllib.parse
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+# 47 prefectures — used to split "施設名 + 住所" query strings
+PREFECTURES = [
+    "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
+    "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
+    "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県",
+    "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県",
+    "奈良県", "和歌山県", "鳥取県", "島根県", "岡山県", "広島県", "山口県",
+    "徳島県", "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県",
+    "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
+]
 
 
 @dataclass
@@ -128,10 +142,95 @@ def _fallback_id(text: str, date: str, reviewer: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# facility-name inference (which facility is this CSV about?)
+# --------------------------------------------------------------------------- #
+def _strip_address(text: str) -> str:
+    """'風の海 山口県下関市…' -> '風の海' (cut at prefecture, else first space)."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    for pref in PREFECTURES:
+        idx = text.find(pref)
+        if idx > 0:
+            return text[:idx].strip(" 　,、")
+    parts = re.split(r"[ 　]", text, maxsplit=1)
+    return parts[0].strip()
+
+
+def _decode_query_name(input_cell: str, url_cell: str) -> str:
+    """Pull a facility name out of the search-URL `query=` parameter."""
+    url = ""
+    obj = _safe_literal(input_cell)
+    if isinstance(obj, dict):
+        url = obj.get("url", "")
+    if not url:
+        url = url_cell or ""
+    if not url:
+        return ""
+    try:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        q = qs.get("query", [""])[0]
+    except (ValueError, KeyError):
+        q = ""
+    return _strip_address(urllib.parse.unquote(q))
+
+
+def _facility_key_name(row: dict) -> tuple[str, str]:
+    """Return (grouping_key, display_name) for one row."""
+    name = _col(row, "place_name")
+    if not name:
+        name = _decode_query_name(_col(row, "input"), _col(row, "url"))
+    key = _col(row, "place_id") or _col(row, "cid") or name
+    return key, name
+
+
+def infer_facilities(source) -> list[dict]:
+    """Inspect a CSV and guess which facility/facilities it covers.
+
+    Returns a list (most reviews first) of:
+        {key, name, count, avg_rating}
+    One entry per detected facility — a single CSV may contain several.
+    """
+    df = _read_dataframe(_load_text(source))
+    groups: dict[str, dict] = {}
+    for row in df.to_dict("records"):
+        if _col(row, "error", "error_code"):
+            continue
+        if not _col(row, "review") and not _col(row, "review_rating"):
+            continue
+        key, name = _facility_key_name(row)
+        key = key or "(不明)"
+        g = groups.setdefault(key, {"names": Counter(), "count": 0, "ratings": []})
+        if name:
+            g["names"][name] += 1
+        g["count"] += 1
+        r = _to_float(_col(row, "review_rating"))
+        if r is not None:
+            g["ratings"].append(r)
+
+    out = []
+    for key, g in groups.items():
+        name = g["names"].most_common(1)[0][0] if g["names"] else "(不明)"
+        ratings = g["ratings"]
+        out.append({
+            "key": key,
+            "name": name,
+            "count": g["count"],
+            "avg_rating": round(sum(ratings) / len(ratings), 2) if ratings else None,
+        })
+    out.sort(key=lambda x: -x["count"])
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # public API
 # --------------------------------------------------------------------------- #
-def parse_reviews(source) -> ParseResult:
-    """Parse a review CSV/TSV (path or file-like) into a ParseResult."""
+def parse_reviews(source, facility_key: Optional[str] = None) -> ParseResult:
+    """Parse a review CSV/TSV (path or file-like) into a ParseResult.
+
+    If facility_key is given, only rows belonging to that facility (per
+    infer_facilities' grouping) are included — used for multi-facility CSVs.
+    """
     df = _read_dataframe(_load_text(source))
     records = df.to_dict("records")
 
@@ -143,6 +242,10 @@ def parse_reviews(source) -> ParseResult:
         # skip scraper-error rows
         if _col(row, "error", "error_code"):
             n_skipped += 1
+            continue
+
+        # multi-facility filter
+        if facility_key is not None and _facility_key_name(row)[0] != facility_key:
             continue
 
         text = _col(row, "review")

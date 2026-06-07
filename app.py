@@ -30,8 +30,10 @@ from src import (
     report,
     review_csv,
     score_excel,
+    scoring,
     search,
     text_analysis,
+    topics,
 )
 
 st.set_page_config(page_title="口コミ分析", page_icon="📊", layout="wide")
@@ -93,6 +95,45 @@ if page == "📥 データ登録":
     with tab_csv:
         st.caption("KAIZODE などからDLした口コミCSV/TSVを投げ込みます（施設名は手入力）。")
 
+        uploaded = st.file_uploader(
+            "口コミ CSV / TSV", type=["csv", "tsv", "txt"], key="csv_upload"
+        )
+
+        # ── Facility inference from CSV ──────────────────────────────────── #
+        facility_key_for_parse = None
+        if uploaded:
+            try:
+                inferred = review_csv.infer_facilities(uploaded)
+                uploaded.seek(0)
+            except Exception:
+                inferred = []
+
+            if len(inferred) > 1:
+                st.info(f"このCSVには **{len(inferred)} 施設** のデータが含まれています。")
+                fac_opts = []
+                for _f in inferred:
+                    _r = f" / ★{_f['avg_rating']}" if _f["avg_rating"] else ""
+                    fac_opts.append(f"{_f['name']} ({_f['count']}件{_r})")
+                picked = st.selectbox(
+                    "取り込む施設を選択", range(len(inferred)),
+                    format_func=lambda i: fac_opts[i], key="fac_pick",
+                )
+                chosen_fac = inferred[picked]
+                facility_key_for_parse = chosen_fac["key"]
+                if chosen_fac["name"] and st.button(
+                    f"施設名に「{chosen_fac['name']}」を使う", key="autofill_multi"
+                ):
+                    st.session_state["csv_fac_confirm"] = chosen_fac["name"]
+                    st.rerun()
+            elif len(inferred) == 1:
+                _f = inferred[0]
+                _r = f" / 平均 ★{_f['avg_rating']}" if _f["avg_rating"] else ""
+                st.info(f"📍 推定施設: **{_f['name']}** — {_f['count']}件{_r}")
+                if _f["name"] and not st.session_state.get("csv_fac_confirm"):
+                    if st.button(f"施設名に「{_f['name']}」を使う", key="autofill_single"):
+                        st.session_state["csv_fac_confirm"] = _f["name"]
+                        st.rerun()
+
         col1, col2 = st.columns(2)
         with col1:
             facility_name_input = st.text_input(
@@ -110,7 +151,7 @@ if page == "📥 データ登録":
             existing = analysis.facility_names(conn)
             hints = search.suggest(facility_name_input.strip(), existing)
             if hints:
-                st.info(f"DBにこんな施設が見つかりました")
+                st.info("DBにこんな施設が見つかりました")
                 cols = st.columns(len(hints))
                 for col, h in zip(cols, hints):
                     with col:
@@ -124,13 +165,9 @@ if page == "📥 データ登録":
         if facility_name and facility_name != facility_name_input.strip():
             st.success(f"施設名: **{facility_name}** を使用します")
 
-        uploaded = st.file_uploader(
-            "口コミ CSV / TSV", type=["csv", "tsv", "txt"], key="csv_upload"
-        )
-
         if uploaded and facility_name:
             try:
-                result = review_csv.parse_reviews(uploaded)
+                result = review_csv.parse_reviews(uploaded, facility_key=facility_key_for_parse)
             except Exception as e:
                 st.error(f"パースに失敗しました: {e}")
                 st.stop()
@@ -163,9 +200,11 @@ if page == "📥 データ登録":
                     total_reviews=result.total_reviews,
                 )
                 inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
+                n_axes = scoring.compute_and_store(conn, fid)
                 st.success(
                     f"✅ 「{facility_name}」に {inserted} 件保存"
                     f"（重複スキップ {skipped} 件）"
+                    + (f" / 定量スコア {n_axes} 軸を自動算出しました" if n_axes else "")
                 )
                 st.session_state.pop("csv_fac_confirm", None)
         elif uploaded and not facility_name:
@@ -351,8 +390,8 @@ elif page == "🔍 施設を選ぶ":
         st.divider()
         st.subheader(f"📊 分析結果 — {target}")
 
-        tab_score, tab_text, tab_report = st.tabs(
-            ["📈 強み・弱み", "💬 テキスト & インサイト", "📑 レポート出力"]
+        tab_score, tab_topic, tab_text, tab_report = st.tabs(
+            ["📈 強み・弱み", "🗂️ トピック分析", "💬 テキスト & インサイト", "📑 レポート出力"]
         )
 
         # ── Score tab ─────────────────────────────────────────────────── #
@@ -391,6 +430,43 @@ elif page == "🔍 施設を選ぶ":
                     with c2:
                         st.markdown("**⚠️ 弱み TOP5**")
                         st.dataframe(w, use_container_width=True, hide_index=True)
+
+        # ── Topic tab ─────────────────────────────────────────────────── #
+        with tab_topic:
+            _fid_row = conn.execute(
+                "SELECT id FROM facility WHERE name = ?", (target,)
+            ).fetchone()
+            if not _fid_row:
+                st.info("施設データが見つかりません。")
+            else:
+                _rev_rows = conn.execute(
+                    """SELECT rating, text FROM review
+                       WHERE facility_id = ? AND text IS NOT NULL AND text != ''""",
+                    (_fid_row["id"],),
+                ).fetchall()
+                _revs = [(_r["rating"], _r["text"]) for _r in _rev_rows]
+                if len(_revs) < 2:
+                    st.info("トピック分析には口コミが2件以上必要です。")
+                else:
+                    _n = st.slider("トピック数", 2, 10, 5, key=f"topic_n_{target}")
+                    with st.spinner("トピック分析中…（TF-IDF + KMeans / 仮 BERTopic）"):
+                        _topic_list = topics.extract_topics(_revs, n_topics=_n)
+                    if not _topic_list:
+                        st.info("トピックを抽出できませんでした。")
+                    else:
+                        st.caption("⚠️ 現在は TF-IDF + KMeans による仮実装です（BERTopic に差し替え予定）")
+                        for _t in _topic_list:
+                            with st.expander(
+                                f"**{_t.label}** — {_t.count}件 ({_t.share}%)",
+                                expanded=True,
+                            ):
+                                st.markdown("**キーワード**: " + "　/　".join(_t.keywords))
+                                for _i, _s in enumerate(_t.samples, 1):
+                                    st.text_area(
+                                        f"代表口コミ {_i}", _s, height=80,
+                                        key=f"topic_{target}_{_t.id}_{_i}",
+                                        disabled=True,
+                                    )
 
         # ── Text tab ──────────────────────────────────────────────────── #
         with tab_text:
