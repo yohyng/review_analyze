@@ -1,18 +1,77 @@
-"""SQLite storage for the ingestion layer.
+"""Storage layer — Turso (libSQL) when credentials are set, local SQLite otherwise.
 
-Schema (minimal, driven by the whiteboard flow):
-    facility          - 施設マスタ (step 1/2, name is hand-typed)
-    review            - 口コミ本文 (step 3, from KAIZODE/Google CSV)
-    review_subscore   - review_details を展開した Google 軸スコア (Rooms/Service/...)
-    score             - 既存Excelの独自定量化指標 (step 4)
+  TURSO_URL   wss://your-db-xxx.turso.io
+  TURSO_TOKEN eyJh...
+
+Set both as environment variables or Streamlit secrets.  When neither is
+present the app uses a local SQLite file (data/reviews.db) as before.
+
+Schema:
+    facility          - 施設マスタ
+    review            - 口コミ本文
+    review_subscore   - Google 軸スコア (Rooms/Service/...)
+    score             - 定量化指標 (Excel / auto)
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Iterable, Optional
 
 from . import config
+
+
+# --------------------------------------------------------------------------- #
+# Row factory — sqlite3.Row-compatible object for both sqlite3 and libsql
+# --------------------------------------------------------------------------- #
+class _Row:
+    """sqlite3.Row-compatible: supports row["col"], row[0], and positional iteration.
+
+    Intentionally NOT a dict subclass so pandas treats it as a sequence and
+    pd.DataFrame(rows, columns=[...]) assigns columns positionally.
+    """
+
+    __slots__ = ("_cols", "_vals", "_map")
+
+    def __init__(self, cols, vals):
+        self._cols = list(cols)
+        self._vals = list(vals)
+        self._map = dict(zip(self._cols, self._vals))
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._vals[key]
+        return self._map[key]
+
+    def __iter__(self):  # yields values like sqlite3.Row
+        return iter(self._vals)
+
+    def __len__(self):
+        return len(self._vals)
+
+    def keys(self):
+        return self._cols
+
+
+def _row_factory(cursor, row):
+    cols = [d[0] for d in cursor.description]
+    return _Row(cols, row)
+
+
+# --------------------------------------------------------------------------- #
+# Secret helper
+# --------------------------------------------------------------------------- #
+def _secret(key: str) -> str:
+    """Read key from env var, then Streamlit secrets, else empty string."""
+    val = os.environ.get(key, "")
+    if not val:
+        try:
+            import streamlit as st
+            val = st.secrets.get(key, "") or ""
+        except Exception:
+            pass
+    return val
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS facility (
@@ -63,18 +122,40 @@ CREATE INDEX IF NOT EXISTS idx_score_facility ON score(facility_id);
 """
 
 
-def get_conn(db_path: Optional[Path | str] = None) -> sqlite3.Connection:
-    """Open (and lazily create) the SQLite database."""
-    path = Path(db_path) if db_path is not None else config.DB_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+def get_conn(db_path: Optional[Path | str] = None):
+    """Return a DB connection.
+
+    Uses Turso when TURSO_URL + TURSO_TOKEN are set; otherwise local SQLite.
+    The returned object is API-compatible with sqlite3.Connection for all
+    operations used in this codebase.
+    """
+    url = _secret("TURSO_URL")
+    token = _secret("TURSO_TOKEN")
+
+    if url and token:
+        try:
+            import libsql_experimental as libsql  # noqa: PLC0415
+            conn = libsql.connect(sync_url=url, auth_token=token)
+        except ImportError as exc:
+            raise RuntimeError(
+                "libsql-experimental is required for Turso. "
+                "Run: pip install libsql-experimental"
+            ) from exc
+    else:
+        path = Path(db_path) if db_path is not None else config.DB_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+        conn.execute("PRAGMA foreign_keys = ON")
+
+    conn.row_factory = _row_factory
     return conn
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
+def init_db(conn) -> None:
+    """Create tables / indexes.  Split SCHEMA into individual statements
+    so this works with both sqlite3.executescript() and libsql.execute()."""
+    for stmt in (s.strip() for s in SCHEMA.split(";") if s.strip()):
+        conn.execute(stmt)
     conn.commit()
 
 
