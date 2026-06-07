@@ -1,10 +1,14 @@
 """Storage layer — Turso (libSQL) when credentials are set, local SQLite otherwise.
 
-  TURSO_URL   wss://your-db-xxx.turso.io
-  TURSO_TOKEN eyJh...
+  TURSO_URL   libsql://your-db-xxx.turso.io   (copy from Turso dashboard)
+  TURSO_TOKEN eyJh...                          (create via "+ Create Token")
 
 Set both as environment variables or Streamlit secrets.  When neither is
 present the app uses a local SQLite file (data/reviews.db) as before.
+
+Turso is accessed via the HTTP v2/pipeline API using only `requests` — no
+native extensions required, so it works on every platform including
+Streamlit Cloud.
 
 Schema:
     facility          - 施設マスタ
@@ -57,6 +61,113 @@ class _Row:
 def _row_factory(cursor, row):
     cols = [d[0] for d in cursor.description]
     return _Row(cols, row)
+
+
+# --------------------------------------------------------------------------- #
+# Turso HTTP client (no native extensions — works everywhere)
+# --------------------------------------------------------------------------- #
+class _TursoCursor:
+    """Minimal sqlite3.Cursor-compatible object backed by Turso HTTP results."""
+
+    def __init__(self, description, rows, lastrowid=None):
+        self.description = description   # tuple of (col_name, ...) 7-tuples
+        self._rows = rows                # list of plain Python lists
+        self.lastrowid = lastrowid
+        self.row_factory = None
+
+    def fetchone(self):
+        if not self._rows:
+            return None
+        row = self._rows[0]
+        return self.row_factory(self, row) if self.row_factory else row
+
+    def fetchall(self):
+        if self.row_factory:
+            return [self.row_factory(self, r) for r in self._rows]
+        return list(self._rows)
+
+    def __getitem__(self, key):
+        return self.fetchall()[key]
+
+
+def _turso_call(session, base_url, sql, params):
+    """POST one SQL statement to Turso v2/pipeline. Returns _TursoCursor."""
+    args = []
+    for p in params:
+        if p is None:
+            args.append({"type": "null"})
+        elif isinstance(p, bool):
+            args.append({"type": "integer", "value": str(int(p))})
+        elif isinstance(p, int):
+            args.append({"type": "integer", "value": str(p)})
+        elif isinstance(p, float):
+            args.append({"type": "float", "value": p})
+        else:
+            args.append({"type": "text", "value": str(p)})
+
+    payload = {
+        "requests": [
+            {"type": "execute", "stmt": {"sql": sql, "args": args}},
+            {"type": "close"},
+        ]
+    }
+    resp = session.post(f"{base_url}/v2/pipeline", json=payload, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    res0 = data["results"][0]
+    if res0.get("type") == "error":
+        raise RuntimeError(f"Turso: {res0['error']['message']}")
+
+    result = res0["response"]["result"]
+    desc = tuple(
+        (c["name"], None, None, None, None, None, None)
+        for c in result.get("cols", [])
+    )
+    rows = []
+    for raw in result.get("rows", []):
+        row = []
+        for cell in raw:
+            t, v = cell.get("type"), cell.get("value")
+            if t == "null" or v is None:
+                row.append(None)
+            elif t == "integer":
+                row.append(int(v))
+            elif t == "float":
+                row.append(float(v))
+            else:
+                row.append(v)
+        rows.append(row)
+
+    last = result.get("last_insert_rowid")
+    return _TursoCursor(desc, rows, int(last) if last else None)
+
+
+class _TursoConn:
+    """sqlite3.Connection-compatible wrapper using the Turso HTTP v2 API.
+
+    Uses only `requests` — no native extensions required.
+    """
+
+    def __init__(self, url: str, token: str):
+        import requests  # noqa: PLC0415
+        self._session = requests.Session()
+        url = url.replace("libsql://", "https://").replace("wss://", "https://")
+        self._base_url = url.rstrip("/")
+        self._session.headers["Authorization"] = f"Bearer {token}"
+        self._session.headers["Content-Type"] = "application/json"
+        self.row_factory = None
+
+    def execute(self, sql: str, params=()):
+        cur = _turso_call(self._session, self._base_url, sql, params)
+        cur.row_factory = self.row_factory
+        return cur
+
+    def commit(self):
+        pass  # Turso HTTP is auto-commit per execute
+
+    def close(self):
+        self._session.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -133,14 +244,7 @@ def get_conn(db_path: Optional[Path | str] = None):
     token = _secret("TURSO_TOKEN")
 
     if url and token:
-        try:
-            import libsql_experimental as libsql  # noqa: PLC0415
-            conn = libsql.connect(sync_url=url, auth_token=token)
-        except ImportError as exc:
-            raise RuntimeError(
-                "libsql-experimental is required for Turso. "
-                "Run: pip install libsql-experimental"
-            ) from exc
+        conn = _TursoConn(url, token)
     else:
         path = Path(db_path) if db_path is not None else config.DB_PATH
         path.parent.mkdir(parents=True, exist_ok=True)

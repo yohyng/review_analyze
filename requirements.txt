@@ -1,6 +1,5 @@
 # --- ingestion layer (steps 1-4) ---
 streamlit>=1.30
-libsql-experimental>=0.3   # Turso (libSQL) client; falls back to local SQLite if not configured
 pandas>=2.0
 openpyxl>=3.1        # .xlsx reading
 pytest>=8.0          # tests
