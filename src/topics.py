@@ -38,14 +38,17 @@ def extract_topics(
 
     Empty list if there are too few reviews to cluster.
     """
-    texts = [t for _, t in reviews if t and t.strip()]
-    if len(texts) < 2:
+    raw_texts = [t for _, t in reviews if t and t.strip()]
+    if len(raw_texts) < 2:
         return []
 
-    docs = [" ".join(text_analysis.tokenize(t)) for t in texts]
-    docs = [d for d in docs if d.strip()]
-    if len(docs) < 2:
+    # Tokenize and keep texts+docs in sync — filter both together so indices match
+    pairs = [(t, " ".join(text_analysis.tokenize(t))) for t in raw_texts]
+    pairs = [(t, d) for t, d in pairs if d.strip()]
+    if len(pairs) < 2:
         return []
+    texts = [t for t, _ in pairs]
+    docs  = [d for _, d in pairs]
 
     from sklearn.cluster import KMeans
     from sklearn.feature_extraction.text import TfidfVectorizer
