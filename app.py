@@ -161,28 +161,47 @@ if page == "📥 データ登録":
                 ):
                     with st.status(f"保存中... 0 / {len(selected_fac)} 完了", expanded=True) as status:
                         for i, chosen_fac in enumerate(selected_fac, 1):
-                            st.write(f"⏳ {chosen_fac['name']} を処理中...")
-                            try:
-                                result = review_csv.parse_reviews(uploaded, facility_key=chosen_fac["key"])
-                                uploaded.seek(0)
-                            except Exception as e:
-                                st.error(f"「{chosen_fac['name']}」パース失敗: {e}")
-                                continue
+                            with st.status(f"🔄 {chosen_fac['name']} 処理中...", expanded=False) as fac_status:
+                                try:
+                                    st.write(f"📖 {len(chosen_fac['reviews']) if 'reviews' in chosen_fac else '?'} 件のデータを解析中...")
+                                    result = review_csv.parse_reviews(uploaded, facility_key=chosen_fac["key"])
+                                    uploaded.seek(0)
+                                    st.write(f"✅ {len(result.reviews)} 件のパース完了")
+                                except Exception as e:
+                                    st.error(f"パース失敗: {e}")
+                                    fac_status.update(label=f"❌ {chosen_fac['name']} パース失敗", state="error")
+                                    continue
 
-                            fid = db.upsert_facility(
-                                conn, chosen_fac["name"], ftype=ftype,
-                                category=result.category,
-                                general_rating=result.general_rating,
-                                total_reviews=result.total_reviews,
-                            )
-                            inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
-                            n_axes = scoring.compute_and_store(conn, fid)
-                            msg = f"✅ {chosen_fac['name']} — {inserted} 件保存"
-                            if skipped:
-                                msg += f"（重複 {skipped} 件スキップ）"
-                            if n_axes:
-                                msg += f" / スコア {n_axes} 軸算出"
-                            st.write(msg)
+                                try:
+                                    st.write("💾 DB に施設情報・口コミを保存中...")
+                                    fid = db.upsert_facility(
+                                        conn, chosen_fac["name"], ftype=ftype,
+                                        category=result.category,
+                                        general_rating=result.general_rating,
+                                        total_reviews=result.total_reviews,
+                                    )
+                                    inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
+                                    st.write(f"✅ {inserted} 件の口コミを保存（重複 {skipped} 件スキップ）")
+                                except Exception as e:
+                                    st.error(f"DB保存失敗: {e}")
+                                    fac_status.update(label=f"❌ {chosen_fac['name']} 保存失敗", state="error")
+                                    continue
+
+                                try:
+                                    st.write("🔢 定量スコアを算出中...")
+                                    n_axes = scoring.compute_and_store(conn, fid)
+                                    if n_axes:
+                                        st.write(f"✅ {n_axes} 軸のスコアを自動算出")
+                                    else:
+                                        st.write("ℹ️ スコアデータなし")
+                                except Exception as e:
+                                    st.warning(f"スコア算出スキップ: {e}")
+
+                                fac_status.update(
+                                    label=f"✅ {chosen_fac['name']} 完了（{inserted}件保存）",
+                                    state="complete"
+                                )
+
                             status.update(label=f"保存中... {i} / {len(selected_fac)} 完了")
 
                         status.update(label=f"✅ {len(selected_fac)} 施設の保存が完了しました", state="complete")
