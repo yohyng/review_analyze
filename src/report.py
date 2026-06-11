@@ -361,6 +361,7 @@ def build_report(
     conn: sqlite3.Connection,
     target_name: str,
     axis: str = "comparison_avg",
+    specific_name: Optional[str] = None,
     insights: Optional[InsightResult] = None,
     topic_list: Optional[list[Topic]] = None,
     output_path: str | Path = "report.pptx",
@@ -369,7 +370,7 @@ def build_report(
     prs.slide_width = SLIDE_W
     prs.slide_height = SLIDE_H
 
-    comp = analysis.build_comparison(conn, target_name, axis)
+    comp = analysis.build_comparison(conn, target_name, axis, specific_name=specific_name)
     if comp is None:
         comp = analysis.build_comparison(conn, target_name, "all_avg")
     profile = text_analysis.build_profile(conn, target_name, top_n=20)

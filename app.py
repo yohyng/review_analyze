@@ -506,6 +506,7 @@ elif page == "⚡ クイックレポート":
         st.info("施設データがありません。📥 データ登録から口コミCSVを投入してください。")
         st.stop()
 
+    # ── 対象施設 & トピック数 ──────────────────────────────────────────── #
     _qc1, _qc2 = st.columns([3, 1])
     with _qc1:
         _q_target = st.selectbox(
@@ -518,6 +519,39 @@ elif page == "⚡ クイックレポート":
     with _qc2:
         _q_n_topics = st.slider("トピック数", 2, 10, 5, key="q_n_topics")
 
+    # ── 分析モード ────────────────────────────────────────────────────── #
+    _q_mode = st.radio(
+        "分析モード",
+        ["🏠 単体分析", "🆚 比較分析"],
+        horizontal=True,
+        key="q_mode",
+    )
+
+    _q_axis = "comparison_avg"
+    _q_specific = None
+
+    if _q_mode == "🆚 比較分析":
+        _others = [n for n in _q_names if n != _q_target]
+        if not _others:
+            st.warning("比較できる他の施設がDBにありません。")
+        else:
+            _q_axis_label = st.radio(
+                "比較基準",
+                ["比較施設の平均", "DB全体の平均", "特定施設1つを指定"],
+                horizontal=True,
+                key="q_axis_label",
+            )
+            if _q_axis_label == "比較施設の平均":
+                _q_axis = "comparison_avg"
+                st.caption("種別「比較施設」として登録された施設の平均と比較します。")
+            elif _q_axis_label == "DB全体の平均":
+                _q_axis = "all_avg"
+                st.caption("DB内の全施設（対象施設を除く）の平均と比較します。")
+            else:
+                _q_axis = "specific"
+                _q_specific = st.selectbox("比較先施設", _others, key="q_specific")
+
+    # ── API キー ──────────────────────────────────────────────────────── #
     _q_api_key = llm.get_api_key()
     if not _q_api_key:
         _q_api_key = st.text_input(
@@ -526,6 +560,7 @@ elif page == "⚡ クイックレポート":
             help="aistudio.google.com で無料取得できます",
         )
 
+    st.divider()
     if st.button("🚀 レポートを一気通貫生成", type="primary",
                  use_container_width=True, key="q_run"):
         _q_fid = conn.execute(
@@ -571,7 +606,7 @@ elif page == "⚡ クイックレポート":
             if _q_api_key and not _q_profile.empty:
                 st.write("✨ LLMインサイト生成中…")
                 _q_comp = (
-                    analysis.build_comparison(conn, _q_target, "comparison_avg")
+                    analysis.build_comparison(conn, _q_target, _q_axis, specific_name=_q_specific)
                     or analysis.build_comparison(conn, _q_target, "all_avg")
                 )
                 _q_diff = _q_comp.diff if _q_comp else None
@@ -598,6 +633,8 @@ elif page == "⚡ クイックレポート":
             _q_tmp = Path(tempfile.mkdtemp()) / f"{_q_target}_分析レポート.pptx"
             report.build_report(
                 conn, _q_target,
+                axis=_q_axis if _q_mode == "🆚 比較分析" else "comparison_avg",
+                specific_name=_q_specific,
                 insights=_q_insights,
                 topic_list=_q_topic_list if _q_topic_list else None,
                 output_path=_q_tmp,
