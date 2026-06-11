@@ -90,8 +90,8 @@ class _TursoCursor:
         return self.fetchall()[key]
 
 
-def _turso_call(session, base_url, sql, params):
-    """POST one SQL statement to Turso v2/pipeline. Returns _TursoCursor."""
+def _encode_params(params) -> list:
+    """Convert Python values to Turso v2/pipeline arg objects."""
     args = []
     for p in params:
         if p is None:
@@ -104,22 +104,14 @@ def _turso_call(session, base_url, sql, params):
             args.append({"type": "float", "value": p})
         else:
             args.append({"type": "text", "value": str(p)})
+    return args
 
-    payload = {
-        "requests": [
-            {"type": "execute", "stmt": {"sql": sql, "args": args}},
-            {"type": "close"},
-        ]
-    }
-    resp = session.post(f"{base_url}/v2/pipeline", json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
 
-    res0 = data["results"][0]
-    if res0.get("type") == "error":
-        raise RuntimeError(f"Turso: {res0['error']['message']}")
-
-    result = res0["response"]["result"]
+def _parse_turso_result(res, row_factory=None) -> "_TursoCursor":
+    """Parse one Turso pipeline result object into a _TursoCursor."""
+    if res.get("type") == "error":
+        raise RuntimeError(f"Turso: {res['error']['message']}")
+    result = res["response"]["result"]
     desc = tuple(
         (c["name"], None, None, None, None, None, None)
         for c in result.get("cols", [])
@@ -138,9 +130,24 @@ def _turso_call(session, base_url, sql, params):
             else:
                 row.append(v)
         rows.append(row)
-
     last = result.get("last_insert_rowid")
-    return _TursoCursor(desc, rows, int(last) if last else None)
+    cur = _TursoCursor(desc, rows, int(last) if last else None)
+    cur.row_factory = row_factory
+    return cur
+
+
+def _turso_call(session, base_url, sql, params):
+    """POST one SQL statement to Turso v2/pipeline. Returns _TursoCursor."""
+    payload = {
+        "requests": [
+            {"type": "execute", "stmt": {"sql": sql, "args": _encode_params(params)}},
+            {"type": "close"},
+        ]
+    }
+    resp = session.post(f"{base_url}/v2/pipeline", json=payload, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    return _parse_turso_result(data["results"][0])
 
 
 class _TursoConn:
@@ -162,6 +169,23 @@ class _TursoConn:
         cur = _turso_call(self._session, self._base_url, sql, params)
         cur.row_factory = self.row_factory
         return cur
+
+    def execute_pipeline(self, statements: list[tuple[str, tuple]]) -> None:
+        """Send multiple (sql, params) statements in ONE HTTP request (no result needed)."""
+        requests_body = [
+            {"type": "execute", "stmt": {"sql": sql, "args": _encode_params(params)}}
+            for sql, params in statements
+        ]
+        requests_body.append({"type": "close"})
+        resp = self._session.post(
+            f"{self._base_url}/v2/pipeline",
+            json={"requests": requests_body},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        for res in resp.json()["results"][:-1]:
+            if res.get("type") == "error":
+                raise RuntimeError(f"Turso: {res['error']['message']}")
 
     def commit(self):
         pass  # Turso HTTP is auto-commit per execute
@@ -302,40 +326,85 @@ def upsert_facility(
 # --------------------------------------------------------------------------- #
 # Reviews (+ sub-scores)
 # --------------------------------------------------------------------------- #
-def insert_reviews(conn: sqlite3.Connection, facility_id: int, reviews: Iterable) -> tuple[int, int]:
+def insert_reviews(
+    conn: sqlite3.Connection,
+    facility_id: int,
+    reviews: Iterable,
+    progress_callback=None,
+) -> tuple[int, int]:
     """Insert ParsedReview items. Dedups on (facility_id, review_id).
 
+    progress_callback(current: int, total: int) — called after each review.
     Returns (inserted, skipped_duplicates).
+
+    Turso optimisation: uses execute_pipeline() to send one review's INSERT +
+    all its subscore INSERTs in a single HTTP request (vs N+1 before).
+    Existence check is done in one bulk IN query upfront.
     """
+    reviews = list(reviews)
+    total = len(reviews)
+    if not total:
+        return 0, 0
+
+    # ── bulk EXISTS check — one query instead of one per review ──────────── #
+    rids = [r.review_id for r in reviews if r.review_id]
+    existing: set[str] = set()
+    _CHUNK = 900  # safely under SQLite/Turso variable limit (999)
+    for i in range(0, len(rids), _CHUNK):
+        chunk = rids[i: i + _CHUNK]
+        ph = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT review_id FROM review WHERE facility_id = ? AND review_id IN ({ph})",
+            (facility_id, *chunk),
+        ).fetchall()
+        for row in rows:
+            existing.add(row[0])
+
+    use_pipeline = hasattr(conn, "execute_pipeline")
+
     inserted = skipped = 0
-    for r in reviews:
-        rid = r.review_id
-        if rid:
-            exists = conn.execute(
-                "SELECT 1 FROM review WHERE facility_id = ? AND review_id = ?",
-                (facility_id, rid),
-            ).fetchone()
-            if exists:
-                skipped += 1
-                continue
-        cur = conn.execute(
-            """INSERT INTO review(
+    for idx, r in enumerate(reviews):
+        if r.review_id in existing:
+            skipped += 1
+            if progress_callback:
+                progress_callback(idx + 1, total)
+            continue
+
+        insert_sql = """INSERT INTO review(
                    facility_id, review_id, rating, text, review_date,
                    reviewer_name, local_guide, likes, owner_response, owner_response_date)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                facility_id, rid, r.rating, r.text, r.review_date,
-                r.reviewer_name, int(r.local_guide), r.likes,
-                r.owner_response, r.owner_response_date,
-            ),
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+        insert_params = (
+            facility_id, r.review_id, r.rating, r.text, r.review_date,
+            r.reviewer_name, int(r.local_guide), r.likes,
+            r.owner_response, r.owner_response_date,
         )
-        review_db_id = cur.lastrowid
-        for axis, value in r.subscores:
-            conn.execute(
-                "INSERT INTO review_subscore(review_db_id, axis, value) VALUES (?, ?, ?)",
-                (review_db_id, axis, value),
-            )
+
+        if use_pipeline and r.subscores:
+            # ── Turso: all INSERTs for one review in one HTTP request ──── #
+            stmts: list[tuple[str, tuple]] = [(insert_sql, insert_params)]
+            for axis, value in r.subscores:
+                stmts.append((
+                    """INSERT INTO review_subscore(review_db_id, axis, value)
+                       SELECT id, ?, ? FROM review
+                       WHERE facility_id = ? AND review_id = ?""",
+                    (axis, value, facility_id, r.review_id),
+                ))
+            conn.execute_pipeline(stmts)
+        else:
+            # ── SQLite sequential path ─────────────────────────────────── #
+            cur = conn.execute(insert_sql, insert_params)
+            review_db_id = cur.lastrowid
+            for axis, value in r.subscores:
+                conn.execute(
+                    "INSERT INTO review_subscore(review_db_id, axis, value) VALUES (?, ?, ?)",
+                    (review_db_id, axis, value),
+                )
+
         inserted += 1
+        if progress_callback:
+            progress_callback(idx + 1, total)
+
     conn.commit()
     return inserted, skipped
 

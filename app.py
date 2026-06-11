@@ -180,7 +180,15 @@ if page == "📥 データ登録":
                                         general_rating=result.general_rating,
                                         total_reviews=result.total_reviews,
                                     )
-                                    inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
+                                    n_total = len(result.reviews)
+                                    _pb = st.progress(0, text=f"0 / {n_total} 件")
+                                    inserted, skipped = db.insert_reviews(
+                                        conn, fid, result.reviews,
+                                        progress_callback=lambda cur, tot, pb=_pb: pb.progress(
+                                            cur / tot, text=f"{cur} / {tot} 件保存中..."
+                                        ),
+                                    )
+                                    _pb.empty()
                                     st.write(f"✅ {inserted} 件の口コミを保存（重複 {skipped} 件スキップ）")
                                 except Exception as e:
                                     st.error(f"DB保存失敗: {e}")
