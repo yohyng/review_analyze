@@ -441,6 +441,14 @@ def list_facilities(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM facility ORDER BY id").fetchall()
 
 
+def delete_facility(conn: sqlite3.Connection, facility_id: int) -> None:
+    """Delete a facility and all its reviews/subscores/scores (CASCADE)."""
+    conn.execute("DELETE FROM score WHERE facility_id = ?", (facility_id,))
+    conn.execute("DELETE FROM review WHERE facility_id = ?", (facility_id,))
+    conn.execute("DELETE FROM facility WHERE id = ?", (facility_id,))
+    conn.commit()
+
+
 def facility_stats(conn: sqlite3.Connection, facility_name: str) -> dict | None:
     """Rich stats for the 施設を選ぶ overview card. Returns None if not found."""
     row = conn.execute(

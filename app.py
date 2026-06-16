@@ -51,19 +51,19 @@ conn = _conn()
 
 # ── sidebar ──────────────────────────────────────────────────────────────── #
 st.sidebar.title("📊 口コミ分析")
-st.sidebar.markdown("**── 管理 ──**")
 page = st.sidebar.radio(
     "メニュー",
     [
-        "📥 データ登録",
-        "📋 取り込み状況",
-        "🔬 CSVプロファイラ",
-        "─────────",
         "⚡ クイックレポート",
+        "─── 詳細分析 ───",
         "🔍 施設を選ぶ",
         "📈 強み・弱み",
         "💬 テキスト & インサイト",
         "📑 レポート出力",
+        "─── データ管理 ───",
+        "📥 データ登録",
+        "📋 取り込み状況",
+        "🔬 CSVプロファイラ",
     ],
     label_visibility="collapsed",
 )
@@ -82,8 +82,8 @@ def _facility_selector(key: str) -> str | None:
     return st.selectbox("対象施設", names, index=default_idx, key=key)
 
 
-# separator acts as a disabled divider — skip it
-if page == "─────────":
+# separators act as disabled dividers — skip them
+if page in ("─── 詳細分析 ───", "─── データ管理 ───"):
     st.stop()
 
 
@@ -431,13 +431,45 @@ elif page == "📋 取り込み状況":
     st.header("📋 取り込み状況")
     overview = db.facility_overview(conn)
     if not overview:
-        st.info("まだデータがありません。📥 データ登録から始めてください。")
+        st.info("まだデータがありません。")
+        st.markdown("👉 **データ管理 → 📥 データ登録** から口コミCSVを投入してください。")
     else:
         st.dataframe(
             pd.DataFrame(overview).drop(columns=["id"]),
             use_container_width=True, hide_index=True,
         )
         st.caption(f"DB: {config.DB_PATH}")
+
+        st.divider()
+        st.subheader("施設の操作")
+        _del_names = [f["施設名"] for f in overview]
+        _del_col1, _del_col2 = st.columns([3, 1])
+        with _del_col1:
+            _del_target = st.selectbox("操作対象の施設", _del_names, key="del_target")
+        with _del_col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🗑️ 削除", key="del_btn", type="secondary"):
+                st.session_state["del_confirm"] = _del_target
+
+        if st.session_state.get("del_confirm") == _del_target:
+            st.warning(
+                f"「{_del_target}」とその口コミデータをすべて削除します。元に戻せません。"
+            )
+            _dc1, _dc2 = st.columns(2)
+            with _dc1:
+                if st.button("⚠️ はい、削除する", type="primary", key="del_yes"):
+                    _del_fid = conn.execute(
+                        "SELECT id FROM facility WHERE name = ?", (_del_target,)
+                    ).fetchone()
+                    if _del_fid:
+                        db.delete_facility(conn, _del_fid["id"])
+                    st.session_state.pop("del_confirm", None)
+                    st.success(f"「{_del_target}」を削除しました。")
+                    st.rerun()
+            with _dc2:
+                if st.button("キャンセル", key="del_no"):
+                    st.session_state.pop("del_confirm", None)
+                    st.rerun()
 
 
 # ============================================================================
@@ -496,17 +528,17 @@ elif page == "🔬 CSVプロファイラ":
 # ============================================================================
 elif page == "⚡ クイックレポート":
     st.header("⚡ クイックレポート")
-    st.caption(
-        "施設を選ぶだけで、スコア算出 → テキスト分析 → トピック分析 → "
-        "インサイト生成（任意）→ PPTX書き出しまで一気通貫で実行します。"
-    )
 
     _q_names = analysis.facility_names(conn)
     if not _q_names:
-        st.info("施設データがありません。📥 データ登録から口コミCSVを投入してください。")
+        st.info("まだ施設データがありません。")
+        st.markdown(
+            "👉 まず **データ管理 → 📥 データ登録** から口コミCSVを投入してください。"
+        )
         st.stop()
 
-    # ── 対象施設 & トピック数 ──────────────────────────────────────────── #
+    # ── ① 対象施設を選ぶ ─────────────────────────────────────────────── #
+    st.subheader("① 対象施設を選ぶ")
     _qc1, _qc2 = st.columns([3, 1])
     with _qc1:
         _q_target = st.selectbox(
@@ -515,16 +547,32 @@ elif page == "⚡ クイックレポート":
             index=_q_names.index(st.session_state["analysis_target"])
             if st.session_state.get("analysis_target") in _q_names else 0,
             key="q_target",
+            label_visibility="collapsed",
         )
     with _qc2:
         _q_n_topics = st.slider("トピック数", 2, 10, 5, key="q_n_topics")
 
-    # ── 分析モード ────────────────────────────────────────────────────── #
+    # 施設ステータスカード
+    _q_stats = db.facility_stats(conn, _q_target)
+    if _q_stats:
+        _cs = st.columns(4)
+        _cs[0].metric("口コミ数", f"{_q_stats['n_reviews']} 件")
+        _cs[1].metric("本文あり", f"{_q_stats['n_text_reviews']} 件")
+        _cs[2].metric("平均評点", f"★{_q_stats['avg_rating']}" if _q_stats['avg_rating'] else "-")
+        _cs[3].metric("スコア軸", f"{len(_q_stats['score_axes'])} 軸" if _q_stats['score_axes'] else "なし")
+        if _q_stats['date_oldest'] != "-":
+            st.caption(f"口コミ期間: {_q_stats['date_oldest']} 〜 {_q_stats['date_newest']}")
+
+    st.divider()
+
+    # ── ② 分析モード ──────────────────────────────────────────────────── #
+    st.subheader("② 分析モードを選ぶ")
     _q_mode = st.radio(
         "分析モード",
         ["🏠 単体分析", "🆚 比較分析"],
         horizontal=True,
         key="q_mode",
+        help="単体：その施設だけを深掘り。比較：他施設との強み・弱みを対比。",
     )
 
     _q_axis = "comparison_avg"
@@ -533,7 +581,8 @@ elif page == "⚡ クイックレポート":
     if _q_mode == "🆚 比較分析":
         _others = [n for n in _q_names if n != _q_target]
         if not _others:
-            st.warning("比較できる他の施設がDBにありません。")
+            st.warning("比較できる他の施設がDBにありません。単体分析でレポートを生成します。")
+            _q_mode = "🏠 単体分析"
         else:
             _q_axis_label = st.radio(
                 "比較基準",
@@ -543,26 +592,42 @@ elif page == "⚡ クイックレポート":
             )
             if _q_axis_label == "比較施設の平均":
                 _q_axis = "comparison_avg"
-                st.caption("種別「比較施設」として登録された施設の平均と比較します。")
+                _comp_peers = analysis.facilities_by_type(conn, "comparison")
+                if _comp_peers:
+                    st.caption(f"比較対象: {', '.join(_comp_peers)}")
+                else:
+                    st.warning("種別「比較施設」として登録された施設がありません。DB全体平均で代替します。")
+                    _q_axis = "all_avg"
             elif _q_axis_label == "DB全体の平均":
                 _q_axis = "all_avg"
-                st.caption("DB内の全施設（対象施設を除く）の平均と比較します。")
+                st.caption(f"比較対象: DB内の全施設（対象施設を除く {len(_others)} 施設の平均）")
             else:
                 _q_axis = "specific"
                 _q_specific = st.selectbox("比較先施設", _others, key="q_specific")
 
-    # ── API キー ──────────────────────────────────────────────────────── #
+    st.divider()
+
+    # ── ③ APIキー（任意）────────────────────────────────────────────── #
     _q_api_key = llm.get_api_key()
     if not _q_api_key:
-        _q_api_key = st.text_input(
-            "Gemini API キー（省略可 — なしでもレポートを生成できます）",
-            type="password", key="q_api",
-            help="aistudio.google.com で無料取得できます",
-        )
+        with st.expander("✨ LLMインサイトを追加する（任意）"):
+            _q_api_key = st.text_input(
+                "Gemini API キー",
+                type="password", key="q_api",
+                help="aistudio.google.com で無料取得できます。省略してもレポートを生成できます。",
+            )
 
-    st.divider()
-    if st.button("🚀 レポートを一気通貫生成", type="primary",
-                 use_container_width=True, key="q_run"):
+    # ── 実行ボタン ────────────────────────────────────────────────────── #
+    _q_btn_label = (
+        f"🚀 「{_q_target}」のレポートを生成"
+        if _q_mode == "🏠 単体分析"
+        else f"🚀 「{_q_target}」の比較レポートを生成"
+    )
+    if not (_q_stats and _q_stats["n_reviews"] > 0):
+        st.warning("この施設には口コミデータがありません。データ登録を確認してください。")
+        st.stop()
+
+    if st.button(_q_btn_label, type="primary", use_container_width=True, key="q_run"):
         _q_fid = conn.execute(
             "SELECT id FROM facility WHERE name = ?", (_q_target,)
         ).fetchone()
@@ -630,21 +695,34 @@ elif page == "⚡ クイックレポート":
 
             # ⑤ PPTX生成
             st.write("📑 PPTX生成中…")
+            _q_use_axis = _q_axis if _q_mode == "🆚 比較分析" else "comparison_avg"
             _q_tmp = Path(tempfile.mkdtemp()) / f"{_q_target}_分析レポート.pptx"
-            report.build_report(
+            _q_built_comp = report.build_report(
                 conn, _q_target,
-                axis=_q_axis if _q_mode == "🆚 比較分析" else "comparison_avg",
+                axis=_q_use_axis,
                 specific_name=_q_specific,
                 insights=_q_insights,
                 topic_list=_q_topic_list if _q_topic_list else None,
                 output_path=_q_tmp,
             )
             st.write("✅ PPTX生成完了")
-            _status.update(label="✅ 完了！", state="complete")
+            _status.update(label="✅ 完了！レポートをダウンロードしてください", state="complete")
+
+        # スライド内容サマリ
+        _q_slides = []
+        _q_slides.append("表紙 / サマリ / テキスト分析 / インサイト（常時）")
+        if _q_mode == "🆚 比較分析":
+            _q_comp_check = analysis.build_comparison(conn, _q_target, _q_use_axis, specific_name=_q_specific)
+            if _q_comp_check:
+                _q_slides.insert(1, f"スコア比較（vs {_q_comp_check.baseline_label}）")
+            else:
+                st.info("比較データが不足のため、スコア比較スライドは省略されました。")
+        if _q_topic_list:
+            _q_slides.append(f"トピック分析（{len(_q_topic_list)} 件）")
 
         with open(_q_tmp, "rb") as _f:
             st.download_button(
-                f"⬇️ {_q_target}_分析レポート.pptx をダウンロード",
+                f"⬇️ {_q_target}_分析レポート.pptx",
                 data=_f.read(),
                 file_name=_q_tmp.name,
                 mime=(
@@ -655,6 +733,7 @@ elif page == "⚡ クイックレポート":
                 use_container_width=True,
                 key="q_dl",
             )
+        st.caption("含まれるスライド: " + " / ".join(_q_slides))
 
 
 # ============================================================================
