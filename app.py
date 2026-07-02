@@ -19,6 +19,7 @@ from src import (
     csv_profiler,
     db,
     llm,
+    preview,
     report,
     review_csv,
     score_excel,
@@ -700,6 +701,11 @@ if st.session_state["app_mode"] == "analysis":
 
         _show(6)  # all steps complete
 
+        # Build the preview bundle now (so preview reruns stay instant)
+        st.session_state["an_preview"] = preview.build_bundle(
+            conn, _target, _ts_result, _profile, _insights,
+            an_mode=_an_mode, axis=_axis, specific_name=_specific_name,
+        )
         st.session_state["an_result_path"] = str(_tmp)
         st.session_state["an_topic_list"] = _topic_list
         st.session_state["an_topic_score"] = _ts_result
@@ -710,27 +716,20 @@ if st.session_state["app_mode"] == "analysis":
         st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════ #
-    # PREVIEW SCREEN — download + summary
+    # PREVIEW SCREEN — analysis result rendered as stacked slides
     # ══════════════════════════════════════════════════════════════════════ #
     elif st.session_state["an_screen"] == "preview":
         _target = st.session_state["an_target"]
         _result_path = st.session_state.get("an_result_path")
-        _topic_list = st.session_state.get("an_topic_list", [])
-        _an_mode = st.session_state.get("an_mode", "single")
+        _bundle = st.session_state.get("an_preview")
+        _ts = st.session_state.get("an_topic_score")
 
-        # Header row
+        # ── Top bar: back (left) + download (right) ─────────────────────── #
         _hc1, _hc2 = st.columns([1, 1])
         with _hc1:
-            st.markdown(
-                f'<h2 style="font-size:22px;font-weight:800;color:#16202B;margin:0;">'
-                f"「{_target}」のレポート</h2>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                '<span style="font-size:13px;color:#8A9098;">分析が完了しました。'
-                "PowerPointファイルをダウンロードできます。</span>",
-                unsafe_allow_html=True,
-            )
+            if st.button("← 設定に戻る", key="an_back_top", use_container_width=True):
+                st.session_state["an_screen"] = "setup"
+                st.rerun()
         with _hc2:
             if _result_path and Path(_result_path).exists():
                 with open(_result_path, "rb") as _f:
@@ -749,31 +748,37 @@ if st.session_state["app_mode"] == "analysis":
             else:
                 st.error("レポートファイルが見つかりません。設定に戻って再実行してください。")
 
-        st.divider()
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-        # ── 独自指標: 感情・トピック統合スコア ─────────────────────── #
-        _ts = st.session_state.get("an_topic_score")
+        # ── Stacked slides ──────────────────────────────────────────────── #
+        if _bundle:
+            st.markdown(preview.html_overview(_bundle), unsafe_allow_html=True)
+            st.markdown(preview.html_profile(_bundle), unsafe_allow_html=True)
+            st.markdown(preview.html_slide01(_bundle), unsafe_allow_html=True)
+
+            # SLIDE 02 — sentiment/topic chart inside a bordered card
+            with st.container(border=True):
+                st.markdown(preview.slide02_head(), unsafe_allow_html=True)
+                if _ts is not None and not _ts.empty:
+                    st.plotly_chart(
+                        charts.topic_score_bar(_ts), use_container_width=True, key="pv_ts"
+                    )
+                    _bk = "SBERT" if _ts.backend == "sbert" else "軽量TF-IDF"
+                    st.caption(
+                        f"総合感情スコア {_ts.weighted_sentiment_100:.0f}/100 ・ "
+                        f"分析文数 {_ts.n_sentences} ・ バックエンド: {_bk}"
+                    )
+                else:
+                    st.info("トピックスコアの算出には本文付きの口コミが必要です。")
+
+            st.markdown(preview.html_slide03(_bundle), unsafe_allow_html=True)
+            st.markdown(preview.html_slide04(_bundle), unsafe_allow_html=True)
+        else:
+            st.warning("分析結果がありません。設定に戻って再実行してください。")
+
+        # ── Details (topic score table / LLM insights) ─────────────────── #
         if _ts is not None and not _ts.empty:
-            st.markdown(
-                '<div class="vb-step">独自指標</div>'
-                '<h3 style="font-size:20px;font-weight:800;color:#16202B;margin:0 0 4px;">'
-                "🧭 感情・トピック統合スコア</h3>"
-                '<p style="font-size:13px;color:#8A9098;margin:0 0 14px;">'
-                "各口コミを文単位でポジ／ネガ評価し、トピック確率で重み付けした独自スコア（50=中立）。</p>",
-                unsafe_allow_html=True,
-            )
-            _k1, _k2, _k3, _k4 = st.columns(4)
-            _k1.metric("総合感情スコア", f"{_ts.weighted_sentiment_100:.0f} / 100")
-            _k2.metric("分析文数", f"{_ts.n_sentences} 文")
-            _k3.metric("レビュー数", f"{_ts.n_reviews} 件")
-            _best = _ts.sorted_by_sentiment()[0] if _ts.topics else None
-            _k4.metric("最も高評価な観点", _best.name if _best else "-")
-
-            st.plotly_chart(
-                charts.topic_score_bar(_ts), use_container_width=True, key="an_ts_bar"
-            )
-
-            with st.expander("トピック別の詳細（言及度・統合スコア・重み）", expanded=False):
+            with st.expander("🧭 トピックスコアの詳細（言及度・統合スコア・重み）", expanded=False):
                 _df = pd.DataFrame([
                     {
                         "トピック（指標軸）": t.name,
@@ -788,74 +793,29 @@ if st.session_state["app_mode"] == "analysis":
                 st.plotly_chart(
                     charts.topic_salience_bar(_ts), use_container_width=True, key="an_ts_sal"
                 )
-                st.caption(
-                    f"モデル全体スコア Σ(avg×重み) = {_ts.overall_100} / 100 ・ "
-                    f"バックエンド: {_ts.backend}"
-                )
-            st.divider()
-
-        # Slide summary cards
-        st.markdown(
-            '<div style="font-size:13px;font-weight:700;color:#5B6672;margin-bottom:12px;">'
-            "含まれるスライド</div>",
-            unsafe_allow_html=True,
-        )
-
-        _slides = [
-            ("表紙", "対象施設・比較基準・作成日"),
-            ("サマリー", "エグゼクティブサマリーと主要指標"),
-            ("独自指標", "感情・トピック統合スコア（トピック別）"),
-            ("スコア比較", "レーダー／棒グラフ（比較データがある場合）"),
-            ("強み・弱み", "スコア差 TOP5"),
-            ("テキスト分析", "TF-IDFキーワード・頻出フレーズ"),
-            ("トピック分析", "抽出トピックと代表口コミ"),
-            ("インサイト①", "強み・弱み（LLM）"),
-            ("インサイト②", "示唆・改善提案（LLM）"),
-        ]
-
-        _s_cols = st.columns(3)
-        for _i, (_badge, _desc) in enumerate(_slides):
-            with _s_cols[_i % 3]:
-                st.markdown(
-                    f"""<div style="background:#fff;border:1px solid #E9E8E2;border-radius:12px;
-                                    padding:14px 16px;margin-bottom:12px;">
-                      <div style="display:inline-block;background:{ACCENT};color:#fff;
-                                  font-size:10px;font-weight:800;letter-spacing:.06em;
-                                  padding:3px 8px;border-radius:5px;margin-bottom:8px;">
-                        {_badge}
-                      </div>
-                      <div style="font-size:13px;font-weight:600;color:#16202B;line-height:1.4;">
-                        {_desc}
-                      </div>
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-
-        if _topic_list:
-            st.divider()
-            st.markdown(
-                f"**🗂️ 抽出されたトピック（{len(_topic_list)} 件）**"
-            )
-            for _t in _topic_list:
-                st.markdown(
-                    f"- **{_t.label}** — {_t.count}件 / キーワード: "
-                    + "、".join(_t.keywords[:5])
-                )
+                st.caption(f"モデル全体スコア Σ(avg×重み) = {_ts.overall_100} / 100")
 
         insights = st.session_state.get("insights")
         if insights and st.session_state.get("insights_facility") == _target:
-            st.divider()
-            st.markdown("**✨ LLMインサイト**")
-            st.markdown(f"**まとめ**: {insights.summary}")
-            _ic1, _ic2 = st.columns(2)
-            with _ic1:
-                st.markdown("**💪 強み**")
-                for item in insights.strengths:
-                    st.markdown(f"- {item}")
-            with _ic2:
-                st.markdown("**⚠️ 弱み**")
-                for item in insights.weaknesses:
-                    st.markdown(f"- {item}")
+            with st.expander("✨ LLMインサイト（全文）", expanded=False):
+                st.markdown(f"**まとめ**: {insights.summary}")
+                _ic1, _ic2 = st.columns(2)
+                with _ic1:
+                    st.markdown("**💪 強み**")
+                    for item in insights.strengths:
+                        st.markdown(f"- {item}")
+                with _ic2:
+                    st.markdown("**⚠️ 弱み**")
+                    for item in insights.weaknesses:
+                        st.markdown(f"- {item}")
+                if insights.implications:
+                    st.markdown("**💡 示唆**")
+                    for item in insights.implications:
+                        st.markdown(f"- {item}")
+                if insights.improvements:
+                    st.markdown("**🔧 改善提案**")
+                    for item in insights.improvements:
+                        st.markdown(f"- {item}")
 
         st.divider()
         if st.button("← 設定に戻って別の施設を分析する", key="an_back_main"):
