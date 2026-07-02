@@ -1,0 +1,413 @@
+"""感情・トピック統合スコア算出モデル（このモデルを「正」とする実装）。
+
+アップロードされた仕様書 `sentiment_topic_score_model` を Python に忠実移植したもの。
+クチコミを文単位に分解し、各文について「感情値」と「トピック確率」を算出、
+レビュー単位・トピック単位・施設全体単位へ集計して独自の統合スコアを出す。
+
+  文 → 感情分析 → 温度スケーリング → 非線形補正 → v_sentiment ∈ [0,1]
+  文 → 埋め込み → コサイン類似 → z-score → 適応温度 → softmax → Top-kブースト → p_topic
+  文×トピックスコア = v_sentiment × p_topic
+  → レビュー内平均 → 重み合算 → 全レビュー平均 → トピック平均 → 重み → 全体スコア
+
+バックエンド:
+  * 感情    : キーワード辞書ベース（軽量・torch不要）。BERT へ差し替え可能な設計。
+  * 埋め込み: 共有 TF-IDF 空間でのコサイン類似（軽量・torch不要）。
+              sentence-transformers があれば SBERT に差し替え可能。
+
+Streamlit Cloud 無料枠でも動くよう、既定は軽量バックエンド。数式（モデル本体）は
+バックエンドに依存せず一意。
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+import numpy as np
+
+from . import text_analysis
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 第1章 — 感情スコア（文単位）  ※仕様書に忠実
+# ═══════════════════════════════════════════════════════════════════════════
+def keyword_sentiment_probs(
+    text: str,
+    positive_words: List[str],
+    negative_words: List[str],
+) -> np.ndarray:
+    """キーワード出現数から3クラス確率 [p_neg, p_neu, p_pos] を生成。"""
+    pos_count = sum(text.count(w) for w in positive_words)
+    neg_count = sum(text.count(w) for w in negative_words)
+
+    s_raw = (pos_count - neg_count) / (pos_count + neg_count + 1)
+
+    p_neu = max(0.1, 1 - abs(s_raw))
+    p_pos = (1 - p_neu) * (s_raw + 1) / 2
+    p_neg = (1 - p_neu) * (1 - s_raw) / 2
+
+    probs = np.array([p_neg, p_neu, p_pos])
+    probs = probs / probs.sum()
+    return probs
+
+
+def temperature_scaling(probs: np.ndarray, T: float = 0.7) -> np.ndarray:
+    """Softmax 温度スケーリングで確率分布をシャープ化（T=0.7）。"""
+    probs = np.clip(probs, 1e-12, 1.0)
+
+    logits = np.log(probs)
+    scaled_logits = logits / T
+
+    scaled_logits = scaled_logits - np.max(scaled_logits)
+    exp_values = np.exp(scaled_logits)
+    return exp_values / exp_values.sum()
+
+
+def sentiment_value(probs: np.ndarray, alpha: float = 0.7) -> float:
+    """probs=[p_neg,p_neu,p_pos] → 感情値 v_sentiment ∈ [0,1]（0.5=中立）。"""
+    scaled_probs = temperature_scaling(probs)
+
+    p_neg = scaled_probs[0]
+    p_pos = scaled_probs[2]
+
+    s_raw = p_pos - p_neg
+    s = np.sign(s_raw) * (abs(s_raw) ** alpha)   # 非線形補正（中庸値を分散）
+
+    v_sentiment = (s + 1) / 2
+    return float(v_sentiment)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 第2章 — トピック確率（Sentence-BERT 方式の数式）  ※仕様書に忠実
+# ═══════════════════════════════════════════════════════════════════════════
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+
+
+def topic_probabilities(
+    sentence_embedding: np.ndarray,
+    topic_embeddings: np.ndarray,
+    boost_factor: float = 0.5,
+) -> np.ndarray:
+    """文埋め込み × トピック埋め込み群 → トピック確率ベクトル（合計1）。"""
+    similarities = np.array([
+        cosine_similarity(sentence_embedding, topic_embedding)
+        for topic_embedding in topic_embeddings
+    ])
+
+    c_mean = similarities.mean()
+    c_std = similarities.std()
+
+    z_scores = (similarities - c_mean) / (c_std + 1e-6)
+
+    # 適応的温度：話題が明確（分散大）なほど尖らせる
+    T = np.clip(0.3 / (c_std + 1e-6), 0.05, 0.7)
+
+    logits = z_scores / T
+    logits = logits - np.max(logits)
+    exp_values = np.exp(logits)
+    p = exp_values / exp_values.sum()
+
+    # Top-k ブースト（baseline = 1/N を超えたトピックを強調）
+    N = len(topic_embeddings)
+    baseline = 1 / N
+    boost = np.maximum(p - baseline, 0) * boost_factor
+    p_boost = p + boost
+    p_final = p_boost / p_boost.sum()
+    return p_final
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 第3〜6章 — 集計  ※仕様書に忠実
+# ═══════════════════════════════════════════════════════════════════════════
+def sentence_topic_score(v_sentiment: float, p_topics: np.ndarray) -> np.ndarray:
+    """文×トピックスコア = 感情値 × トピック確率。"""
+    return v_sentiment * p_topics
+
+
+def review_topic_average(sentence_scores: np.ndarray) -> np.ndarray:
+    """sentence_scores: [文数, トピック数] → トピック別平均 [トピック数]。"""
+    return np.mean(sentence_scores, axis=0)
+
+
+def review_total_score(review_topic_scores: np.ndarray, topic_weights: np.ndarray) -> float:
+    return float(np.sum(review_topic_scores * topic_weights))
+
+
+def aggregate_all_reviews(
+    all_review_topic_scores: np.ndarray,
+    topic_weights: np.ndarray,
+) -> dict:
+    """all_review_topic_scores: [レビュー数, トピック数]。"""
+    avg_score_t = np.mean(all_review_topic_scores, axis=0)
+    total_score_t = avg_score_t * topic_weights
+    overall_score = np.sum(total_score_t)
+    return {
+        "avg_score_t": avg_score_t,
+        "total_score_t": total_score_t,
+        "overall_score": float(overall_score),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 指標軸（トピック定義）と感情辞書  — 施設クチコミ向けの既定セット
+# ═══════════════════════════════════════════════════════════════════════════
+@dataclass
+class TopicDef:
+    name: str
+    keywords: List[str]
+    weight: float
+
+
+# 施設レビューの標準的な評価観点（＝独自指標の軸）。重みは正規化して使用。
+DEFAULT_TOPICS: List[TopicDef] = [
+    TopicDef("接客・スタッフ対応", [
+        "接客", "スタッフ", "店員", "従業員", "対応", "丁寧", "親切",
+        "笑顔", "気配り", "サービス", "態度", "愛想", "ホスピタリティ",
+    ], 0.18),
+    TopicDef("提供内容・品質", [
+        "品質", "内容", "美味しい", "おいしい", "料理", "商品", "メニュー",
+        "クオリティ", "鮮度", "盛り付け", "ボリューム", "絶品", "本格",
+    ], 0.20),
+    TopicDef("清潔感・設備", [
+        "清潔", "きれい", "綺麗", "トイレ", "設備", "掃除", "衛生",
+        "アメニティ", "新しい", "古い", "汚い", "手入れ",
+    ], 0.15),
+    TopicDef("空間・雰囲気", [
+        "雰囲気", "空間", "内装", "居心地", "おしゃれ", "静か", "広い",
+        "狭い", "照明", "音楽", "デザイン", "落ち着く", "開放",
+    ], 0.15),
+    TopicDef("価格・コストパフォーマンス", [
+        "価格", "値段", "料金", "コスパ", "高い", "安い", "割高", "お得",
+        "コストパフォーマンス", "金額", "予算", "リーズナブル",
+    ], 0.14),
+    TopicDef("立地・アクセス", [
+        "立地", "アクセス", "場所", "近い", "便利", "遠い", "駐車場",
+        "交通", "徒歩", "ロケーション", "最寄り",
+    ], 0.10),
+    TopicDef("待ち時間・予約", [
+        "待ち", "待つ", "混雑", "予約", "並ぶ", "行列", "スムーズ",
+        "案内", "受付", "待たさ", "空い",
+    ], 0.08),
+]
+
+POSITIVE_WORDS: List[str] = [
+    "良い", "よい", "いい", "素晴らしい", "最高", "美味しい", "おいしい",
+    "快適", "楽しい", "満足", "親切", "丁寧", "綺麗", "きれい", "清潔",
+    "おすすめ", "好き", "便利", "広い", "新しい", "優しい", "感動",
+    "また来", "リピート", "大満足", "癒", "落ち着", "居心地", "笑顔",
+    "コスパ", "安い", "お得", "早い", "スムーズ", "豊富", "充実",
+    "こだわり", "本格", "絶品", "ボリューム", "リーズナブル", "おしゃれ",
+]
+
+NEGATIVE_WORDS: List[str] = [
+    "悪い", "残念", "不満", "狭い", "汚い", "遅い", "最悪", "ひどい",
+    "がっかり", "いまいち", "イマイチ", "微妙", "不便", "古い", "うるさい",
+    "混雑", "待たさ", "雑", "冷たい", "無愛想", "二度と", "期待外れ",
+    "割高", "物足り", "クレーム", "不快", "まずい", "不親切", "乱雑",
+    "高すぎ", "並ぶ", "行列", "残念だっ", "対応が悪",
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 埋め込みバックエンド
+# ═══════════════════════════════════════════════════════════════════════════
+def _split_sentences(text: str) -> List[str]:
+    """日本語テキストを文単位に分割。"""
+    parts = re.split(r"[。！？\!\?\n]+", text or "")
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _topic_doc(keywords: List[str]) -> str:
+    """トピックのキーワード群を、文と同じトークン空間の疑似文書に変換。"""
+    toks: List[str] = []
+    for kw in keywords:
+        t = text_analysis.tokenize(kw)
+        toks.extend(t if t else [kw])
+    return " ".join(toks)
+
+
+def _lightweight_embeddings(
+    sentences: List[str],
+    topics: List[TopicDef],
+):
+    """共有 TF-IDF 空間で文・トピックをベクトル化（torch 不要）。
+
+    Returns (sentence_embeddings[n_sent, V], topic_embeddings[n_topic, V]) or (None, None).
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    sent_docs = [" ".join(text_analysis.tokenize(s)) for s in sentences]
+    if not any(d.strip() for d in sent_docs):
+        return None, None
+
+    vec = TfidfVectorizer(token_pattern=r"[^\s]+", max_features=1500)
+    try:
+        S = vec.fit_transform([d if d.strip() else " " for d in sent_docs])
+    except ValueError:
+        return None, None
+
+    topic_docs = [_topic_doc(t.keywords) for t in topics]
+    T = vec.transform(topic_docs)
+    return S.toarray(), T.toarray()
+
+
+def sbert_available() -> bool:
+    try:
+        import sentence_transformers  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _sbert_embeddings(sentences: List[str], topics: List[TopicDef]):
+    """任意: sentence-transformers があれば SBERT で埋め込み。"""
+    from sentence_transformers import SentenceTransformer
+
+    model = SentenceTransformer("sonoisa/sentence-bert-base-ja-mean-tokens")
+    sent_emb = np.asarray(model.encode(sentences))
+    topic_texts = ["、".join(t.keywords) for t in topics]
+    topic_emb = np.asarray(model.encode(topic_texts))
+    return sent_emb, topic_emb
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 高レベル API
+# ═══════════════════════════════════════════════════════════════════════════
+@dataclass
+class TopicScore:
+    name: str
+    weight: float           # 正規化後の重み w_t
+    avg_score: float        # avg_score_t（モデルの独自指標・感情×トピック確率の平均）
+    total_score: float      # avg_score_t × w_t
+    salience: float         # 言及度（平均トピック確率, Σ=1）
+    sentiment: float        # そのトピックを語るときの感情 ∈ [0,1]（0.5=中立）
+
+    @property
+    def sentiment_100(self) -> float:
+        return round(self.sentiment * 100, 1)
+
+    @property
+    def salience_pct(self) -> float:
+        return round(self.salience * 100, 1)
+
+
+@dataclass
+class TopicScoreResult:
+    topics: List[TopicScore] = field(default_factory=list)
+    overall_score: float = 0.0     # 全体スコア Σ avg_score_t·w_t
+    n_reviews: int = 0
+    n_sentences: int = 0
+    backend: str = "lightweight"
+    empty: bool = True
+
+    @property
+    def overall_100(self) -> float:
+        """モデル定義の全体スコア Σ avg_score_t·w_t を 0-100 換算。"""
+        return round(self.overall_score * 100, 1)
+
+    @property
+    def weighted_sentiment_100(self) -> float:
+        """重み付き総合感情スコア Σ sentiment_t·w_t（0-100・50=中立）。表示用の総合指標。"""
+        if not self.topics:
+            return 0.0
+        return round(sum(t.sentiment * t.weight for t in self.topics) * 100, 1)
+
+    def sorted_by_sentiment(self, reverse: bool = True) -> List[TopicScore]:
+        return sorted(self.topics, key=lambda t: t.sentiment, reverse=reverse)
+
+
+def analyze_reviews(
+    reviews: List[str],
+    topics: Optional[List[TopicDef]] = None,
+    backend: str = "lightweight",
+) -> TopicScoreResult:
+    """クチコミ本文リスト → 感情・トピック統合スコア。"""
+    topics = topics or DEFAULT_TOPICS
+    topic_weights = np.array([t.weight for t in topics], dtype=float)
+    topic_weights = topic_weights / topic_weights.sum()
+
+    # 文分割（レビュー単位を保持）
+    review_sentences = [_split_sentences(r) for r in reviews if r and r.strip()]
+    review_sentences = [s for s in review_sentences if s]
+    if not review_sentences:
+        return TopicScoreResult(empty=True)
+
+    all_sentences = [s for rs in review_sentences for s in rs]
+
+    # 埋め込み
+    if backend == "sbert" and sbert_available():
+        sent_emb, topic_emb = _sbert_embeddings(all_sentences, topics)
+        used_backend = "sbert"
+    else:
+        sent_emb, topic_emb = _lightweight_embeddings(all_sentences, topics)
+        used_backend = "lightweight"
+
+    if sent_emb is None:
+        return TopicScoreResult(empty=True)
+
+    # 文ごとに感情値・トピック確率を計算 → レビュー単位に集計
+    per_review_topic_scores = []
+    per_review_salience = []
+    idx = 0
+    for rs in review_sentences:
+        s_scores = []
+        s_sal = []
+        for _s in rs:
+            probs = keyword_sentiment_probs(_s, POSITIVE_WORDS, NEGATIVE_WORDS)
+            v = sentiment_value(probs)
+            p = topic_probabilities(sent_emb[idx], topic_emb)
+            s_scores.append(sentence_topic_score(v, p))
+            s_sal.append(p)
+            idx += 1
+        per_review_topic_scores.append(review_topic_average(np.array(s_scores)))
+        per_review_salience.append(np.mean(np.array(s_sal), axis=0))
+
+    all_rts = np.array(per_review_topic_scores)   # [R, N]
+    all_sal = np.array(per_review_salience)        # [R, N]
+
+    agg = aggregate_all_reviews(all_rts, topic_weights)
+    avg_score_t = agg["avg_score_t"]
+    total_score_t = agg["total_score_t"]
+    salience_t = all_sal.mean(axis=0)
+    # そのトピックを語るときの平均感情（言及度で正規化）
+    sentiment_t = np.where(salience_t > 1e-9, avg_score_t / salience_t, 0.5)
+    sentiment_t = np.clip(sentiment_t, 0.0, 1.0)
+
+    topic_scores = [
+        TopicScore(
+            name=t.name,
+            weight=float(topic_weights[i]),
+            avg_score=float(avg_score_t[i]),
+            total_score=float(total_score_t[i]),
+            salience=float(salience_t[i]),
+            sentiment=float(sentiment_t[i]),
+        )
+        for i, t in enumerate(topics)
+    ]
+
+    return TopicScoreResult(
+        topics=topic_scores,
+        overall_score=agg["overall_score"],
+        n_reviews=len(review_sentences),
+        n_sentences=len(all_sentences),
+        backend=used_backend,
+        empty=False,
+    )
+
+
+def analyze_facility(
+    conn,
+    facility_name: str,
+    topics: Optional[List[TopicDef]] = None,
+    backend: str = "lightweight",
+) -> TopicScoreResult:
+    """DB の施設クチコミ本文を取得して analyze_reviews を実行。"""
+    rows = conn.execute(
+        """SELECT r.text FROM review r
+           JOIN facility f ON f.id = r.facility_id
+           WHERE f.name = ? AND r.text IS NOT NULL AND r.text != ''""",
+        (facility_name,),
+    ).fetchall()
+    reviews = [r[0] for r in rows]
+    return analyze_reviews(reviews, topics=topics, backend=backend)

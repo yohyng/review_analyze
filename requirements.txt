@@ -10,6 +10,7 @@ plotly>=5.18
 # --- text analysis + LLM (steps 7-8) ---
 janome>=0.4
 scikit-learn>=1.4
+numpy>=1.24          # 感情・トピック統合スコアモデル
 # Gemini API is called via requests (no extra SDK needed)
 
 # --- report export (step 9) ---

@@ -12,6 +12,12 @@ _RED = "#e74c3c"
 _BLUE = "#2980b9"
 _ORANGE = "#e67e22"
 
+# VoiceBAUM accent (magenta) + sentiment palette
+_ACCENT = "#B0338A"
+_POS = "#4F8A6B"
+_NEU = "#C9C3B6"
+_NEG = "#C66B61"
+
 
 def radar(
     target: pd.Series,
@@ -85,6 +91,87 @@ def diff_bar(diff: pd.Series, target_label: str, baseline_label: str) -> go.Figu
         height=360,
         margin=dict(t=50, b=10),
         showlegend=False,
+    )
+    return fig
+
+
+def _sentiment_color(v100: float) -> str:
+    """0-100 の感情スコア → ポジ/中立/ネガの色。"""
+    if v100 >= 60:
+        return _POS
+    if v100 <= 40:
+        return _NEG
+    return _NEU
+
+
+def topic_score_bar(result) -> go.Figure:
+    """独自指標（感情・トピック統合スコア）のトピック別グラフ。
+
+    横棒 = トピック別の感情スコア(0-100, 50=中立)。棒色はポジ/中立/ネガ。
+    ラベルに言及度(%)を併記し、「何がどれだけ語られ、どう評価されているか」を可視化。
+    result: topic_score.TopicScoreResult
+    """
+    topics = result.sorted_by_sentiment(reverse=False)  # 下から上に良い順
+    names = [t.name for t in topics]
+    sent = [t.sentiment_100 for t in topics]
+    sal = [t.salience_pct for t in topics]
+    colors = [_sentiment_color(v) for v in sent]
+    texts = [f"{v:.0f}（言及 {s:.0f}%）" for v, s in zip(sent, sal)]
+
+    fig = go.Figure(
+        go.Bar(
+            x=sent,
+            y=names,
+            orientation="h",
+            marker_color=colors,
+            text=texts,
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate=(
+                "%{y}<br>感情スコア: %{x:.1f}/100"
+                "<br>言及度: %{customdata:.1f}%<extra></extra>"
+            ),
+            customdata=sal,
+        )
+    )
+    # 中立ライン
+    fig.add_vline(x=50, line_width=1.5, line_dash="dash", line_color="#8A9098")
+    fig.update_layout(
+        xaxis=dict(title="トピック別 感情スコア（0-100 / 50=中立）", range=[0, 108]),
+        yaxis=dict(title=""),
+        height=max(320, 70 + 46 * len(names)),
+        margin=dict(t=20, b=40, l=10, r=10),
+        plot_bgcolor="#F7F7F4",
+        paper_bgcolor="#F7F7F4",
+        showlegend=False,
+        font=dict(family="Manrope, 'Noto Sans JP', sans-serif"),
+    )
+    return fig
+
+
+def topic_salience_bar(result) -> go.Figure:
+    """トピック別の言及度（どれだけ語られているか）を降順で。"""
+    topics = sorted(result.topics, key=lambda t: t.salience, reverse=True)
+    names = [t.name for t in topics]
+    sal = [t.salience_pct for t in topics]
+    fig = go.Figure(
+        go.Bar(
+            x=names, y=sal,
+            marker_color=_ACCENT,
+            text=[f"{s:.0f}%" for s in sal],
+            textposition="outside",
+            cliponaxis=False,
+        )
+    )
+    fig.update_layout(
+        yaxis=dict(title="言及度 (%)"),
+        height=320,
+        margin=dict(t=20, b=60, l=10, r=10),
+        plot_bgcolor="#F7F7F4",
+        paper_bgcolor="#F7F7F4",
+        showlegend=False,
+        xaxis=dict(tickangle=-20),
+        font=dict(family="Manrope, 'Noto Sans JP', sans-serif"),
     )
     return fig
 

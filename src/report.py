@@ -21,7 +21,7 @@ from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
-from . import analysis, text_analysis
+from . import analysis, text_analysis, topic_score
 from .llm import InsightResult
 from .topics import Topic
 
@@ -34,6 +34,10 @@ RED = RGBColor(0xC0, 0x39, 0x2B)
 LIGHT = RGBColor(0xEC, 0xF0, 0xF1)
 GREY = RGBColor(0x7F, 0x8C, 0x8D)
 WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+MAGENTA = RGBColor(0xB0, 0x33, 0x8A)   # VoiceBAUM accent
+POS = RGBColor(0x4F, 0x8A, 0x6B)
+NEU = RGBColor(0xC9, 0xC3, 0xB6)
+NEG = RGBColor(0xC6, 0x6B, 0x61)
 
 SLIDE_W = Inches(13.333)
 SLIDE_H = Inches(7.5)
@@ -315,6 +319,47 @@ def _slide_insights_action(prs, insights):
              insights.improvements or ["（なし）"], size=15)
 
 
+def _slide_topic_score(prs, ts: "topic_score.TopicScoreResult") -> None:
+    """独自指標（感情・トピック統合スコア）スライド。"""
+    slide = _blank(prs)
+    _title_bar(
+        slide, "感情・トピック統合スコア",
+        "文単位の感情値 × トピック確率を集計した独自指標（N=1 対応）",
+    )
+
+    # 総合感情スコア（重み付き）
+    ov = ts.weighted_sentiment_100
+    _textbox(slide, Inches(0.5), Inches(1.25), Inches(4.2), Inches(0.4),
+             "総合感情スコア", size=14, bold=True, color=GREY)
+    _textbox(slide, Inches(0.5), Inches(1.6), Inches(4.2), Inches(1.0),
+             f"{ov:.0f} / 100", size=40, bold=True, color=MAGENTA)
+    _textbox(slide, Inches(0.5), Inches(2.7), Inches(4.2), Inches(0.5),
+             f"分析文数 {ts.n_sentences}／レビュー {ts.n_reviews} 件", size=12, color=GREY)
+    _textbox(slide, Inches(0.5), Inches(3.15), Inches(4.3), Inches(2.6),
+             "各文をポジ／中立／ネガに評価し、トピック確率で重み付けして"
+             "トピックごとの評価スコアへ集計しています（50=中立）。",
+             size=12, color=NAVY)
+
+    # トピック別テーブル（感情降順）
+    topics = ts.sorted_by_sentiment(reverse=True)
+    rows = [
+        [t.name, f"{t.sentiment_100:.0f}", f"{t.salience_pct:.0f}%", f"{t.weight*100:.0f}%"]
+        for t in topics
+    ]
+    row_h = min(Inches(0.5), Inches(5.4 / max(len(rows), 1)))
+    _table(
+        slide, Inches(5.1), Inches(1.3), Inches(7.7), row_h * (len(rows) + 1),
+        ["トピック（指標軸）", "感情スコア", "言及度", "重み"], rows,
+        header_fill=MAGENTA,
+        accent={"col": 1, "color": MAGENTA},
+    )
+
+    _textbox(slide, Inches(5.1), Inches(1.3) + row_h * (len(rows) + 1) + Inches(0.1),
+             Inches(7.7), Inches(0.4),
+             "感情スコア: 60以上=ポジ / 40以下=ネガ。言及度: そのトピックが語られた割合。",
+             size=10.5, color=GREY)
+
+
 def _slide_topics(prs, topic_list: list[Topic]) -> None:
     slide = _blank(prs)
     _title_bar(
@@ -364,6 +409,7 @@ def build_report(
     specific_name: Optional[str] = None,
     insights: Optional[InsightResult] = None,
     topic_list: Optional[list[Topic]] = None,
+    topic_score_result: "Optional[topic_score.TopicScoreResult]" = None,
     output_path: str | Path = "report.pptx",
 ) -> Path:
     prs = Presentation()
@@ -375,6 +421,13 @@ def build_report(
         comp = analysis.build_comparison(conn, target_name, "all_avg")
     profile = text_analysis.build_profile(conn, target_name, top_n=20)
 
+    # 独自指標（感情・トピック統合スコア）。未算出なら内部で算出。
+    if topic_score_result is None:
+        try:
+            topic_score_result = topic_score.analyze_facility(conn, target_name)
+        except Exception:
+            topic_score_result = None
+
     if insights is None:
         insights = InsightResult(summary="（インサイト未生成。⑤画面で生成すると反映されます）")
     # stash review count for the summary cards
@@ -384,6 +437,8 @@ def build_report(
 
     _slide_title(prs, target_name, baseline_label)
     _slide_summary(prs, target_name, insights, comp)
+    if topic_score_result is not None and not topic_score_result.empty:
+        _slide_topic_score(prs, topic_score_result)
     if comp is not None:
         _slide_score_charts(prs, comp)
         _slide_top5(prs, comp)
