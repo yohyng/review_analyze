@@ -280,31 +280,33 @@ if _is_an:
         "[data-testid='collapsedControl']{display:none!important;}</style>",
         unsafe_allow_html=True,
     )
-    _hc1, _hc2 = st.columns([2, 1])
-    with _hc1:
-        st.markdown(f"""
-        <div style="display:flex;align-items:center;gap:11px;padding:2px 0 6px;">
-          <div style="width:36px;height:36px;border-radius:10px;background:{ACCENT};
-                      display:flex;align-items:center;justify-content:center;
-                      color:#fff;font-weight:800;font-size:16px;flex:none;">V</div>
-          <div style="line-height:1.2;">
-            <div style="font-weight:800;font-size:17px;color:#16202B;letter-spacing:-.01em;">VoiceBAUM</div>
-            <div style="font-size:11px;color:#8A9098;">口コミから、施設の実力を可視化する</div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-    with _hc2:
-        _t1, _t2, _t3 = st.columns([1, 1, 0.7])
-        with _t1:
-            st.button("分析", use_container_width=True, type="primary", key="hdr_an")
-        with _t2:
-            if st.button("管理", use_container_width=True, type="secondary", key="hdr_adm"):
-                st.session_state["app_mode"] = "admin"
-                st.rerun()
-        with _t3:
-            if st.button("EN", use_container_width=True, type="secondary", key="hdr_en"):
-                st.toast("英語表示は今後対応予定です。", icon="🌐")
-    st.markdown("<hr style='margin:6px 0 4px;'>", unsafe_allow_html=True)
+    # Header is hidden during the analysis run so the loading overlay stands alone.
+    if st.session_state["an_screen"] != "running":
+        _hc1, _hc2 = st.columns([2, 1])
+        with _hc1:
+            st.markdown(f"""
+            <div style="display:flex;align-items:center;gap:11px;padding:2px 0 6px;">
+              <div style="width:36px;height:36px;border-radius:10px;background:{ACCENT};
+                          display:flex;align-items:center;justify-content:center;
+                          color:#fff;font-weight:800;font-size:16px;flex:none;">V</div>
+              <div style="line-height:1.2;">
+                <div style="font-weight:800;font-size:17px;color:#16202B;letter-spacing:-.01em;">VoiceBAUM</div>
+                <div style="font-size:11px;color:#8A9098;">口コミから、施設の実力を可視化する</div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with _hc2:
+            _t1, _t2, _t3 = st.columns([1, 1, 0.7])
+            with _t1:
+                st.button("分析", use_container_width=True, type="primary", key="hdr_an")
+            with _t2:
+                if st.button("管理", use_container_width=True, type="secondary", key="hdr_adm"):
+                    st.session_state["app_mode"] = "admin"
+                    st.rerun()
+            with _t3:
+                if st.button("EN", use_container_width=True, type="secondary", key="hdr_en"):
+                    st.toast("英語表示は今後対応予定です。", icon="🌐")
+        st.markdown("<hr style='margin:6px 0 4px;'>", unsafe_allow_html=True)
 
 else:
     with st.sidebar:
@@ -403,8 +405,15 @@ _LOADING_STEPS = [
 ]
 
 
-def _loading_card_html(current: int) -> str:
-    """Render the 6-step loading card (matches the VoiceBAUM design)."""
+def _loading_card_html(current: int, detail: str = "") -> str:
+    """Full-screen loading overlay with the 6-step list + numeric progress.
+
+    Rendered as a fixed, opaque overlay so nothing behind shows through.
+    """
+    total = len(_LOADING_STEPS)
+    done = min(current, total)
+    pct = round(100 * done / total)
+
     rows = []
     for i, label in enumerate(_LOADING_STEPS):
         if i < current:
@@ -417,12 +426,31 @@ def _loading_card_html(current: int) -> str:
             icon = '<div class="vb-step-todo"></div>'
             lab = f'<div class="vb-step-label-todo">{label}</div>'
         rows.append(f'<div class="vb-step-row">{icon}{lab}</div>')
+
+    detail_html = (
+        f'<div style="font-size:12px;color:#8A9098;margin-top:14px;text-align:center;">{detail}</div>'
+        if detail else ""
+    )
+    progress = (
+        '<div style="margin:4px 0 18px;">'
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;'
+        'font-size:12.5px;font-weight:700;color:#5B6672;margin-bottom:8px;">'
+        f'<span>{done} / {total} ステップ完了</span>'
+        f'<span style="font-size:18px;font-weight:800;color:{ACCENT};">{pct}%</span></div>'
+        '<div style="height:9px;background:#F1F0EA;border-radius:99px;overflow:hidden;">'
+        f'<div style="height:100%;width:{pct}%;background:{ACCENT};border-radius:99px;transition:width .3s ease;"></div>'
+        '</div></div>'
+    )
     return (
-        '<div class="vb-load-card">'
+        '<div style="position:fixed;inset:0;z-index:2147483000;background:#F7F7F4;'
+        'display:flex;align-items:center;justify-content:center;padding:20px;">'
+        '<div class="vb-load-card" style="margin:0;">'
         '<div class="vb-load-title">口コミを解析しています…</div>'
         '<div class="vb-load-sub">評価・感情・キーワードを集計中</div>'
+        + progress
         + "".join(rows)
-        + "</div>"
+        + detail_html
+        + "</div></div>"
     )
 
 
@@ -640,33 +668,46 @@ if st.session_state["app_mode"] == "analysis":
                 _axis = "specific"
                 _specific_name = _peers_ss[0]
 
+        # Hide Streamlit's own chrome so the loading overlay stands completely alone.
+        st.markdown(
+            "<style>[data-testid='stHeader']{display:none!important;}"
+            "[data-testid='stStatusWidget']{display:none!important;}"
+            "[data-testid='stToolbar']{display:none!important;}"
+            "[data-testid='stAppViewContainer']{opacity:1!important;}</style>",
+            unsafe_allow_html=True,
+        )
+
+        _n_rev = conn.execute(
+            "SELECT COUNT(*) FROM review WHERE facility_id = ?", (_fid,)
+        ).fetchone()[0]
+
         _ph = st.empty()
 
-        def _show(cur):
-            _ph.markdown(_loading_card_html(cur), unsafe_allow_html=True)
+        def _show(cur, detail=""):
+            _ph.markdown(_loading_card_html(cur, detail), unsafe_allow_html=True)
 
         # ① 口コミデータを収集中
-        _show(0)
+        _show(0, f"口コミ {_n_rev:,} 件を読み込んでいます")
         _rev_rows = conn.execute(
             "SELECT rating, text FROM review WHERE facility_id = ?", (_fid,)
         ).fetchall()
         _revs = [(_r["rating"], _r["text"] or "") for _r in _rev_rows]
 
         # ② 評価スコアを集計中
-        _show(1)
+        _show(1, f"口コミ {_n_rev:,} 件のスコアを集計中")
         scoring.compute_and_store(conn, _fid)
 
         # ③ ポジ／ネガの感情を分析中  ← 独自指標（感情・トピック統合スコア）を算出
-        _show(2)
+        _show(2, f"{_n_rev:,} 件の感情・トピックを解析中（時間がかかる場合があります）")
         _profile = text_analysis.build_profile(conn, _target, top_n=20)
         _ts_result = topic_score.analyze_facility(conn, _target)
 
         # ④ トピックを分類中（TF-IDF）
-        _show(3)
+        _show(3, f"{_ts_result.n_sentences:,} 文からトピックを抽出中")
         _topic_list = topics.extract_topics(_revs, n_topics=5)
 
         # ⑤ 競合と比較中（＋任意でLLMインサイト）
-        _show(4)
+        _show(4, "競合施設と比較中")
         _insights = None
         if _api_key and not _profile.empty:
             _comp2 = (
@@ -687,7 +728,7 @@ if st.session_state["app_mode"] == "analysis":
                 _insights = _res
 
         # ⑥ レポートを生成中
-        _show(5)
+        _show(5, "PowerPointレポートを生成中")
         _tmp = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{_target}.pptx"
         report.build_report(
             conn, _target,
@@ -699,7 +740,7 @@ if st.session_state["app_mode"] == "analysis":
             output_path=_tmp,
         )
 
-        _show(6)  # all steps complete
+        _show(6, "完了しました")  # all steps complete
 
         # Build the preview bundle now (so preview reruns stay instant)
         st.session_state["an_preview"] = preview.build_bundle(
