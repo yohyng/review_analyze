@@ -12,10 +12,11 @@ from datetime import date
 from html import escape
 from typing import Optional
 
-from . import analysis
+from . import analysis, topic_score
 
 # palette (VoiceBAUM)
 ACCENT = "#B0338A"
+ACCENT_SOFT = "rgba(176,51,138,0.09)"
 INK = "#16202B"
 SUB = "#8A9098"
 POS = "#4F8A6B"
@@ -44,12 +45,9 @@ def _sent_color(v100: float) -> str:
 def build_bundle(
     conn: sqlite3.Connection,
     target: str,
-    ts,                       # topic_score.TopicScoreResult
+    topic_results: dict,      # {facility_name: topic_score.TopicScoreResult}
     profile,                  # text_analysis.TextProfile
     insights,                 # llm.InsightResult | None
-    an_mode: str = "single",
-    axis: str = "comparison_avg",
-    specific_name: Optional[str] = None,
 ) -> dict:
     frow = conn.execute(
         "SELECT id, category, general_rating FROM facility WHERE name = ?", (target,)
@@ -73,67 +71,64 @@ def build_bundle(
     ).fetchone() if fid else None
     pos_rate = round(100 * pr[0] / pr[1]) if pr and pr[1] else None
 
-    ranked = sorted(
-        [
-            (r[0], r[1]) for r in conn.execute(
-                "SELECT f.name, AVG(r.rating) FROM facility f "
-                "JOIN review r ON r.facility_id = f.id "
-                "WHERE r.rating IS NOT NULL GROUP BY f.id"
-            ).fetchall() if r[1] is not None
-        ],
-        key=lambda z: -z[1],
-    )
+    # ── 感情・トピックモデルによる比較（SLIDE 01-03 の素） ──────────── #
+    ts = topic_results.get(target)
+    valid = {n: r for n, r in topic_results.items() if r is not None and not r.empty}
+    multi = len(valid) >= 2 and target in valid
+
+    order = topic_score.TOPIC_ORDER
+    target_scores = ts.sentiment_by_topic() if (ts and not ts.empty) else {}
+
+    # per-topic baseline: 全体平均（多施設）or 中立50（単体）
+    overall_topic = {}
+    for t in order:
+        vals = [r.sentiment_by_topic().get(t) for r in valid.values()]
+        vals = [v for v in vals if v is not None]
+        overall_topic[t] = (sum(vals) / len(vals)) if vals else 50.0
+    baseline_label = "全体平均" if multi else "中立(50)"
+
+    diffs = []
+    for t in order:
+        tv = target_scores.get(t)
+        if tv is None:
+            continue
+        base = overall_topic[t] if multi else 50.0
+        diffs.append((t, round(tv, 2), round(base, 2), round(tv - base, 2)))
+    diffs_sorted = sorted(diffs, key=lambda x: x[3], reverse=True)
+    strengths = diffs_sorted[:5]
+    weaknesses = list(reversed(diffs_sorted[-5:])) if len(diffs_sorted) >= 1 else []
+
+    overall_score = ts.weighted_sentiment_100 if (ts and not ts.empty) else None
+
+    # 全体順位・全体平均との差（トピック総合スコアで）
+    fac_overall = {n: r.weighted_sentiment_100 for n, r in valid.items()}
+    ranked = sorted(fac_overall.items(), key=lambda z: -z[1])
     total_fac = len(ranked)
     rank = next((i + 1 for i, (nm, _) in enumerate(ranked) if nm == target), None)
+    overall_mean = (sum(fac_overall.values()) / len(fac_overall)) if fac_overall else None
+    d_overall = (overall_score - overall_mean) if (multi and overall_score is not None) else None
 
-    comp_all = analysis.build_comparison(conn, target, "all_avg")
-    comp_peer = analysis.build_comparison(conn, target, "comparison_avg")
-    comp = None
-    if an_mode == "compare":
-        comp = analysis.build_comparison(conn, target, axis, specific_name=specific_name)
-    comp = comp or comp_peer or comp_all
+    peers = analysis.facilities_by_type(conn, "comparison")
+    peer_valid = [p for p in peers if p in valid and p != target]
+    peer_mean = (sum(fac_overall[p] for p in peer_valid) / len(peer_valid)) if peer_valid else None
+    d_peer = (overall_score - peer_mean) if (peer_mean is not None and overall_score is not None) else None
 
-    strengths, weaknesses = [], []
-    basis = "感情スコア"
-    if comp is not None and not comp.diff.empty:
-        basis = "スコア比較"
-        diff_sorted = comp.diff.sort_values(ascending=False)
-        for m in diff_sorted.head(5).index:
-            strengths.append((m, round(float(comp.target[m]), 1),
-                              round(float(comp.baseline[m]), 1), round(float(comp.diff[m]), 2)))
-        for m in diff_sorted.tail(5).index[::-1]:
-            weaknesses.append((m, round(float(comp.target[m]), 1),
-                               round(float(comp.baseline[m]), 1), round(float(comp.diff[m]), 2)))
-    elif ts is not None and not ts.empty:
-        by_sent = ts.sorted_by_sentiment(reverse=True)
-        for t in by_sent[:5]:
-            strengths.append((t.name, t.sentiment_100, 50.0, round(t.sentiment_100 - 50, 1)))
-        for t in list(reversed(by_sent))[:5]:
-            weaknesses.append((t.name, t.sentiment_100, 50.0, round(t.sentiment_100 - 50, 1)))
-
-    overall_score = None
-    if comp is not None and not comp.target.empty:
-        overall_score = round(float(comp.target.mean()), 1)
-    elif ts is not None and not ts.empty:
-        overall_score = ts.weighted_sentiment_100
-
-    # SLIDE 02 — topic sentiment bars
-    topics_bars = []
-    if ts is not None and not ts.empty:
-        for t in ts.sorted_by_sentiment(reverse=True):
-            topics_bars.append((t.name, t.sentiment_100, t.salience_pct))
+    def _topic_diff_label(entry):
+        return f"{entry[0]}（{entry[3]:+.1f}pt）" if entry else "—"
 
     analysis_rows = [
         ("分析対象", target),
-        ("登録施設数", f"{total_fac} 施設"),
+        ("比較母数", f"{total_fac} 施設"),
+        ("ピア施設数", f"{len(peer_valid)} 施設"),
         ("全体スコア", f"{overall_score}" if overall_score is not None else "—"),
         ("全体順位", f"{rank} / {total_fac}" if rank else "—"),
-        ("全体平均との差", f"{comp_all.diff.mean():+.2f}" if comp_all is not None and not comp_all.diff.empty else "—"),
-        ("ピア平均との差", f"{comp_peer.diff.mean():+.2f}" if comp_peer is not None and not comp_peer.diff.empty else "—"),
-        ("最も強い項目", strengths[0][0] if strengths else "—"),
-        ("最も弱い項目", weaknesses[0][0] if weaknesses else "—"),
+        ("全体平均との差", f"{d_overall:+.2f}" if d_overall is not None else "—"),
+        ("ピア平均との差", f"{d_peer:+.2f}" if d_peer is not None else "—"),
+        ("最も強い差分", _topic_diff_label(strengths[0] if strengths else None)),
+        ("最も弱い差分", _topic_diff_label(weaknesses[0] if weaknesses else None)),
     ]
 
+    # インサイト（LLM があれば採用、なければ実データからテンプレ生成）
     if insights is not None and getattr(insights, "summary", None):
         insight = {
             "結論": insights.summary,
@@ -141,18 +136,21 @@ def build_bundle(
             "弱み": "、".join(insights.weaknesses[:3]) if insights.weaknesses else (weaknesses[0][0] if weaknesses else "—"),
             "示唆": "、".join(insights.implications[:2]) if insights.implications else "—",
         }
-    else:
-        s0 = strengths[0][0] if strengths else "—"
-        w0 = weaknesses[0][0] if weaknesses else "—"
+    elif strengths and weaknesses:
+        s0, s1 = strengths[0], (strengths[1] if len(strengths) > 1 else strengths[0])
+        w0, w1 = weaknesses[0], (weaknesses[1] if len(weaknesses) > 1 else weaknesses[0])
         insight = {
-            "結論": (f"「{target}」は{basis}で総合スコア {overall_score}"
-                    f"（{total_fac}施設中 {rank}位）。強みは「{s0}」、課題は「{w0}」。"
-                    if overall_score is not None else f"「{target}」の口コミを分析しました。"),
-            "強み": f"「{s0}」が高く評価されています。",
-            "弱み": f"「{w0}」に改善余地があります。",
-            "示唆": f"「{w0}」の改善が体験全体の評価向上に寄与する可能性があります。",
+            "結論": (f"「{target}」は「{s0[0]}」「{s1[0]}」が{baseline_label}比で相対的に強い一方、"
+                    f"「{w0[0]}」「{w1[0]}」が弱い。総合スコア {overall_score}"
+                    f"（{total_fac}施設中 {rank}位）。"),
+            "強み": f"「{s0[0]}」が {baseline_label}比 {s0[3]:+.1f}pt で最も高評価。「{s1[0]}」（{s1[3]:+.1f}pt）も強み。",
+            "弱み": f"「{w0[0]}」が {w0[3]:+.1f}pt と最も低く改善余地。「{w1[0]}」（{w1[3]:+.1f}pt）も下位。",
+            "示唆": f"「{w0[0]}」「{w1[0]}」の口コミ体験を底上げすることで、総合評価の向上が期待できます。",
         }
+    else:
+        insight = {"結論": f"「{target}」の口コミを分析しました。", "強み": "—", "弱み": "—", "示唆": "—"}
 
+    # SLIDE 04（TF-IDF）: 特徴語 ＋ 象徴的な N=1 コメント
     samples = []
     if profile is not None and not profile.empty:
         samples = list(profile.high_rated[:2]) + list(profile.low_rated[:1])
@@ -164,6 +162,14 @@ def build_bundle(
         ).fetchall()
         samples = [r[0] for r in rows]
 
+    tfidf_words = []
+    if profile is not None and not profile.empty and not profile.tfidf_keywords.empty:
+        tfidf_words = [str(w) for w in profile.tfidf_keywords["単語"].head(12).tolist()]
+
+    # SLIDE 02 — 22観点の並び順＋各スコア
+    topic_names = [t for t in order if t in target_scores]
+    topic_values = [round(target_scores[t], 1) for t in topic_names]
+
     return {
         "target": target,
         "category": category,
@@ -173,16 +179,19 @@ def build_bundle(
         "rank": rank,
         "total_fac": total_fac,
         "date": f"{date.today():%Y年%m月%d日}",
-        "basis": basis,
+        "basis": baseline_label,
+        "baseline_label": baseline_label,
         "strengths": strengths,
         "weaknesses": weaknesses,
         "analysis_rows": analysis_rows,
         "insight": insight,
         "samples": samples,
+        "tfidf_words": tfidf_words,
         "n1_note": insight["示唆"],
-        "topics_bars": topics_bars,
-        "overall_sentiment": ts.weighted_sentiment_100 if (ts is not None and not ts.empty) else None,
-        "n_sentences": ts.n_sentences if (ts is not None and not ts.empty) else 0,
+        "topic_names": topic_names,
+        "topic_values": topic_values,
+        "overall_sentiment": overall_score,
+        "n_sentences": ts.n_sentences if (ts and not ts.empty) else 0,
     }
 
 
@@ -323,46 +332,29 @@ def html_slide01(b: dict) -> str:
     return _canvas(inner)
 
 
-def html_slide02(b: dict) -> str:
-    bars = b.get("topics_bars") or []
-    if not bars:
-        body = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.4cqw;">本文付きの口コミが不足しています。</div>'
-    else:
-        rows = ""
-        for name, sent, sal in bars:
-            col = _sent_color(sent)
-            width = max(2, min(100, sent))
-            rows += (
-                '<div style="display:flex;align-items:center;gap:1.4cqw;flex:1;">'
-                f'<div style="width:17cqw;flex:none;font-size:1.25cqw;color:{INK};font-weight:600;text-align:right;'
-                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(name) + '</div>'
-                '<div style="flex:1;height:1.9cqw;background:#F1F0EA;border-radius:.5cqw;position:relative;overflow:hidden;">'
-                f'<div style="position:absolute;left:0;top:0;bottom:0;width:{width}cqw;max-width:100%;background:{col};border-radius:.5cqw;"></div>'
-                '<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(20,30,40,.18);"></div></div>'
-                f'<div style="width:5cqw;flex:none;font-size:1.3cqw;font-weight:800;color:{col};text-align:right;font-variant-numeric:tabular-nums;">{sent:.0f}</div>'
-                f'<div style="width:6cqw;flex:none;font-size:1.05cqw;color:{SUB};text-align:right;">言及{sal:.0f}%</div>'
-                '</div>'
-            )
-        legend = (
-            '<div style="display:flex;gap:1.8cqw;align-items:center;margin-top:1cqw;">'
-            f'<span style="font-size:1.1cqw;color:{SUB};">50=中立</span>'
-            f'<span style="display:flex;align-items:center;gap:.5cqw;font-size:1.1cqw;color:{SUB};"><span style="width:1.1cqw;height:1.1cqw;border-radius:.25cqw;background:{POS};"></span>ポジ</span>'
-            f'<span style="display:flex;align-items:center;gap:.5cqw;font-size:1.1cqw;color:{SUB};"><span style="width:1.1cqw;height:1.1cqw;border-radius:.25cqw;background:{NEG};"></span>ネガ</span>'
-            + (f'<span style="font-size:1.1cqw;color:#A7ABB0;margin-left:auto;">総合感情スコア {b["overall_sentiment"]:.0f}/100 ・ 分析文数 {b["n_sentences"]}</span>' if b.get("overall_sentiment") is not None else '')
-            + '</div>'
-        )
-        body = f'<div style="flex:1;display:flex;flex-direction:column;gap:.6cqw;min-height:0;">{rows}</div>{legend}'
-    inner = _head("SLIDE 02", "感情評価・トピック分類",
-                  "トピック（指標軸）ごとの感情スコア（独自指標・50=中立）") + body
-    return _canvas(inner)
+def slide02_head() -> str:
+    """SLIDE 02 の見出しのみ（棒グラフは app 側で plotly 描画）。"""
+    return (
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:2px;">'
+        + _badge_px("SLIDE 02")
+        + f'<span style="font-size:19px;font-weight:800;color:{INK};">感情評価・トピック分類</span></div>'
+        + f'<div style="font-size:12.5px;color:{SUB};margin:2px 0 6px;">23観点での言及・評価スコア（独自指標・50=中立）</div>'
+    )
 
 
-def _sw_table(title: str, rows, header_bg: str, label_col: str) -> str:
+def _badge_px(text: str, bg: str = ACCENT) -> str:
+    return (
+        f'<span style="font-size:11px;font-weight:800;letter-spacing:.06em;color:#fff;'
+        f'background:{bg};padding:4px 10px;border-radius:6px;white-space:nowrap;">{escape(text)}</span>'
+    )
+
+
+def _sw_table(title: str, rows, header_bg: str, label_col: str, base_label: str = "基準") -> str:
     head = (
         f'<div style="display:flex;background:{header_bg};color:#fff;font-weight:700;font-size:1.05cqw;">'
         '<div style="flex:1.7;padding:.55cqw .8cqw;">トピック</div>'
         '<div style="flex:1;padding:.55cqw .8cqw;text-align:right;">対象</div>'
-        '<div style="flex:1;padding:.55cqw .8cqw;text-align:right;">基準</div>'
+        f'<div style="flex:1;padding:.55cqw .8cqw;text-align:right;">{escape(base_label)}</div>'
         '<div style="flex:1;padding:.55cqw .8cqw;text-align:right;">差分</div></div>'
     )
     body = ""
@@ -384,36 +376,64 @@ def _sw_table(title: str, rows, header_bg: str, label_col: str) -> str:
 
 
 def html_slide03(b: dict) -> str:
+    base = b.get("baseline_label", "基準")
     if not b["strengths"] and not b["weaknesses"]:
         body = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.4cqw;">比較できるデータが不足しています。</div>'
     else:
         body = (
             '<div style="flex:1;display:flex;gap:2.6cqw;min-height:0;">'
-            + _sw_table("強み TOP5", b["strengths"], POS, POS)
-            + _sw_table("弱み TOP5", b["weaknesses"], NEG, NEG)
+            + _sw_table("強み TOP5", b["strengths"], POS, POS, base_label=base)
+            + _sw_table("弱み TOP5", b["weaknesses"], NEG, NEG, base_label=base)
             + '</div>'
         )
-    inner = _head("SLIDE 03", "数値による比較評価", "強み・弱みの上位項目（対象 vs 基準）") + body
+    inner = _head("SLIDE 03", "数値による比較評価",
+                  f"感情・トピック統合スコアの上位項目（対象 vs {base}）") + body
     return _canvas(inner)
 
 
 def html_slide04(b: dict) -> str:
+    # 左：TF-IDF 特徴語チップ
+    words = b.get("tfidf_words") or []
+    if words:
+        chips = "".join(
+            f'<span style="display:inline-block;background:{ACCENT_SOFT};color:{ACCENT};'
+            'font-weight:700;font-size:1.25cqw;padding:.5cqw 1cqw;border-radius:99px;'
+            f'margin:0 .6cqw .6cqw 0;">{escape(w)}</span>'
+            for w in words
+        )
+        left_body = f'<div style="display:flex;flex-wrap:wrap;align-content:flex-start;flex:1;">{chips}</div>'
+    else:
+        left_body = f'<div style="flex:1;color:{SUB};font-size:1.2cqw;">本文付きの口コミが不足しています。</div>'
+    left = (
+        '<div style="width:32cqw;flex:none;display:flex;flex-direction:column;min-height:0;">'
+        f'<div style="font-size:1.5cqw;font-weight:800;color:{INK};margin-bottom:1cqw;">■ TF-IDF 特徴語</div>'
+        f'{left_body}</div>'
+    )
+
+    # 右：象徴的な N=1 コメント
     if not b["samples"]:
-        rows_html = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.4cqw;">本文付きの口コミがありません。</div>'
+        rows_html = f'<div style="flex:1;color:{SUB};font-size:1.2cqw;">口コミ本文がありません。</div>'
     else:
         rows_html = '<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
         for i, s in enumerate(b["samples"], 1):
             rows_html += (
-                '<div style="display:flex;gap:1.4cqw;flex:1;padding:.7cqw 0;border-top:1px solid #EEEDE7;align-items:center;">'
-                f'<div style="flex:none;width:6cqw;font-size:1.1cqw;font-weight:800;color:{ACCENT};line-height:1.2;">口コミ<br>{i}</div>'
-                f'<div style="flex:1;font-size:1.2cqw;line-height:1.5;color:#3A434E;overflow:hidden;">{escape(_clip(s, 150))}</div></div>'
+                '<div style="display:flex;gap:1.2cqw;flex:1;padding:.6cqw 0;border-top:1px solid #EEEDE7;align-items:center;">'
+                f'<div style="flex:none;width:5.5cqw;font-size:1.05cqw;font-weight:800;color:{ACCENT};line-height:1.2;">N=1<br>#{i}</div>'
+                f'<div style="flex:1;font-size:1.15cqw;line-height:1.5;color:#3A434E;overflow:hidden;">{escape(_clip(s, 120))}</div></div>'
             )
         rows_html += '</div>'
-    note = (
-        '<div style="display:flex;gap:1.4cqw;margin-top:1cqw;padding:1.2cqw 1.4cqw;background:#FBF4F9;border-radius:1cqw;align-items:center;">'
-        f'<div style="flex:none;width:6cqw;font-size:1.2cqw;font-weight:800;color:{ACCENT};">示唆</div>'
-        f'<div style="flex:1;font-size:1.2cqw;line-height:1.5;font-weight:600;color:{INK};">{escape(_clip(b["n1_note"], 130))}</div></div>'
+    right = (
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0;">'
+        f'<div style="font-size:1.5cqw;font-weight:800;color:{INK};margin-bottom:1cqw;">■ 象徴的な口コミ（N=1）</div>'
+        f'{rows_html}</div>'
     )
-    inner = _head("SLIDE 04", "この施設に対する特徴的な口コミ（N=1／ミクロ分析）",
-                  "平均には表れない、この施設を象徴する口コミと示唆") + rows_html + note
+
+    note = (
+        '<div style="display:flex;gap:1.4cqw;margin-top:1cqw;padding:1.1cqw 1.4cqw;background:#FBF4F9;border-radius:1cqw;align-items:center;">'
+        f'<div style="flex:none;width:5.5cqw;font-size:1.15cqw;font-weight:800;color:{ACCENT};">示唆</div>'
+        f'<div style="flex:1;font-size:1.15cqw;line-height:1.5;font-weight:600;color:{INK};">{escape(_clip(b["n1_note"], 120))}</div></div>'
+    )
+    body = f'<div style="flex:1;display:flex;gap:2.6cqw;min-height:0;">{left}{right}</div>{note}'
+    inner = _head("SLIDE 04", "特徴語分析と象徴的な口コミ（TF-IDF ／ N=1）",
+                  "平均には表れない、この施設を象徴する特徴語と口コミ") + body
     return _canvas(inner)

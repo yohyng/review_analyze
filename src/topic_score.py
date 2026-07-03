@@ -159,37 +159,101 @@ class TopicDef:
     weight: float
 
 
-# 施設レビューの標準的な評価観点（＝独自指標の軸）。重みは正規化して使用。
+# ReviewLens の 23観点（22トピック＋「全体」）。「全体」は集計値なので軸には含めず、
+# ここでは 22 の評価観点を定義する。重みは analyze 時に正規化。
 DEFAULT_TOPICS: List[TopicDef] = [
-    TopicDef("接客・スタッフ対応", [
+    TopicDef("提供内容の品質", [
+        "品質", "クオリティ", "完成度", "仕上がり", "出来", "美味しい",
+        "おいしい", "上質", "良質", "料理", "商品", "味",
+    ], 1.2),
+    TopicDef("提供内容の多様性", [
+        "種類", "豊富", "バリエーション", "品揃え", "多彩", "選択肢",
+        "ラインナップ", "多様", "いろいろ", "幅広い",
+    ], 0.7),
+    TopicDef("提供内容の独自性", [
+        "独自", "オリジナル", "個性", "ユニーク", "唯一", "特別",
+        "こだわり", "他にない", "ここだけ", "斬新",
+    ], 0.7),
+    TopicDef("提供内容の更新性", [
+        "新作", "新しい", "最新", "季節", "限定", "リニューアル",
+        "更新", "新メニュー", "旬", "変わる",
+    ], 0.6),
+    TopicDef("スタッフ対応", [
         "接客", "スタッフ", "店員", "従業員", "対応", "丁寧", "親切",
-        "笑顔", "気配り", "サービス", "態度", "愛想", "ホスピタリティ",
-    ], 0.18),
-    TopicDef("提供内容・品質", [
-        "品質", "内容", "美味しい", "おいしい", "料理", "商品", "メニュー",
-        "クオリティ", "鮮度", "盛り付け", "ボリューム", "絶品", "本格",
-    ], 0.20),
-    TopicDef("清潔感・設備", [
-        "清潔", "きれい", "綺麗", "トイレ", "設備", "掃除", "衛生",
-        "アメニティ", "新しい", "古い", "汚い", "手入れ",
-    ], 0.15),
-    TopicDef("空間・雰囲気", [
-        "雰囲気", "空間", "内装", "居心地", "おしゃれ", "静か", "広い",
-        "狭い", "照明", "音楽", "デザイン", "落ち着く", "開放",
-    ], 0.15),
-    TopicDef("価格・コストパフォーマンス", [
-        "価格", "値段", "料金", "コスパ", "高い", "安い", "割高", "お得",
-        "コストパフォーマンス", "金額", "予算", "リーズナブル",
-    ], 0.14),
+        "笑顔", "気配り", "態度", "愛想", "ホスピタリティ",
+    ], 1.2),
+    TopicDef("スタッフ専門性", [
+        "専門", "知識", "詳しい", "プロ", "説明", "的確", "技術",
+        "経験", "熟練", "ソムリエ", "コンシェルジュ",
+    ], 0.8),
+    TopicDef("サービスの種類", [
+        "サービス", "特典", "オプション", "送迎", "貸出", "アメニティ",
+        "サービス内容", "無料", "プラン",
+    ], 0.7),
+    TopicDef("情報提供", [
+        "案内", "説明", "情報", "表示", "分かりやすい", "掲示",
+        "メニュー表", "看板", "告知", "アナウンス",
+    ], 0.6),
+    TopicDef("空間の機能性", [
+        "機能", "使いやすい", "動線", "広さ", "設備", "レイアウト",
+        "配置", "使い勝手", "コンセント", "収納",
+    ], 0.7),
+    TopicDef("空間の質感", [
+        "質感", "素材", "内装", "高級感", "上質", "しつらえ", "調度",
+        "木", "石", "重厚", "テクスチャ",
+    ], 0.8),
+    TopicDef("空間の快適性", [
+        "快適", "居心地", "静か", "落ち着く", "リラックス", "ゆったり",
+        "過ごしやすい", "静粛", "寛げ", "癒",
+    ], 1.0),
+    TopicDef("空間の感情的インパクト", [
+        "感動", "印象的", "圧巻", "驚き", "世界観", "没入", "記憶",
+        "特別感", "感激", "ドラマ", "非日常",
+    ], 0.8),
+    TopicDef("美的完成度", [
+        "美しい", "おしゃれ", "デザイン", "洗練", "綺麗", "きれい",
+        "映え", "眺め", "景色", "スタイリッシュ", "美的",
+    ], 0.8),
+    TopicDef("料金の適正さ", [
+        "価格", "値段", "料金", "適正", "高い", "安い", "妥当",
+        "コスパ", "割高", "見合う", "リーズナブル",
+    ], 1.0),
+    TopicDef("料金割引・決済", [
+        "割引", "クーポン", "支払い", "決済", "カード", "キャッシュレス",
+        "ポイント", "会計", "精算", "電子マネー",
+    ], 0.5),
     TopicDef("立地・アクセス", [
-        "立地", "アクセス", "場所", "近い", "便利", "遠い", "駐車場",
-        "交通", "徒歩", "ロケーション", "最寄り",
-    ], 0.10),
-    TopicDef("待ち時間・予約", [
-        "待ち", "待つ", "混雑", "予約", "並ぶ", "行列", "スムーズ",
-        "案内", "受付", "待たさ", "空い",
-    ], 0.08),
+        "立地", "アクセス", "駅", "場所", "近い", "便利", "遠い",
+        "駐車場", "徒歩", "ロケーション", "最寄り",
+    ], 0.9),
+    TopicDef("ブランド信頼感", [
+        "信頼", "安心", "安定", "ブランド", "実績", "定評", "さすが",
+        "期待通り", "間違いない", "信用",
+    ], 0.7),
+    TopicDef("ブランドの歴史性", [
+        "歴史", "伝統", "老舗", "創業", "由緒", "昔", "長年",
+        "受け継", "伝統的", "格式",
+    ], 0.5),
+    TopicDef("比較優位性", [
+        "一番", "最高", "他", "比べ", "より良い", "優れ", "ダントツ",
+        "群を抜", "ナンバーワン", "随一",
+    ], 0.6),
+    TopicDef("体験満足度", [
+        "満足", "大満足", "良かった", "最高", "楽しい", "素晴らしい",
+        "感謝", "幸せ", "充実", "感動", "また来たい",
+    ], 1.2),
+    TopicDef("推奨意向", [
+        "おすすめ", "勧め", "紹介", "教えたい", "ぜひ", "推薦", "人に",
+    ], 1.0),
+    TopicDef("再訪意向", [
+        "また", "リピート", "再訪", "通い", "常連", "何度も",
+        "また来", "また行", "次回",
+    ], 0.9),
 ]
+
+# SLIDE 02 のラベル順（全体を末尾に）
+TOPIC_ORDER: List[str] = [t.name for t in DEFAULT_TOPICS]
+OVERALL_LABEL = "全体"
 
 POSITIVE_WORDS: List[str] = [
     "良い", "よい", "いい", "素晴らしい", "最高", "美味しい", "おいしい",
@@ -316,6 +380,35 @@ class TopicScoreResult:
     def sorted_by_sentiment(self, reverse: bool = True) -> List[TopicScore]:
         return sorted(self.topics, key=lambda t: t.sentiment, reverse=reverse)
 
+    def sentiment_by_topic(self) -> dict:
+        """{トピック名: 感情スコア(0-100)}。"""
+        return {t.name: t.sentiment_100 for t in self.topics}
+
+    def salience_by_topic(self) -> dict:
+        return {t.name: t.salience_pct for t in self.topics}
+
+
+def _topic_probabilities_batch(sent_emb: np.ndarray, topic_emb: np.ndarray,
+                               boost_factor: float = 0.5) -> np.ndarray:
+    """topic_probabilities を全文まとめてベクトル化（数値は同一）。[n_sent, k] を返す。"""
+    na = np.linalg.norm(sent_emb, axis=1)          # [n]
+    nb = np.linalg.norm(topic_emb, axis=1)         # [k]
+    C = (sent_emb @ topic_emb.T) / (np.outer(na, nb) + 1e-12)   # コサイン [n,k]
+
+    c_mean = C.mean(axis=1, keepdims=True)
+    c_std = C.std(axis=1, keepdims=True)
+    z = (C - c_mean) / (c_std + 1e-6)
+    T = np.clip(0.3 / (c_std + 1e-6), 0.05, 0.7)   # [n,1]
+    logits = z / T
+    logits = logits - logits.max(axis=1, keepdims=True)
+    ex = np.exp(logits)
+    p = ex / ex.sum(axis=1, keepdims=True)
+
+    N = topic_emb.shape[0]
+    boost = np.maximum(p - 1.0 / N, 0) * boost_factor
+    p_boost = p + boost
+    return p_boost / p_boost.sum(axis=1, keepdims=True)
+
 
 def analyze_reviews(
     reviews: List[str],
@@ -346,22 +439,23 @@ def analyze_reviews(
     if sent_emb is None:
         return TopicScoreResult(empty=True)
 
-    # 文ごとに感情値・トピック確率を計算 → レビュー単位に集計
+    # 感情値（文単位・軽量）とトピック確率（ベクトル化）
+    v_all = np.array([
+        sentiment_value(keyword_sentiment_probs(_s, POSITIVE_WORDS, NEGATIVE_WORDS))
+        for _s in all_sentences
+    ])
+    P = _topic_probabilities_batch(sent_emb, topic_emb)   # [n_sent, k]
+    S_scores = v_all[:, None] * P                          # 文×トピックスコア
+
+    # レビュー単位に集計（仕様どおり：文平均 → レビュー、次に全レビュー平均）
     per_review_topic_scores = []
     per_review_salience = []
     idx = 0
     for rs in review_sentences:
-        s_scores = []
-        s_sal = []
-        for _s in rs:
-            probs = keyword_sentiment_probs(_s, POSITIVE_WORDS, NEGATIVE_WORDS)
-            v = sentiment_value(probs)
-            p = topic_probabilities(sent_emb[idx], topic_emb)
-            s_scores.append(sentence_topic_score(v, p))
-            s_sal.append(p)
-            idx += 1
-        per_review_topic_scores.append(review_topic_average(np.array(s_scores)))
-        per_review_salience.append(np.mean(np.array(s_sal), axis=0))
+        m = len(rs)
+        per_review_topic_scores.append(S_scores[idx:idx + m].mean(axis=0))
+        per_review_salience.append(P[idx:idx + m].mean(axis=0))
+        idx += m
 
     all_rts = np.array(per_review_topic_scores)   # [R, N]
     all_sal = np.array(per_review_salience)        # [R, N]
@@ -411,3 +505,20 @@ def analyze_facility(
     ).fetchall()
     reviews = [r[0] for r in rows]
     return analyze_reviews(reviews, topics=topics, backend=backend)
+
+
+def facility_topic_matrix(
+    conn,
+    names: Optional[List[str]] = None,
+    topics: Optional[List[TopicDef]] = None,
+    backend: str = "lightweight",
+) -> dict:
+    """全施設のトピックスコアを算出（比較用）。
+
+    Returns {facility_name: TopicScoreResult}。空本文の施設は結果 empty。
+    重い処理なので呼び出し側でキャッシュすること。
+    """
+    if names is None:
+        from . import analysis
+        names = analysis.facility_names(conn)
+    return {n: analyze_facility(conn, n, topics=topics, backend=backend) for n in names}

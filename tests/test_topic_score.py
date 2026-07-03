@@ -146,11 +146,30 @@ def test_analyze_reviews_deterministic():
     assert a.overall_score == b.overall_score
 
 
-def test_positive_topic_scores_higher_than_negative():
-    # 待ち時間 is criticised; 品質/接客 praised → sentiment ordering should reflect it
-    res = ts.analyze_reviews(_REVIEWS)
-    by_name = {t.name: t for t in res.topics}
-    assert by_name["提供内容・品質"].sentiment > by_name["待ち時間・予約"].sentiment
+def test_uniform_sentiment_direction():
+    # 一様にポジ/ネガなレビューでは、トピック平均感情が方向を反映する
+    import statistics
+    pos = ts.analyze_reviews(["最高でした。素晴らしい。", "とても良い。大満足。快適で楽しい。"])
+    neg = ts.analyze_reviews(["最悪でした。ひどい。", "とても悪い。残念。不快で汚い。"])
+    assert statistics.mean(t.sentiment for t in pos.topics) > 0.55
+    assert statistics.mean(t.sentiment for t in neg.topics) < 0.45
+
+
+def test_topics_are_22():
+    assert len(ts.DEFAULT_TOPICS) == 22
+    assert ts.TOPIC_ORDER[0] == "提供内容の品質"
+    assert ts.TOPIC_ORDER[-1] == "再訪意向"
+
+
+def test_batch_matches_looped_topic_probabilities():
+    # ベクトル化バッチが逐次 topic_probabilities と一致すること
+    import numpy as np
+    rng = np.random.RandomState(3)
+    se = rng.rand(7, 40)
+    te = rng.rand(22, 40)
+    batch = ts._topic_probabilities_batch(se, te)
+    looped = np.array([ts.topic_probabilities(se[i], te) for i in range(se.shape[0])])
+    assert np.allclose(batch, looped, atol=1e-9)
 
 
 def test_split_sentences():

@@ -149,6 +149,40 @@ def topic_score_bar(result) -> go.Figure:
     return fig
 
 
+def topic_matrix_bar(
+    names: list[str],
+    values: list[float],
+    target_label: str = "対象施設",
+    overall_value: float | None = None,
+) -> go.Figure:
+    """SLIDE 02: 23観点（22トピック＋全体）の縦棒。感情スコア 0-100。"""
+    xs = list(names)
+    ys = list(values)
+    if overall_value is not None:
+        xs = xs + ["全体"]
+        ys = ys + [overall_value]
+    fig = go.Figure(
+        go.Bar(
+            x=xs, y=ys, marker_color=_ACCENT,
+            hovertemplate="%{x}<br>感情スコア %{y:.1f}<extra></extra>",
+        )
+    )
+    # Y軸は正の画像に合わせて 0-120（目盛20刻み）
+    fig.update_layout(
+        yaxis=dict(title="", range=[0, 120], dtick=20, tickformat=".2f",
+                   gridcolor="#ECEBE5", zeroline=False),
+        xaxis=dict(tickangle=-90, tickfont=dict(size=11)),
+        height=460,
+        margin=dict(t=10, b=150, l=10, r=10),
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        showlegend=False,
+        bargap=0.45,
+        font=dict(family="Manrope, 'Noto Sans JP', sans-serif", size=11),
+    )
+    return fig
+
+
 def topic_salience_bar(result) -> go.Figure:
     """トピック別の言及度（どれだけ語られているか）を降順で。"""
     topics = sorted(result.topics, key=lambda t: t.salience, reverse=True)

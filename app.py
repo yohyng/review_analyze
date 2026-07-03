@@ -464,6 +464,22 @@ def _review_counts() -> dict[str, int]:
     return {r[0]: r[1] for r in rows}
 
 
+def _topic_sig() -> tuple:
+    """Data signature so the topic matrix cache invalidates when reviews change."""
+    rows = conn.execute(
+        """SELECT f.name, COUNT(r.id) FROM facility f
+           LEFT JOIN review r ON r.facility_id = f.id GROUP BY f.id""",
+    ).fetchall()
+    return tuple(sorted((r[0], r[1]) for r in rows))
+
+
+@st.cache_data(show_spinner=False)
+def _topic_matrix_cached(sig):
+    """{facility: TopicScoreResult} for all facilities (heavy → cached by data sig)."""
+    names = analysis.facility_names(conn)
+    return topic_score.facility_topic_matrix(conn, names)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ═════════════════════════════════════════════════════════════════════════════
 # ANALYSIS MODE
@@ -697,13 +713,15 @@ if st.session_state["app_mode"] == "analysis":
         _show(1, f"口コミ {_n_rev:,} 件のスコアを集計中")
         scoring.compute_and_store(conn, _fid)
 
-        # ③ ポジ／ネガの感情を分析中  ← 独自指標（感情・トピック統合スコア）を算出
-        _show(2, f"{_n_rev:,} 件の感情・トピックを解析中（時間がかかる場合があります）")
+        # ③ ポジ／ネガの感情を分析中  ← 22観点の感情・トピック統合スコア（全施設）
+        _n_fac = len(_all_facility_names())
+        _show(2, f"{_n_fac} 施設・{_n_rev:,} 件の感情／トピックを解析中（時間がかかる場合があります）")
         _profile = text_analysis.build_profile(conn, _target, top_n=20)
-        _ts_result = topic_score.analyze_facility(conn, _target)
+        _topic_matrix = _topic_matrix_cached(_topic_sig())
+        _ts_result = _topic_matrix.get(_target) or topic_score.analyze_facility(conn, _target)
 
-        # ④ トピックを分類中（TF-IDF）
-        _show(3, f"{_ts_result.n_sentences:,} 文からトピックを抽出中")
+        # ④ トピックを分類中（TF-IDF）  ← SLIDE 04 用
+        _show(3, f"{_ts_result.n_sentences:,} 文の特徴語を抽出中")
         _topic_list = topics.extract_topics(_revs, n_topics=5)
 
         # ⑤ 競合と比較中（＋任意でLLMインサイト）
@@ -744,8 +762,7 @@ if st.session_state["app_mode"] == "analysis":
 
         # Build the preview bundle now (so preview reruns stay instant)
         st.session_state["an_preview"] = preview.build_bundle(
-            conn, _target, _ts_result, _profile, _insights,
-            an_mode=_an_mode, axis=_axis, specific_name=_specific_name,
+            conn, _target, _topic_matrix, _profile, _insights,
         )
         st.session_state["an_result_path"] = str(_tmp)
         st.session_state["an_topic_list"] = _topic_list
@@ -796,7 +813,26 @@ if st.session_state["app_mode"] == "analysis":
             st.markdown(preview.html_overview(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_profile(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide01(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_slide02(_bundle), unsafe_allow_html=True)
+
+            # SLIDE 02 — 23観点の縦棒（plotly）を枠付きカードで
+            with st.container(border=True):
+                st.markdown(preview.slide02_head(), unsafe_allow_html=True)
+                if _bundle.get("topic_names"):
+                    st.plotly_chart(
+                        charts.topic_matrix_bar(
+                            _bundle["topic_names"], _bundle["topic_values"],
+                            overall_value=_bundle.get("overall_sentiment"),
+                        ),
+                        use_container_width=True, key="pv_ts_matrix",
+                    )
+                    st.caption(
+                        f"総合感情スコア {_bundle.get('overall_sentiment')}/100 ・ "
+                        f"分析文数 {_bundle.get('n_sentences')} ・ "
+                        f"感情・トピック統合スコアモデルによる算出"
+                    )
+                else:
+                    st.info("トピックスコアの算出には本文付きの口コミが必要です。")
+
             st.markdown(preview.html_slide03(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide04(_bundle), unsafe_allow_html=True)
         else:
@@ -1351,8 +1387,14 @@ else:
             _best = _tres.sorted_by_sentiment()[0] if _tres.topics else None
             _c4.metric("最高評価の観点", _best.name if _best else "-")
 
+            _tsent = _tres.sentiment_by_topic()
+            _tnames = [t for t in topic_score.TOPIC_ORDER if t in _tsent]
             st.plotly_chart(
-                charts.topic_score_bar(_tres), use_container_width=True, key="adm_ts_bar"
+                charts.topic_matrix_bar(
+                    _tnames, [_tsent[t] for t in _tnames],
+                    overall_value=_tres.weighted_sentiment_100,
+                ),
+                use_container_width=True, key="adm_ts_bar",
             )
 
             _cl, _cr = st.columns([3, 2])
