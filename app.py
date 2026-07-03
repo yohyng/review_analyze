@@ -750,27 +750,12 @@ if st.session_state["app_mode"] == "analysis":
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-        # ── Stacked slides ──────────────────────────────────────────────── #
+        # ── Stacked 16:10 slide canvases ────────────────────────────────── #
         if _bundle:
             st.markdown(preview.html_overview(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_profile(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide01(_bundle), unsafe_allow_html=True)
-
-            # SLIDE 02 — sentiment/topic chart inside a bordered card
-            with st.container(border=True):
-                st.markdown(preview.slide02_head(), unsafe_allow_html=True)
-                if _ts is not None and not _ts.empty:
-                    st.plotly_chart(
-                        charts.topic_score_bar(_ts), use_container_width=True, key="pv_ts"
-                    )
-                    _bk = "SBERT" if _ts.backend == "sbert" else "軽量TF-IDF"
-                    st.caption(
-                        f"総合感情スコア {_ts.weighted_sentiment_100:.0f}/100 ・ "
-                        f"分析文数 {_ts.n_sentences} ・ バックエンド: {_bk}"
-                    )
-                else:
-                    st.info("トピックスコアの算出には本文付きの口コミが必要です。")
-
+            st.markdown(preview.html_slide02(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide03(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide04(_bundle), unsafe_allow_html=True)
         else:

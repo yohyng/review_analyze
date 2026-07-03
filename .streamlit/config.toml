@@ -1,0 +1,10 @@
+# VoiceBAUM is a light-themed app (warm neutral background + white cards).
+# Pin the light theme so Streamlit widgets stay readable even when the
+# viewer's OS/browser is in dark mode.
+[theme]
+base = "light"
+primaryColor = "#B0338A"
+backgroundColor = "#F7F7F4"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#16202B"
+font = "sans serif"

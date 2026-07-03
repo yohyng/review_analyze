@@ -1,8 +1,9 @@
-"""In-app analysis result screen — render the report as stacked HTML slides.
+"""In-app analysis result screen — render the report as 16:10 slide canvases.
 
 Produces a serialisable "bundle" of real data (KPIs, comparison, insights,
-N=1 comments) and HTML builders for each slide, matching the VoiceBAUM
-design. Charts (SLIDE 02) are rendered separately with plotly in app.py.
+topic bars, N=1 comments) and HTML builders for each slide. Every slide is a
+fixed 16:10 (PowerPoint-shaped) canvas using `container-type:inline-size` +
+`cqw` units, so it scales proportionally like a slide thumbnail at any width.
 """
 from __future__ import annotations
 
@@ -11,15 +12,30 @@ from datetime import date
 from html import escape
 from typing import Optional
 
-from . import analysis, text_analysis
+from . import analysis
 
 # palette (VoiceBAUM)
 ACCENT = "#B0338A"
 INK = "#16202B"
 SUB = "#8A9098"
 POS = "#4F8A6B"
+NEU = "#C9C3B6"
 NEG = "#C66B61"
-LINE = "#E9E8E2"
+LINE = "#E1E0D9"
+CARD_LINE = "#E9E8E2"
+
+
+def _clip(s: str, n: int) -> str:
+    s = s or ""
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def _sent_color(v100: float) -> str:
+    if v100 >= 60:
+        return POS
+    if v100 <= 40:
+        return NEG
+    return "#C79A2E"  # amber for the neutral band, readable on white
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -57,7 +73,6 @@ def build_bundle(
     ).fetchone() if fid else None
     pos_rate = round(100 * pr[0] / pr[1]) if pr and pr[1] else None
 
-    # rank across facilities by average rating
     ranked = sorted(
         [
             (r[0], r[1]) for r in conn.execute(
@@ -71,7 +86,6 @@ def build_bundle(
     total_fac = len(ranked)
     rank = next((i + 1 for i, (nm, _) in enumerate(ranked) if nm == target), None)
 
-    # comparisons (score-table based)
     comp_all = analysis.build_comparison(conn, target, "all_avg")
     comp_peer = analysis.build_comparison(conn, target, "comparison_avg")
     comp = None
@@ -79,20 +93,17 @@ def build_bundle(
         comp = analysis.build_comparison(conn, target, axis, specific_name=specific_name)
     comp = comp or comp_peer or comp_all
 
-    # strengths / weaknesses — score comparison if available, else topic sentiment
     strengths, weaknesses = [], []
     basis = "感情スコア"
-    baseline_label = "中立(50)"
     if comp is not None and not comp.diff.empty:
         basis = "スコア比較"
-        baseline_label = comp.baseline_label
         diff_sorted = comp.diff.sort_values(ascending=False)
         for m in diff_sorted.head(5).index:
-            strengths.append((m, round(float(comp.target[m]), 2),
-                              round(float(comp.baseline[m]), 2), round(float(comp.diff[m]), 2)))
+            strengths.append((m, round(float(comp.target[m]), 1),
+                              round(float(comp.baseline[m]), 1), round(float(comp.diff[m]), 2)))
         for m in diff_sorted.tail(5).index[::-1]:
-            weaknesses.append((m, round(float(comp.target[m]), 2),
-                               round(float(comp.baseline[m]), 2), round(float(comp.diff[m]), 2)))
+            weaknesses.append((m, round(float(comp.target[m]), 1),
+                               round(float(comp.baseline[m]), 1), round(float(comp.diff[m]), 2)))
     elif ts is not None and not ts.empty:
         by_sent = ts.sorted_by_sentiment(reverse=True)
         for t in by_sent[:5]:
@@ -102,11 +113,16 @@ def build_bundle(
 
     overall_score = None
     if comp is not None and not comp.target.empty:
-        overall_score = round(float(comp.target.mean()), 2)
+        overall_score = round(float(comp.target.mean()), 1)
     elif ts is not None and not ts.empty:
         overall_score = ts.weighted_sentiment_100
 
-    # SLIDE 01 analysis rows
+    # SLIDE 02 — topic sentiment bars
+    topics_bars = []
+    if ts is not None and not ts.empty:
+        for t in ts.sorted_by_sentiment(reverse=True):
+            topics_bars.append((t.name, t.sentiment_100, t.salience_pct))
+
     analysis_rows = [
         ("分析対象", target),
         ("登録施設数", f"{total_fac} 施設"),
@@ -118,7 +134,6 @@ def build_bundle(
         ("最も弱い項目", weaknesses[0][0] if weaknesses else "—"),
     ]
 
-    # insight text (LLM if available, else generated from data)
     if insights is not None and getattr(insights, "summary", None):
         insight = {
             "結論": insights.summary,
@@ -130,15 +145,14 @@ def build_bundle(
         s0 = strengths[0][0] if strengths else "—"
         w0 = weaknesses[0][0] if weaknesses else "—"
         insight = {
-            "結論": f"「{target}」は{basis}において総合スコア {overall_score} "
+            "結論": (f"「{target}」は{basis}で総合スコア {overall_score}"
                     f"（{total_fac}施設中 {rank}位）。強みは「{s0}」、課題は「{w0}」。"
-                    if overall_score is not None else f"「{target}」の口コミを分析しました。",
+                    if overall_score is not None else f"「{target}」の口コミを分析しました。"),
             "強み": f"「{s0}」が高く評価されています。",
             "弱み": f"「{w0}」に改善余地があります。",
             "示唆": f"「{w0}」の改善が体験全体の評価向上に寄与する可能性があります。",
         }
 
-    # SLIDE 04 — N=1 representative comments
     samples = []
     if profile is not None and not profile.empty:
         samples = list(profile.high_rated[:2]) + list(profile.low_rated[:1])
@@ -150,8 +164,6 @@ def build_bundle(
         ).fetchall()
         samples = [r[0] for r in rows]
 
-    n1_note = insight["示唆"]
-
     return {
         "target": target,
         "category": category,
@@ -162,53 +174,52 @@ def build_bundle(
         "total_fac": total_fac,
         "date": f"{date.today():%Y年%m月%d日}",
         "basis": basis,
-        "baseline_label": baseline_label,
         "strengths": strengths,
         "weaknesses": weaknesses,
         "analysis_rows": analysis_rows,
         "insight": insight,
         "samples": samples,
-        "n1_note": n1_note,
+        "n1_note": insight["示唆"],
+        "topics_bars": topics_bars,
+        "overall_sentiment": ts.weighted_sentiment_100 if (ts is not None and not ts.empty) else None,
+        "n_sentences": ts.n_sentences if (ts is not None and not ts.empty) else 0,
     }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HTML builders
+# 16:10 canvas primitives (all sizes in cqw)
 # ═══════════════════════════════════════════════════════════════════════════
-def _card(inner: str) -> str:
+def _canvas(inner: str) -> str:
     return (
-        f'<div style="background:#fff;border:1px solid {LINE};border-radius:16px;'
-        f'box-shadow:0 1px 2px rgba(20,30,40,.04),0 14px 36px rgba(20,30,40,.05);'
-        f'padding:26px 30px;margin-bottom:18px;">{inner}</div>'
+        f'<div style="width:100%;aspect-ratio:16/10;background:#fff;border:1px solid {CARD_LINE};'
+        'border-radius:14px;box-shadow:0 1px 2px rgba(20,30,40,.04),0 14px 36px rgba(20,30,40,.05);'
+        'overflow:hidden;container-type:inline-size;position:relative;margin-bottom:16px;">'
+        '<div style="position:absolute;inset:0;padding:4.4cqw 5cqw;display:flex;flex-direction:column;">'
+        f'{inner}</div></div>'
     )
 
 
 def _badge(text: str, bg: str = ACCENT) -> str:
     return (
-        f'<span style="font-size:11px;font-weight:800;letter-spacing:.08em;color:#fff;'
-        f'background:{bg};padding:4px 10px;border-radius:6px;white-space:nowrap;">{escape(text)}</span>'
+        f'<span style="font-size:1.15cqw;font-weight:800;letter-spacing:.06em;color:#fff;'
+        f'background:{bg};padding:.45cqw .9cqw;border-radius:.6cqw;white-space:nowrap;">{escape(text)}</span>'
     )
 
 
-def _slide_head(badge: str, title: str, subtitle: str = "") -> str:
-    sub = (f'<div style="font-size:12.5px;color:{SUB};margin:2px 0 16px;">{escape(subtitle)}</div>'
-           if subtitle else '<div style="height:14px"></div>')
+def _head(badge: str, title: str, sub: str = "") -> str:
+    sub_html = (f'<div style="font-size:1.25cqw;color:{SUB};margin:.3cqw 0 1.8cqw;">{escape(sub)}</div>'
+                if sub else '<div style="height:1.6cqw"></div>')
     return (
-        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:2px;">'
+        '<div style="display:flex;align-items:center;gap:1.2cqw;margin-bottom:.2cqw;">'
         + _badge(badge)
-        + f'<span style="font-size:19px;font-weight:800;color:{INK};">{escape(title)}</span></div>'
-        + sub
+        + f'<span style="font-size:2.4cqw;font-weight:800;color:{INK};line-height:1.1;">{escape(title)}</span></div>'
+        + sub_html
     )
 
 
-def slide02_head() -> str:
-    """SLIDE 02 head only (chart is rendered separately by st.plotly_chart)."""
-    return _slide_head(
-        "SLIDE 02", "感情評価・トピック分類",
-        "トピック（指標軸）ごとの感情スコア（50=中立・言及度つき）",
-    )
-
-
+# ═══════════════════════════════════════════════════════════════════════════
+# Slides
+# ═══════════════════════════════════════════════════════════════════════════
 def html_overview(b: dict) -> str:
     tiles = [
         ("総合評価", f"{b['avg_rating']}" if b["avg_rating"] is not None else "—", "/ 5.0"),
@@ -219,29 +230,42 @@ def html_overview(b: dict) -> str:
     cells = ""
     for label, value, sub in tiles:
         cells += (
-            f'<div style="flex:1;min-width:120px;border:1px solid #EDECE6;border-radius:12px;'
-            f'padding:16px 18px;background:#FBFBF9;">'
-            f'<div style="font-size:12px;color:{SUB};font-weight:600;margin-bottom:8px;">{escape(label)}</div>'
-            f'<div style="display:flex;align-items:baseline;gap:5px;">'
-            f'<span style="font-size:30px;font-weight:800;color:{INK};letter-spacing:-.02em;">{value}</span>'
-            f'<span style="font-size:12px;color:#A7ABB0;font-weight:600;">{escape(sub)}</span></div></div>'
+            f'<div style="flex:1;border:1px solid #EDECE6;border-radius:1.3cqw;padding:2cqw 2.2cqw;background:#FBFBF9;">'
+            f'<div style="font-size:1.35cqw;color:{SUB};font-weight:600;margin-bottom:1cqw;">{escape(label)}</div>'
+            f'<div style="display:flex;align-items:baseline;gap:.5cqw;">'
+            f'<span style="font-size:3.6cqw;font-weight:800;color:{INK};letter-spacing:-.02em;line-height:1;font-variant-numeric:tabular-nums;">{value}</span>'
+            f'<span style="font-size:1.3cqw;color:#A7ABB0;font-weight:600;">{escape(sub)}</span></div></div>'
         )
-    inner = (
-        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px;">'
-        '<div>'
-        '<div style="display:flex;align-items:center;gap:9px;margin-bottom:10px;">'
+    top = (
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:2cqw;">'
+        '<div style="min-width:0;">'
+        '<div style="display:flex;align-items:center;gap:1cqw;margin-bottom:1.6cqw;">'
         + _badge("概要")
-        + f'<span style="font-size:12px;font-weight:700;letter-spacing:.1em;color:{ACCENT};">口コミ分析レポート</span></div>'
-        + f'<div style="font-size:40px;font-weight:800;letter-spacing:-.02em;color:{INK};line-height:1.05;">{escape(b["target"])}</div>'
-        + f'<div style="font-size:14px;color:{SUB};margin-top:6px;">{escape(b["category"])}</div>'
+        + f'<span style="font-size:1.4cqw;font-weight:700;letter-spacing:.1em;color:{ACCENT};">口コミ分析レポート</span></div>'
+        + f'<div style="font-size:4.8cqw;font-weight:800;letter-spacing:-.02em;color:{INK};line-height:1.05;">{escape(b["target"])}</div>'
+        + f'<div style="font-size:1.7cqw;color:{SUB};margin-top:1cqw;">{escape(b["category"])}</div>'
         '</div>'
         '<div style="text-align:right;flex:none;">'
-        f'<div style="font-size:16px;font-weight:800;color:{INK};">VoiceBAUM</div>'
-        f'<div style="font-size:12px;color:#A7ABB0;margin-top:4px;">作成日 {escape(b["date"])}</div>'
+        f'<div style="font-size:1.9cqw;font-weight:800;color:{INK};">VoiceBAUM</div>'
+        f'<div style="font-size:1.3cqw;color:#A7ABB0;margin-top:.5cqw;">作成日 {escape(b["date"])}</div>'
         '</div></div>'
-        f'<div style="display:flex;gap:14px;flex-wrap:wrap;">{cells}</div>'
     )
-    return _card(inner)
+    inner = top + '<div style="flex:1;"></div>' + f'<div style="display:flex;gap:1.6cqw;">{cells}</div>'
+    return _canvas(inner)
+
+
+def _table(rows, key_w="14cqw", key_bg="#ECEBE5", key_fs="1.45cqw", val_fs="1.55cqw", val_bold=True):
+    trs = ""
+    for i, (k, v) in enumerate(rows):
+        border = f"border-bottom:1px solid {LINE};" if i < len(rows) - 1 else ""
+        trs += (
+            f'<div style="display:flex;flex:1;{border}">'
+            f'<div style="width:{key_w};flex:none;background:{key_bg};padding:0 1.4cqw;'
+            f'font-size:{key_fs};font-weight:700;color:#3A434E;display:flex;align-items:center;">{escape(str(k))}</div>'
+            f'<div style="flex:1;padding:0 1.5cqw;font-size:{val_fs};color:{INK};display:flex;align-items:center;'
+            f'{"font-weight:700;" if val_bold else ""}white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{escape(str(v))}</div></div>'
+        )
+    return f'<div style="flex:1;display:flex;flex-direction:column;border:1px solid {LINE};border-radius:1cqw;overflow:hidden;">{trs}</div>'
 
 
 def html_profile(b: dict) -> str:
@@ -251,133 +275,145 @@ def html_profile(b: dict) -> str:
         ("住所", "—"),
         ("アクセス", "—"),
         ("開業", "—"),
-        ("口コミ", f"平均 ★{b['avg_rating']} ／ {b['n_reviews']:,} 件" if b["avg_rating"] is not None else f"{b['n_reviews']:,} 件"),
+        ("口コミ", (f"平均 ★{b['avg_rating']} ／ {b['n_reviews']:,} 件"
+                   if b["avg_rating"] is not None else f"{b['n_reviews']:,} 件")),
     ]
-    trs = ""
-    for i, (k, v) in enumerate(rows):
-        border = f"border-bottom:1px solid {LINE};" if i < len(rows) - 1 else ""
-        trs += (
-            f'<div style="display:flex;{border}">'
-            f'<div style="width:110px;flex:none;background:#F4F3EF;padding:12px 14px;'
-            f'font-size:13px;font-weight:700;color:#3A434E;">{escape(k)}</div>'
-            f'<div style="flex:1;padding:12px 16px;font-size:13.5px;color:{INK};">{escape(str(v))}</div></div>'
-        )
     photo = (
-        '<div style="flex:none;width:38%;min-width:220px;border-radius:12px;height:240px;'
-        'background:linear-gradient(160deg,#EFE7EC,#E9ECEE);border:1px solid #E4E3DD;'
-        'display:flex;align-items:center;justify-content:center;color:#A7ABB0;font-size:13px;">施設写真</div>'
+        '<div style="width:40cqw;flex:none;border-radius:1.4cqw;background:linear-gradient(160deg,#EFE7EC,#E9ECEE);'
+        'border:1px solid #E4E3DD;display:flex;align-items:center;justify-content:center;color:#A7ABB0;font-size:1.4cqw;">施設写真</div>'
     )
-    table = (
-        f'<div style="flex:1;min-width:260px;"><div style="font-size:14px;font-weight:800;color:{INK};margin-bottom:10px;">■ 基本情報</div>'
-        f'<div style="border:1px solid {LINE};border-radius:10px;overflow:hidden;">{trs}</div></div>'
+    right = (
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;">'
+        f'<div style="font-size:1.7cqw;font-weight:800;color:{INK};margin-bottom:1.2cqw;">■ 基本情報</div>'
+        + _table(rows) + '</div>'
     )
-    inner = _slide_head("PROFILE", "分析施設情報") + (
-        f'<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:stretch;">{photo}{table}</div>'
+    inner = _head("PROFILE", "分析施設情報") + (
+        f'<div style="flex:1;display:flex;gap:3cqw;min-height:0;">{photo}{right}</div>'
     )
-    return _card(inner)
-
-
-def _kv_table(rows) -> str:
-    trs = ""
-    for i, (k, v) in enumerate(rows):
-        border = f"border-bottom:1px solid {LINE};" if i < len(rows) - 1 else ""
-        trs += (
-            f'<div style="display:flex;{border}">'
-            f'<div style="width:130px;flex:none;background:#FBF4F9;padding:9px 12px;'
-            f'font-size:12.5px;font-weight:700;color:#3A434E;">{escape(str(k))}</div>'
-            f'<div style="flex:1;padding:9px 12px;font-size:13px;font-weight:700;color:{INK};">{escape(str(v))}</div></div>'
-        )
-    return f'<div style="border:1px solid {LINE};border-radius:10px;overflow:hidden;">{trs}</div>'
+    return _canvas(inner)
 
 
 def html_slide01(b: dict) -> str:
     left = (
-        f'<div style="flex:1;min-width:260px;"><div style="font-size:14px;font-weight:800;color:{INK};margin-bottom:10px;">■ 分析結果</div>'
-        + _kv_table(b["analysis_rows"]) + '</div>'
+        '<div style="width:36cqw;flex:none;display:flex;flex-direction:column;">'
+        f'<div style="font-size:1.6cqw;font-weight:800;color:{INK};margin-bottom:1cqw;">■ 分析結果</div>'
+        + _table(b["analysis_rows"], key_w="13cqw", key_bg="#FBF4F9", key_fs="1.25cqw", val_fs="1.35cqw") + '</div>'
     )
     ins = b["insight"]
-    ins_rows = [("結論", ins["結論"], ACCENT), ("強み", ins["強み"], POS),
-                ("弱み", ins["弱み"], NEG), ("示唆", ins["示唆"], "#3A434E")]
+    ins_rows = [("結論", _clip(ins["結論"], 160), ACCENT), ("強み", _clip(ins["強み"], 90), POS),
+                ("弱み", _clip(ins["弱み"], 90), NEG), ("示唆", _clip(ins["示唆"], 110), "#3A434E")]
     ins_html = ""
     for i, (tag, txt, col) in enumerate(ins_rows):
         border = f"border-bottom:1px solid {LINE};" if i < len(ins_rows) - 1 else ""
         ins_html += (
-            f'<div style="display:flex;{border}">'
-            f'<div style="width:64px;flex:none;padding:11px;font-size:13px;font-weight:800;color:{col};'
-            f'display:flex;align-items:center;justify-content:center;">{escape(tag)}</div>'
-            f'<div style="flex:1;padding:11px 13px;font-size:13px;line-height:1.6;color:#3A434E;">{escape(txt)}</div></div>'
+            f'<div style="display:flex;flex:1;{border}">'
+            f'<div style="width:7cqw;flex:none;padding:.8cqw;font-size:1.3cqw;font-weight:800;color:{col};'
+            'display:flex;align-items:center;justify-content:center;">' + escape(tag) + '</div>'
+            f'<div style="flex:1;padding:.8cqw 1cqw;font-size:1.2cqw;line-height:1.5;color:#3A434E;'
+            'display:flex;align-items:center;">' + escape(txt) + '</div></div>'
         )
     right = (
-        f'<div style="flex:1;min-width:260px;"><div style="font-size:14px;font-weight:800;color:{INK};margin-bottom:10px;">■ インサイト</div>'
-        f'<div style="border:1px solid {LINE};border-radius:10px;overflow:hidden;">{ins_html}</div>'
-        f'<div style="font-size:11px;color:#A7ABB0;margin-top:8px;">※ {escape(b["basis"])}に基づく自動生成。</div></div>'
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;">'
+        f'<div style="font-size:1.6cqw;font-weight:800;color:{INK};margin-bottom:1cqw;">■ インサイト</div>'
+        f'<div style="flex:1;display:flex;flex-direction:column;border:1px solid {LINE};border-radius:1cqw;overflow:hidden;">{ins_html}</div></div>'
     )
-    inner = _slide_head("SLIDE 01", "比較分析による特徴点抽出", "スコアから読み解く示唆") + (
-        f'<div style="display:flex;gap:22px;flex-wrap:wrap;">{left}{right}</div>'
+    inner = _head("SLIDE 01", "比較分析による特徴点抽出", "スコアから読み解く示唆") + (
+        f'<div style="flex:1;display:flex;gap:2.6cqw;min-height:0;">{left}{right}</div>'
     )
-    return _card(inner)
+    return _canvas(inner)
 
 
-def _sw_table(title: str, rows, header_bg: str, diff_pos: bool) -> str:
+def html_slide02(b: dict) -> str:
+    bars = b.get("topics_bars") or []
+    if not bars:
+        body = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.4cqw;">本文付きの口コミが不足しています。</div>'
+    else:
+        rows = ""
+        for name, sent, sal in bars:
+            col = _sent_color(sent)
+            width = max(2, min(100, sent))
+            rows += (
+                '<div style="display:flex;align-items:center;gap:1.4cqw;flex:1;">'
+                f'<div style="width:17cqw;flex:none;font-size:1.25cqw;color:{INK};font-weight:600;text-align:right;'
+                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(name) + '</div>'
+                '<div style="flex:1;height:1.9cqw;background:#F1F0EA;border-radius:.5cqw;position:relative;overflow:hidden;">'
+                f'<div style="position:absolute;left:0;top:0;bottom:0;width:{width}cqw;max-width:100%;background:{col};border-radius:.5cqw;"></div>'
+                '<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(20,30,40,.18);"></div></div>'
+                f'<div style="width:5cqw;flex:none;font-size:1.3cqw;font-weight:800;color:{col};text-align:right;font-variant-numeric:tabular-nums;">{sent:.0f}</div>'
+                f'<div style="width:6cqw;flex:none;font-size:1.05cqw;color:{SUB};text-align:right;">言及{sal:.0f}%</div>'
+                '</div>'
+            )
+        legend = (
+            '<div style="display:flex;gap:1.8cqw;align-items:center;margin-top:1cqw;">'
+            f'<span style="font-size:1.1cqw;color:{SUB};">50=中立</span>'
+            f'<span style="display:flex;align-items:center;gap:.5cqw;font-size:1.1cqw;color:{SUB};"><span style="width:1.1cqw;height:1.1cqw;border-radius:.25cqw;background:{POS};"></span>ポジ</span>'
+            f'<span style="display:flex;align-items:center;gap:.5cqw;font-size:1.1cqw;color:{SUB};"><span style="width:1.1cqw;height:1.1cqw;border-radius:.25cqw;background:{NEG};"></span>ネガ</span>'
+            + (f'<span style="font-size:1.1cqw;color:#A7ABB0;margin-left:auto;">総合感情スコア {b["overall_sentiment"]:.0f}/100 ・ 分析文数 {b["n_sentences"]}</span>' if b.get("overall_sentiment") is not None else '')
+            + '</div>'
+        )
+        body = f'<div style="flex:1;display:flex;flex-direction:column;gap:.6cqw;min-height:0;">{rows}</div>{legend}'
+    inner = _head("SLIDE 02", "感情評価・トピック分類",
+                  "トピック（指標軸）ごとの感情スコア（独自指標・50=中立）") + body
+    return _canvas(inner)
+
+
+def _sw_table(title: str, rows, header_bg: str, label_col: str) -> str:
     head = (
-        f'<div style="display:flex;background:{header_bg};color:#fff;font-weight:700;font-size:12px;">'
-        '<div style="flex:2;padding:8px 12px;">トピック</div>'
-        '<div style="flex:1;padding:8px 12px;text-align:right;">対象</div>'
-        '<div style="flex:1;padding:8px 12px;text-align:right;">基準</div>'
-        '<div style="flex:1;padding:8px 12px;text-align:right;">差分</div></div>'
+        f'<div style="display:flex;background:{header_bg};color:#fff;font-weight:700;font-size:1.05cqw;">'
+        '<div style="flex:1.7;padding:.55cqw .8cqw;">トピック</div>'
+        '<div style="flex:1;padding:.55cqw .8cqw;text-align:right;">対象</div>'
+        '<div style="flex:1;padding:.55cqw .8cqw;text-align:right;">基準</div>'
+        '<div style="flex:1;padding:.55cqw .8cqw;text-align:right;">差分</div></div>'
     )
     body = ""
-    for i, (name, self_v, base_v, diff) in enumerate(rows):
+    for name, self_v, base_v, diff in rows:
         dcol = POS if diff >= 0 else NEG
-        bg = "#fff" if i % 2 == 0 else "#FBFBF9"
         body += (
-            f'<div style="display:flex;background:{bg};border-top:1px solid #EEEDE7;font-variant-numeric:tabular-nums;">'
-            f'<div style="flex:2;padding:8px 12px;font-size:12.5px;font-weight:600;color:{INK};'
+            '<div style="display:flex;align-items:center;flex:1;border-top:1px solid #EEEDE7;font-variant-numeric:tabular-nums;">'
+            f'<div style="flex:1.7;padding:0 .8cqw;font-size:1.1cqw;font-weight:600;color:{INK};'
             'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escape(str(name)) + '</div>'
-            f'<div style="flex:1;padding:8px 12px;text-align:right;font-size:12.5px;font-weight:700;color:{INK};">{self_v}</div>'
-            f'<div style="flex:1;padding:8px 12px;text-align:right;font-size:12px;color:{SUB};">{base_v}</div>'
-            f'<div style="flex:1;padding:8px 12px;text-align:right;font-size:12.5px;font-weight:800;color:{dcol};">{diff:+.2f}</div></div>'
+            f'<div style="flex:1;padding:0 .8cqw;text-align:right;font-size:1.1cqw;font-weight:700;color:{INK};">{self_v}</div>'
+            f'<div style="flex:1;padding:0 .8cqw;text-align:right;font-size:1.02cqw;color:{SUB};">{base_v}</div>'
+            f'<div style="flex:1;padding:0 .8cqw;text-align:right;font-size:1.1cqw;font-weight:800;color:{dcol};">{diff:+.2f}</div></div>'
         )
-    label_col = POS if diff_pos else NEG
     return (
-        f'<div style="flex:1;min-width:280px;">'
-        f'<div style="font-size:14px;font-weight:800;color:{label_col};margin-bottom:8px;">{escape(title)}</div>'
-        f'<div style="border:1px solid {LINE};border-radius:10px;overflow:hidden;">{head}{body}</div></div>'
+        '<div style="flex:1;display:flex;flex-direction:column;min-width:0;">'
+        f'<div style="font-size:1.5cqw;font-weight:800;color:{label_col};margin-bottom:.7cqw;">{escape(title)}</div>'
+        f'<div style="flex:1;display:flex;flex-direction:column;border:1px solid {LINE};border-radius:.7cqw;overflow:hidden;">{head}{body}</div></div>'
     )
 
 
 def html_slide03(b: dict) -> str:
     if not b["strengths"] and not b["weaknesses"]:
-        body = f'<div style="color:{SUB};font-size:13px;padding:12px;">比較できるデータが不足しています。</div>'
+        body = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.4cqw;">比較できるデータが不足しています。</div>'
     else:
         body = (
-            '<div style="display:flex;gap:22px;flex-wrap:wrap;">'
-            + _sw_table("強み TOP5", b["strengths"], POS, True)
-            + _sw_table("弱み TOP5", b["weaknesses"], NEG, False)
+            '<div style="flex:1;display:flex;gap:2.6cqw;min-height:0;">'
+            + _sw_table("強み TOP5", b["strengths"], POS, POS)
+            + _sw_table("弱み TOP5", b["weaknesses"], NEG, NEG)
             + '</div>'
         )
-    sub = "強み・弱みの上位項目（対象 vs 基準）"
-    inner = _slide_head("SLIDE 03", "数値による比較評価", sub) + body
-    return _card(inner)
+    inner = _head("SLIDE 03", "数値による比較評価", "強み・弱みの上位項目（対象 vs 基準）") + body
+    return _canvas(inner)
 
 
 def html_slide04(b: dict) -> str:
     if not b["samples"]:
-        rows_html = f'<div style="color:{SUB};font-size:13px;padding:12px;">本文付きの口コミがありません。</div>'
+        rows_html = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.4cqw;">本文付きの口コミがありません。</div>'
     else:
-        rows_html = ""
+        rows_html = '<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
         for i, s in enumerate(b["samples"], 1):
-            disp = s if len(s) <= 220 else s[:220] + "…"
             rows_html += (
-                '<div style="display:flex;gap:14px;padding:12px 0;border-top:1px solid #EEEDE7;">'
-                f'<div style="flex:none;width:52px;font-size:12px;font-weight:800;color:{ACCENT};">口コミ<br>{i}</div>'
-                f'<div style="flex:1;font-size:13px;line-height:1.65;color:#3A434E;">{escape(disp)}</div></div>'
+                '<div style="display:flex;gap:1.4cqw;flex:1;padding:.7cqw 0;border-top:1px solid #EEEDE7;align-items:center;">'
+                f'<div style="flex:none;width:6cqw;font-size:1.1cqw;font-weight:800;color:{ACCENT};line-height:1.2;">口コミ<br>{i}</div>'
+                f'<div style="flex:1;font-size:1.2cqw;line-height:1.5;color:#3A434E;overflow:hidden;">{escape(_clip(s, 150))}</div></div>'
             )
+        rows_html += '</div>'
     note = (
-        f'<div style="display:flex;gap:14px;margin-top:14px;padding:14px;background:#FBF4F9;border-radius:10px;">'
-        f'<div style="flex:none;width:52px;font-size:12px;font-weight:800;color:{ACCENT};">示唆</div>'
-        f'<div style="flex:1;font-size:13px;line-height:1.65;font-weight:600;color:{INK};">{escape(b["n1_note"])}</div></div>'
+        '<div style="display:flex;gap:1.4cqw;margin-top:1cqw;padding:1.2cqw 1.4cqw;background:#FBF4F9;border-radius:1cqw;align-items:center;">'
+        f'<div style="flex:none;width:6cqw;font-size:1.2cqw;font-weight:800;color:{ACCENT};">示唆</div>'
+        f'<div style="flex:1;font-size:1.2cqw;line-height:1.5;font-weight:600;color:{INK};">{escape(_clip(b["n1_note"], 130))}</div></div>'
     )
-    inner = _slide_head("SLIDE 04", "この施設に対する特徴的な口コミ（N=1／ミクロ分析）",
-                        "平均には表れない、この施設を象徴する口コミと示唆") + rows_html + note
-    return _card(inner)
+    inner = _head("SLIDE 04", "この施設に対する特徴的な口コミ（N=1／ミクロ分析）",
+                  "平均には表れない、この施設を象徴する口コミと示唆") + rows_html + note
+    return _canvas(inner)
