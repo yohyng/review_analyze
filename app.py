@@ -6,6 +6,8 @@ Admin mode:    dashboard / facilities / data import / detailed analysis / settin
 from __future__ import annotations
 
 import tempfile
+import urllib.parse
+from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -267,6 +269,36 @@ for _k, _v in {
         st.session_state[_k] = _v
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Query-param actions (clickable HTML rows: facility pick / clear / mode / EN)
+# ─────────────────────────────────────────────────────────────────────────────
+_qp = st.query_params
+if "pick" in _qp:
+    st.session_state["an_target"] = _qp["pick"]
+    st.session_state["app_mode"] = "analysis"
+    st.session_state["an_screen"] = "setup"
+    _qp.clear()
+    st.rerun()
+if "clear" in _qp:
+    st.session_state["an_target"] = None
+    st.session_state.pop("an_search", None)
+    _qp.clear()
+    st.rerun()
+if "run" in _qp:
+    _qp.clear()
+    if st.session_state.get("an_target"):
+        st.session_state["app_mode"] = "analysis"
+        st.session_state["an_screen"] = "running"
+    st.rerun()
+if "mode" in _qp:
+    st.session_state["app_mode"] = _qp["mode"] if _qp["mode"] in ("analysis", "admin") else "analysis"
+    _qp.clear()
+    st.rerun()
+if "en" in _qp:
+    _qp.clear()
+    st.toast("英語表示は今後対応予定です。", icon="🌐")
+
+
 _is_an = st.session_state["app_mode"] == "analysis"
 
 
@@ -282,31 +314,30 @@ if _is_an:
     )
     # Header is hidden during the analysis run so the loading overlay stands alone.
     if st.session_state["an_screen"] != "running":
-        _hc1, _hc2 = st.columns([2, 1])
-        with _hc1:
-            st.markdown(f"""
-            <div style="display:flex;align-items:center;gap:11px;padding:2px 0 6px;">
-              <div style="width:36px;height:36px;border-radius:10px;background:{ACCENT};
-                          display:flex;align-items:center;justify-content:center;
-                          color:#fff;font-weight:800;font-size:16px;flex:none;">V</div>
-              <div style="line-height:1.2;">
-                <div style="font-weight:800;font-size:17px;color:#16202B;letter-spacing:-.01em;">VoiceBAUM</div>
-                <div style="font-size:11px;color:#8A9098;">口コミから、施設の実力を可視化する</div>
-              </div>
+        st.markdown(f"""
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:2px 0 8px;">
+          <div style="display:flex;align-items:center;gap:11px;">
+            <div style="width:38px;height:38px;border-radius:11px;background:{ACCENT};
+                        display:flex;align-items:center;justify-content:center;
+                        color:#fff;font-weight:800;font-size:17px;flex:none;">V</div>
+            <div style="line-height:1.2;">
+              <div style="font-weight:800;font-size:18px;color:#16202B;letter-spacing:-.01em;">VoiceBAUM</div>
+              <div style="font-size:11.5px;color:#8A9098;">口コミから、施設の実力を可視化する</div>
             </div>
-            """, unsafe_allow_html=True)
-        with _hc2:
-            _t1, _t2, _t3 = st.columns([1, 1, 0.7])
-            with _t1:
-                st.button("分析", use_container_width=True, type="primary", key="hdr_an")
-            with _t2:
-                if st.button("管理", use_container_width=True, type="secondary", key="hdr_adm"):
-                    st.session_state["app_mode"] = "admin"
-                    st.rerun()
-            with _t3:
-                if st.button("EN", use_container_width=True, type="secondary", key="hdr_en"):
-                    st.toast("英語表示は今後対応予定です。", icon="🌐")
-        st.markdown("<hr style='margin:6px 0 4px;'>", unsafe_allow_html=True)
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="display:inline-flex;background:#EEEDE7;border-radius:12px;padding:4px;gap:2px;">
+              <span style="background:#fff;box-shadow:0 1px 3px rgba(20,30,40,.12);color:#16202B;
+                           font-weight:700;font-size:14px;padding:8px 20px;border-radius:9px;">分析</span>
+              <a href="?mode=admin" target="_self" style="color:#5B6672;font-weight:600;font-size:14px;
+                         padding:8px 20px;border-radius:9px;text-decoration:none;">管理</a>
+            </div>
+            <a href="?en=1" target="_self" style="border:1px solid #DEDDD6;background:#fff;color:#16202B;
+                       font-weight:700;font-size:13px;padding:9px 16px;border-radius:10px;text-decoration:none;">EN</a>
+          </div>
+        </div>
+        <hr style='margin:2px 0 4px;'>
+        """, unsafe_allow_html=True)
 
 else:
     with st.sidebar:
@@ -464,6 +495,63 @@ def _review_counts() -> dict[str, int]:
     return {r[0]: r[1] for r in rows}
 
 
+def _facility_meta() -> dict[str, str]:
+    """name -> sub-line (category, else review count) for the search dropdown."""
+    rows = conn.execute(
+        """SELECT f.name, f.category, COUNT(r.id) FROM facility f
+           LEFT JOIN review r ON r.facility_id = f.id GROUP BY f.id""",
+    ).fetchall()
+    out = {}
+    for name, cat, cnt in rows:
+        out[name] = cat if cat else (f"口コミ {cnt}件" if cnt else "口コミ未登録")
+    return out
+
+
+def _suggest_dropdown_html(cands: list[str], meta: dict[str, str]) -> str:
+    """VoiceBAUM search dropdown: icon square + name + area, clickable via ?pick=."""
+    rows = ""
+    for name in cands:
+        sub = meta.get(name, "")
+        href = "?pick=" + urllib.parse.quote(name)
+        rows += (
+            f'<a href="{href}" target="_self" class="vb-sug-row" '
+            'style="display:flex;align-items:center;gap:14px;padding:12px 14px;'
+            'text-decoration:none;border-radius:12px;">'
+            '<span style="width:40px;height:40px;flex:none;border-radius:11px;background:#F1F0EA;'
+            'color:#5B6672;display:flex;align-items:center;justify-content:center;'
+            f'font-weight:700;font-size:16px;">{escape(name[:1])}</span>'
+            '<span style="display:flex;flex-direction:column;min-width:0;">'
+            f'<span style="font-weight:700;font-size:15px;color:#16202B;">{escape(name)}</span>'
+            f'<span style="font-size:12.5px;color:#8A9098;margin-top:2px;">{escape(sub)}</span>'
+            '</span></a>'
+        )
+    return (
+        '<div style="margin-top:10px;border:1px solid #E9E8E2;border-radius:16px;background:#fff;'
+        'box-shadow:0 14px 40px rgba(20,30,40,.10);padding:8px;max-height:360px;overflow:auto;">'
+        f'{rows}</div>'
+    )
+
+
+def _selected_card_html(name: str, meta: dict[str, str]) -> str:
+    """Selected-facility card (magenta ring + tinted icon + × clear via ?clear=1)."""
+    sub = meta.get(name, "")
+    return (
+        f'<div style="display:flex;align-items:center;gap:14px;padding:16px 18px;'
+        f'border:2px solid {ACCENT};border-radius:16px;background:#fff;'
+        'box-shadow:0 1px 2px rgba(20,30,40,.04),0 12px 30px rgba(20,30,40,.05);">'
+        f'<span style="width:46px;height:46px;flex:none;border-radius:12px;background:{ACCENT_SOFT};'
+        f'color:{ACCENT};display:flex;align-items:center;justify-content:center;'
+        f'font-weight:800;font-size:18px;">{escape(name[:1])}</span>'
+        '<span style="flex:1;min-width:0;display:flex;flex-direction:column;">'
+        f'<span style="font-weight:800;font-size:17px;color:#16202B;overflow:hidden;'
+        f'text-overflow:ellipsis;white-space:nowrap;">{escape(name)}</span>'
+        f'<span style="font-size:13px;color:#8A9098;margin-top:2px;">{escape(sub)}</span></span>'
+        '<a href="?clear=1" target="_self" style="width:34px;height:34px;flex:none;border-radius:50%;'
+        'background:#F1F0EA;color:#5B6672;display:flex;align-items:center;justify-content:center;'
+        'text-decoration:none;font-size:16px;line-height:1;">×</a></div>'
+    )
+
+
 def _topic_sig() -> tuple:
     """Data signature so the topic matrix cache invalidates when reviews change."""
     rows = conn.execute(
@@ -507,39 +595,44 @@ if st.session_state["app_mode"] == "analysis":
     # SETUP SCREEN
     # ══════════════════════════════════════════════════════════════════════ #
     if st.session_state["an_screen"] == "setup":
-        # Bigger, centered search field on the hero screen only.
+        # Hero search field with the magenta magnifier icon + suggestion hover.
         st.markdown("""
         <style>
-        .stTextInput input{height:58px!important;font-size:18px!important;
-          border-radius:15px!important;box-shadow:0 1px 2px rgba(20,30,40,.04),
-          0 12px 30px rgba(20,30,40,.05)!important;}
+        div[data-testid="stTextInput"] input{
+          height:60px!important;font-size:18px!important;border-radius:15px!important;
+          border:1.5px solid #E4E3DD!important;background-color:#fff!important;
+          padding-left:52px!important;color:#16202B!important;
+          box-shadow:0 1px 2px rgba(20,30,40,.04),0 12px 30px rgba(20,30,40,.05)!important;
+          background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%23B0338A' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-4.3-4.3'/%3E%3C/svg%3E")!important;
+          background-repeat:no-repeat!important;background-position:18px center!important;background-size:22px 22px!important;
+        }
+        div[data-testid="stTextInput"] input:focus{
+          border-color:#B0338A!important;box-shadow:0 0 0 4px rgba(176,51,138,.18)!important;}
+        .vb-sug-row:hover{background:#F7F3F6!important;}
         </style>
         """, unsafe_allow_html=True)
 
+        _meta = _facility_meta()
         _sp, _mid, _sp2 = st.columns([1, 2.4, 1])
         with _mid:
-            st.markdown("<div style='height:9vh'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:8vh'></div>", unsafe_allow_html=True)
             st.markdown('<div class="vb-hero-title">VoiceBAUM</div>', unsafe_allow_html=True)
             st.markdown(
                 '<p class="vb-hero-sub">オープン後の来場者評価（口コミ）を活用した実態分析ツール</p>',
                 unsafe_allow_html=True,
             )
-            st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:30px'></div>", unsafe_allow_html=True)
 
             _target = st.session_state.get("an_target")
 
-            _q = st.text_input(
-                "施設名を入力",
-                placeholder="🔍   施設名を入力",
-                key="an_search",
-                label_visibility="collapsed",
-            )
-
             if not _target:
-                # ── Live search suggestions ─────────────────────────────── #
+                # ── 空の状態：検索 + 候補ドロップダウン + 無効ボタン ───────── #
+                _q = st.text_input(
+                    "施設名を入力", placeholder="施設名を入力",
+                    key="an_search", label_visibility="collapsed",
+                )
                 _qs = _q.strip()
                 if _qs:
-                    _counts = _review_counts()
                     _subs = [n for n in _names if _qs.lower() in n.lower()]
                     _hints = search.suggest(_qs, _names)
                     _seen, _cands = set(), []
@@ -547,115 +640,76 @@ if st.session_state["app_mode"] == "analysis":
                         if _n not in _seen:
                             _seen.add(_n)
                             _cands.append(_n)
-                    _cands = _cands[:6]
-
+                    _cands = _cands[:8]
                     if _cands:
-                        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-                        for _n in _cands:
-                            _cnt = _counts.get(_n, 0)
-                            _meta = f"口コミ {_cnt} 件" if _cnt else "口コミ未登録"
-                            if st.button(
-                                f"{_n}　·　{_meta}",
-                                key=f"an_sug_{_n}",
-                                use_container_width=True,
-                            ):
-                                st.session_state["an_target"] = _n
-                                st.rerun()
+                        st.markdown(_suggest_dropdown_html(_cands, _meta), unsafe_allow_html=True)
                     else:
                         st.caption("一致する施設が見つかりません。")
 
-                st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
-                st.button(
-                    "この内容で分析する",
-                    disabled=True,
-                    use_container_width=True,
-                    key="an_run_disabled",
+                st.markdown(
+                    '<div style="max-width:440px;margin:24px auto 0;text-align:center;'
+                    'background:#E4E3DD;color:#A7ABB0;font-weight:700;font-size:15px;'
+                    'padding:16px;border-radius:12px;">この内容で分析する</div>',
+                    unsafe_allow_html=True,
                 )
-                st.caption("施設を選択すると分析を開始できます。")
 
             else:
-                # ── Facility selected: confirm + analysis type + run ─────── #
+                # ── 選択済み：施設カード + 分析ボタン ───────────────────── #
                 _chk = db.facility_stats(conn, _target)
                 _stats_ok = bool(_chk and _chk["n_reviews"] > 0)
 
-                st.markdown(f"""
-                <div style="display:flex;align-items:center;gap:12px;padding:14px 16px;
-                            border:1.5px solid {ACCENT};border-radius:14px;
-                            background:{ACCENT_SOFT};margin:6px 0 14px;">
-                  <div style="width:44px;height:44px;flex:none;border-radius:11px;
-                               border:1.5px solid {ACCENT};color:{ACCENT};
-                               display:flex;align-items:center;justify-content:center;
-                               font-weight:800;font-size:18px;background:#fff;">{_target[0]}</div>
-                  <div style="flex:1;min-width:0;">
-                    <div style="font-weight:800;font-size:16px;color:#16202B;">{_target}</div>
-                    <div style="font-size:12px;color:#8A9098;margin-top:2px;">
-                      口コミ {(_chk['n_reviews'] if _chk else 0)} 件
-                      {('・平均 ★' + str(_chk['avg_rating'])) if _chk and _chk.get('avg_rating') else ''}
-                    </div>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(_selected_card_html(_target, _meta), unsafe_allow_html=True)
 
-                if st.button("← 施設を選び直す", key="an_change_target", use_container_width=True):
-                    st.session_state["an_target"] = None
-                    st.session_state.pop("an_search", None)
-                    st.rerun()
-
-                _mode = st.radio(
-                    "分析タイプ",
-                    ["🏠 単体で分析", "🆚 比較分析"],
-                    horizontal=True,
-                    key="an_mode_radio",
-                    help="単体：1施設の深掘り。比較：他施設との強み・弱みを対比。",
-                )
-                st.session_state["an_mode"] = "single" if "単体" in _mode else "compare"
-
-                if st.session_state["an_mode"] == "compare":
-                    _others = [n for n in _names if n != _target]
-                    if _others:
-                        _axis_label = st.radio(
-                            "比較基準",
-                            ["比較施設の平均", "DB全体の平均", "特定施設を指定"],
-                            key="an_axis_label",
-                        )
-                        if _axis_label == "特定施設を指定":
-                            _spec = st.selectbox("比較先", _others, key="an_specific")
-                            st.session_state["an_peers"] = [_spec] if _spec else []
-                        elif _axis_label == "比較施設の平均":
-                            _peers = analysis.facilities_by_type(conn, "comparison")
-                            st.session_state["an_peers"] = _peers
-                            if _peers:
-                                st.caption(f"比較対象: {', '.join(_peers)}")
-                            else:
-                                st.warning("「比較施設」種別の施設がありません。DB全体平均で代替します。")
-                        else:
-                            st.session_state["an_peers"] = _others
-                            st.caption(f"比較対象: DB内の全施設（{len(_others)} 施設）")
-                    else:
-                        st.warning("比較できる他の施設がありません。単体分析で実行します。")
-                        st.session_state["an_mode"] = "single"
+                if _stats_ok:
+                    st.markdown(
+                        '<a href="?run=1" target="_self" style="display:block;max-width:440px;'
+                        f'margin:26px auto 0;text-align:center;background:{ACCENT};color:#fff;'
+                        'font-weight:700;font-size:16px;padding:16px;border-radius:12px;'
+                        'text-decoration:none;box-shadow:0 8px 18px rgba(20,30,40,.16);">'
+                        'この内容で分析する</a>',
+                        unsafe_allow_html=True,
+                    )
                 else:
-                    st.session_state["an_peers"] = []
+                    st.warning("この施設には口コミデータがありません。")
 
-                if not llm.get_api_key():
-                    with st.expander("✨ LLMインサイトを追加する（任意）", expanded=False):
+                # 比較分析・LLM は詳細オプション（既定は畳んでおく）
+                st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+                with st.expander("詳細オプション（比較分析・LLMインサイト）", expanded=False):
+                    _mode = st.radio(
+                        "分析タイプ", ["🏠 単体で分析", "🆚 比較分析"],
+                        horizontal=True, key="an_mode_radio",
+                    )
+                    st.session_state["an_mode"] = "single" if "単体" in _mode else "compare"
+                    if st.session_state["an_mode"] == "compare":
+                        _others = [n for n in _names if n != _target]
+                        if _others:
+                            _axis_label = st.radio(
+                                "比較基準", ["比較施設の平均", "DB全体の平均", "特定施設を指定"],
+                                key="an_axis_label",
+                            )
+                            if _axis_label == "特定施設を指定":
+                                _spec = st.selectbox("比較先", _others, key="an_specific")
+                                st.session_state["an_peers"] = [_spec] if _spec else []
+                            elif _axis_label == "比較施設の平均":
+                                _peers = analysis.facilities_by_type(conn, "comparison")
+                                st.session_state["an_peers"] = _peers
+                                if _peers:
+                                    st.caption(f"比較対象: {', '.join(_peers)}")
+                                else:
+                                    st.warning("「比較施設」種別の施設がありません。DB全体平均で代替します。")
+                            else:
+                                st.session_state["an_peers"] = _others
+                                st.caption(f"比較対象: DB内の全施設（{len(_others)} 施設）")
+                        else:
+                            st.info("比較できる他の施設がありません。単体分析で実行します。")
+                            st.session_state["an_mode"] = "single"
+                    else:
+                        st.session_state["an_peers"] = []
+                    if not llm.get_api_key():
                         st.text_input(
-                            "Gemini API キー", type="password", key="an_api_key",
+                            "Gemini API キー（任意）", type="password", key="an_api_key",
                             help="aistudio.google.com で無料取得できます。省略可。",
                         )
-
-                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-                if not _stats_ok:
-                    st.warning("この施設には口コミデータがありません。")
-                if st.button(
-                    "この内容で分析する",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=not _stats_ok,
-                    key="an_run",
-                ):
-                    st.session_state["an_screen"] = "running"
-                    st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════ #
     # RUNNING (analysis + report generation)
