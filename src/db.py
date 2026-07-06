@@ -362,45 +362,64 @@ def insert_reviews(
 
     use_pipeline = hasattr(conn, "execute_pipeline")
 
+    insert_sql = """INSERT INTO review(
+               facility_id, review_id, rating, text, review_date,
+               reviewer_name, local_guide, likes, owner_response, owner_response_date)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+    subscore_sql = """INSERT INTO review_subscore(review_db_id, axis, value)
+                      SELECT id, ?, ? FROM review
+                      WHERE facility_id = ? AND review_id = ?"""
+
     inserted = skipped = 0
+
+    # ── Turso: batch many reviews' INSERTs into one HTTP request ─────────── #
+    # (was one HTTP per review → prohibitively slow for bulk loads). A review
+    # and its subscore INSERTs always stay together and in order within a chunk.
+    if use_pipeline:
+        _CHUNK_STMTS = 50
+        batch: list[tuple[str, tuple]] = []
+        for idx, r in enumerate(reviews):
+            if r.review_id in existing:
+                skipped += 1
+                if progress_callback:
+                    progress_callback(idx + 1, total)
+                continue
+            batch.append((insert_sql, (
+                facility_id, r.review_id, r.rating, r.text, r.review_date,
+                r.reviewer_name, int(r.local_guide), r.likes,
+                r.owner_response, r.owner_response_date,
+            )))
+            for axis, value in r.subscores:
+                batch.append((subscore_sql, (axis, value, facility_id, r.review_id)))
+            inserted += 1
+            if progress_callback:
+                progress_callback(idx + 1, total)
+            if len(batch) >= _CHUNK_STMTS:
+                conn.execute_pipeline(batch)
+                batch = []
+        if batch:
+            conn.execute_pipeline(batch)
+        conn.commit()
+        return inserted, skipped
+
+    # ── SQLite sequential path (unchanged) ───────────────────────────────── #
     for idx, r in enumerate(reviews):
         if r.review_id in existing:
             skipped += 1
             if progress_callback:
                 progress_callback(idx + 1, total)
             continue
-
-        insert_sql = """INSERT INTO review(
-                   facility_id, review_id, rating, text, review_date,
-                   reviewer_name, local_guide, likes, owner_response, owner_response_date)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
-        insert_params = (
+        cur = conn.execute(insert_sql, (
             facility_id, r.review_id, r.rating, r.text, r.review_date,
             r.reviewer_name, int(r.local_guide), r.likes,
             r.owner_response, r.owner_response_date,
-        )
-
-        if use_pipeline and r.subscores:
-            # ── Turso: all INSERTs for one review in one HTTP request ──── #
-            stmts: list[tuple[str, tuple]] = [(insert_sql, insert_params)]
-            for axis, value in r.subscores:
-                stmts.append((
-                    """INSERT INTO review_subscore(review_db_id, axis, value)
-                       SELECT id, ?, ? FROM review
-                       WHERE facility_id = ? AND review_id = ?""",
-                    (axis, value, facility_id, r.review_id),
-                ))
-            conn.execute_pipeline(stmts)
-        else:
-            # ── SQLite sequential path ─────────────────────────────────── #
-            cur = conn.execute(insert_sql, insert_params)
-            review_db_id = cur.lastrowid
-            for axis, value in r.subscores:
-                conn.execute(
-                    "INSERT INTO review_subscore(review_db_id, axis, value) VALUES (?, ?, ?)",
-                    (review_db_id, axis, value),
-                )
-
+        ))
+        review_db_id = cur.lastrowid
+        for axis, value in r.subscores:
+            conn.execute(
+                "INSERT INTO review_subscore(review_db_id, axis, value) VALUES (?, ?, ?)",
+                (review_db_id, axis, value),
+            )
         inserted += 1
         if progress_callback:
             progress_callback(idx + 1, total)
