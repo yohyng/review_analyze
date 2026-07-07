@@ -6,7 +6,6 @@ Admin mode:    dashboard / facilities / data import / detailed analysis / settin
 from __future__ import annotations
 
 import tempfile
-import urllib.parse
 from html import escape
 from pathlib import Path
 
@@ -269,36 +268,6 @@ for _k, _v in {
         st.session_state[_k] = _v
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Query-param actions (clickable HTML rows: facility pick / clear / mode / EN)
-# ─────────────────────────────────────────────────────────────────────────────
-_qp = st.query_params
-if "pick" in _qp:
-    st.session_state["an_target"] = _qp["pick"]
-    st.session_state["app_mode"] = "analysis"
-    st.session_state["an_screen"] = "setup"
-    _qp.clear()
-    st.rerun()
-if "clear" in _qp:
-    st.session_state["an_target"] = None
-    st.session_state.pop("an_search", None)
-    _qp.clear()
-    st.rerun()
-if "run" in _qp:
-    _qp.clear()
-    if st.session_state.get("an_target"):
-        st.session_state["app_mode"] = "analysis"
-        st.session_state["an_screen"] = "running"
-    st.rerun()
-if "mode" in _qp:
-    st.session_state["app_mode"] = _qp["mode"] if _qp["mode"] in ("analysis", "admin") else "analysis"
-    _qp.clear()
-    st.rerun()
-if "en" in _qp:
-    _qp.clear()
-    st.toast("英語表示は今後対応予定です。", icon="🌐")
-
-
 _is_an = st.session_state["app_mode"] == "analysis"
 
 
@@ -314,30 +283,31 @@ if _is_an:
     )
     # Header is hidden during the analysis run so the loading overlay stands alone.
     if st.session_state["an_screen"] != "running":
-        st.markdown(f"""
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:2px 0 8px;">
-          <div style="display:flex;align-items:center;gap:11px;">
-            <div style="width:38px;height:38px;border-radius:11px;background:{ACCENT};
-                        display:flex;align-items:center;justify-content:center;
-                        color:#fff;font-weight:800;font-size:17px;flex:none;">V</div>
-            <div style="line-height:1.2;">
-              <div style="font-weight:800;font-size:18px;color:#16202B;letter-spacing:-.01em;">VoiceBAUM</div>
-              <div style="font-size:11.5px;color:#8A9098;">口コミから、施設の実力を可視化する</div>
+        _hc1, _hc2 = st.columns([2.3, 1])
+        with _hc1:
+            st.markdown(f"""
+            <div style="display:flex;align-items:center;gap:11px;padding:2px 0 6px;">
+              <div style="width:38px;height:38px;border-radius:11px;background:{ACCENT};
+                          display:flex;align-items:center;justify-content:center;
+                          color:#fff;font-weight:800;font-size:17px;flex:none;">V</div>
+              <div style="line-height:1.2;">
+                <div style="font-weight:800;font-size:18px;color:#16202B;letter-spacing:-.01em;">VoiceBAUM</div>
+                <div style="font-size:11.5px;color:#8A9098;">口コミから、施設の実力を可視化する</div>
+              </div>
             </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;">
-            <div style="display:inline-flex;background:#EEEDE7;border-radius:12px;padding:4px;gap:2px;">
-              <span style="background:#fff;box-shadow:0 1px 3px rgba(20,30,40,.12);color:#16202B;
-                           font-weight:700;font-size:14px;padding:8px 20px;border-radius:9px;">分析</span>
-              <a href="?mode=admin" target="_self" style="color:#5B6672;font-weight:600;font-size:14px;
-                         padding:8px 20px;border-radius:9px;text-decoration:none;">管理</a>
-            </div>
-            <a href="?en=1" target="_self" style="border:1px solid #DEDDD6;background:#fff;color:#16202B;
-                       font-weight:700;font-size:13px;padding:9px 16px;border-radius:10px;text-decoration:none;">EN</a>
-          </div>
-        </div>
-        <hr style='margin:2px 0 4px;'>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+        with _hc2:
+            _tt1, _tt2, _tt3 = st.columns([1, 1, 0.7])
+            with _tt1:
+                st.button("分析", type="primary", use_container_width=True, key="hdr_an")
+            with _tt2:
+                if st.button("管理", type="secondary", use_container_width=True, key="hdr_adm"):
+                    st.session_state["app_mode"] = "admin"
+                    st.rerun()
+            with _tt3:
+                if st.button("EN", type="secondary", use_container_width=True, key="hdr_en"):
+                    st.toast("英語表示は今後対応予定です。", icon="🌐")
+        st.markdown("<hr style='margin:6px 0 4px;'>", unsafe_allow_html=True)
 
 else:
     with st.sidebar:
@@ -507,33 +477,8 @@ def _facility_meta() -> dict[str, str]:
     return out
 
 
-def _suggest_dropdown_html(cands: list[str], meta: dict[str, str]) -> str:
-    """VoiceBAUM search dropdown: icon square + name + area, clickable via ?pick=."""
-    rows = ""
-    for name in cands:
-        sub = meta.get(name, "")
-        href = "?pick=" + urllib.parse.quote(name)
-        rows += (
-            f'<a href="{href}" target="_self" class="vb-sug-row" '
-            'style="display:flex;align-items:center;gap:14px;padding:12px 14px;'
-            'text-decoration:none;border-radius:12px;">'
-            '<span style="width:40px;height:40px;flex:none;border-radius:11px;background:#F1F0EA;'
-            'color:#5B6672;display:flex;align-items:center;justify-content:center;'
-            f'font-weight:700;font-size:16px;">{escape(name[:1])}</span>'
-            '<span style="display:flex;flex-direction:column;min-width:0;">'
-            f'<span style="font-weight:700;font-size:15px;color:#16202B;">{escape(name)}</span>'
-            f'<span style="font-size:12.5px;color:#8A9098;margin-top:2px;">{escape(sub)}</span>'
-            '</span></a>'
-        )
-    return (
-        '<div style="margin-top:10px;border:1px solid #E9E8E2;border-radius:16px;background:#fff;'
-        'box-shadow:0 14px 40px rgba(20,30,40,.10);padding:8px;max-height:360px;overflow:auto;">'
-        f'{rows}</div>'
-    )
-
-
 def _selected_card_html(name: str, meta: dict[str, str]) -> str:
-    """Selected-facility card (magenta ring + tinted icon + × clear via ?clear=1)."""
+    """Selected-facility card (magenta ring + tinted icon + name + area)."""
     sub = meta.get(name, "")
     return (
         f'<div style="display:flex;align-items:center;gap:14px;padding:16px 18px;'
@@ -545,10 +490,7 @@ def _selected_card_html(name: str, meta: dict[str, str]) -> str:
         '<span style="flex:1;min-width:0;display:flex;flex-direction:column;">'
         f'<span style="font-weight:800;font-size:17px;color:#16202B;overflow:hidden;'
         f'text-overflow:ellipsis;white-space:nowrap;">{escape(name)}</span>'
-        f'<span style="font-size:13px;color:#8A9098;margin-top:2px;">{escape(sub)}</span></span>'
-        '<a href="?clear=1" target="_self" style="width:34px;height:34px;flex:none;border-radius:50%;'
-        'background:#F1F0EA;color:#5B6672;display:flex;align-items:center;justify-content:center;'
-        'text-decoration:none;font-size:16px;line-height:1;">×</a></div>'
+        f'<span style="font-size:13px;color:#8A9098;margin-top:2px;">{escape(sub)}</span></span></div>'
     )
 
 
@@ -595,7 +537,7 @@ if st.session_state["app_mode"] == "analysis":
     # SETUP SCREEN
     # ══════════════════════════════════════════════════════════════════════ #
     if st.session_state["an_screen"] == "setup":
-        # Hero search field with the magenta magnifier icon + suggestion hover.
+        # Hero search field: magenta magnifier + suggestion rows styled from buttons.
         st.markdown("""
         <style>
         div[data-testid="stTextInput"] input{
@@ -608,7 +550,12 @@ if st.session_state["app_mode"] == "analysis":
         }
         div[data-testid="stTextInput"] input:focus{
           border-color:#B0338A!important;box-shadow:0 0 0 4px rgba(176,51,138,.18)!important;}
-        .vb-sug-row:hover{background:#F7F3F6!important;}
+        [class*="st-key-an_sug_"] button{
+          text-align:left!important;justify-content:flex-start!important;
+          border:1px solid #EEEDE7!important;border-radius:12px!important;
+          padding:12px 16px!important;font-weight:600!important;color:#16202B!important;
+          background:#fff!important;box-shadow:0 1px 2px rgba(20,30,40,.03)!important;min-height:56px;}
+        [class*="st-key-an_sug_"] button:hover{background:#F7F3F6!important;border-color:#B0338A!important;}
         </style>
         """, unsafe_allow_html=True)
 
@@ -626,7 +573,7 @@ if st.session_state["app_mode"] == "analysis":
             _target = st.session_state.get("an_target")
 
             if not _target:
-                # ── 空の状態：検索 + 候補ドロップダウン + 無効ボタン ───────── #
+                # ── 空の状態：検索 + 候補（ネイティブボタン）＋無効ボタン ─── #
                 _q = st.text_input(
                     "施設名を入力", placeholder="施設名を入力",
                     key="an_search", label_visibility="collapsed",
@@ -642,7 +589,15 @@ if st.session_state["app_mode"] == "analysis":
                             _cands.append(_n)
                     _cands = _cands[:8]
                     if _cands:
-                        st.markdown(_suggest_dropdown_html(_cands, _meta), unsafe_allow_html=True)
+                        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+                        for _n in _cands:
+                            _sub = _meta.get(_n, "")
+                            if st.button(
+                                f"{_n}　·　{_sub}", key=f"an_sug_{_n}",
+                                use_container_width=True,
+                            ):
+                                st.session_state["an_target"] = _n
+                                st.rerun()
                     else:
                         st.caption("一致する施設が見つかりません。")
 
@@ -654,23 +609,26 @@ if st.session_state["app_mode"] == "analysis":
                 )
 
             else:
-                # ── 選択済み：施設カード + 分析ボタン ───────────────────── #
+                # ── 選択済み：施設カード + 分析ボタン（ネイティブ）─────── #
                 _chk = db.facility_stats(conn, _target)
                 _stats_ok = bool(_chk and _chk["n_reviews"] > 0)
 
                 st.markdown(_selected_card_html(_target, _meta), unsafe_allow_html=True)
+                st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
 
-                if _stats_ok:
-                    st.markdown(
-                        '<a href="?run=1" target="_self" style="display:block;max-width:440px;'
-                        f'margin:26px auto 0;text-align:center;background:{ACCENT};color:#fff;'
-                        'font-weight:700;font-size:16px;padding:16px;border-radius:12px;'
-                        'text-decoration:none;box-shadow:0 8px 18px rgba(20,30,40,.16);">'
-                        'この内容で分析する</a>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.warning("この施設には口コミデータがありません。")
+                _rc1, _rc2, _rc3 = st.columns([1, 2, 1])
+                with _rc2:
+                    if _stats_ok:
+                        if st.button("この内容で分析する", type="primary",
+                                     use_container_width=True, key="an_run"):
+                            st.session_state["an_screen"] = "running"
+                            st.rerun()
+                    else:
+                        st.warning("この施設には口コミデータがありません。")
+                    if st.button("← 施設を選び直す", use_container_width=True, key="an_reselect"):
+                        st.session_state["an_target"] = None
+                        st.session_state.pop("an_search", None)
+                        st.rerun()
 
                 # 比較分析・LLM は詳細オプション（既定は畳んでおく）
                 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
