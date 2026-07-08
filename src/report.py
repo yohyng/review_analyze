@@ -9,6 +9,7 @@ build_report(conn, target_name, axis, insights, output_path) -> Path
 """
 from __future__ import annotations
 
+import io
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -402,6 +403,83 @@ def _slide_topics(prs, topic_list: list[Topic]) -> None:
 # --------------------------------------------------------------------------- #
 # public entry point
 # --------------------------------------------------------------------------- #
+def _photo_placeholder(slide):
+    box = slide.shapes.add_shape(1, Inches(0.5), Inches(1.5), Inches(5.3), Inches(5.0))
+    box.fill.solid()
+    box.fill.fore_color.rgb = LIGHT
+    box.line.color.rgb = RGBColor(0xE4, 0xE3, 0xDD)
+    box.shadow.inherit = False
+    tf = box.text_frame
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    run = p.add_run()
+    run.text = "施設写真"
+    run.font.size = Pt(14)
+    run.font.color.rgb = GREY
+
+
+def _slide_profile(prs, conn, target_name, info, photo_bytes):
+    """PROFILE スライド：写真＋基本情報テーブル。"""
+    info = info or {}
+    slide = _blank(prs)
+    _title_bar(slide, "分析施設情報", "PROFILE")
+
+    frow = conn.execute(
+        "SELECT id, category FROM facility WHERE name = ?", (target_name,)
+    ).fetchone()
+    fid = frow["id"] if frow else None
+    category = (frow["category"] if frow and frow["category"] else info.get("category")) or "—"
+    n_reviews = conn.execute(
+        "SELECT COUNT(*) FROM review WHERE facility_id = ?", (fid,)
+    ).fetchone()[0] if fid else 0
+    avg = conn.execute(
+        "SELECT AVG(rating) FROM review WHERE facility_id = ? AND rating IS NOT NULL", (fid,)
+    ).fetchone()[0] if fid else None
+    review_line = (f"平均 ★{round(avg, 1)} ／ {n_reviews:,} 件"
+                   if avg is not None else f"{n_reviews:,} 件")
+
+    # photo (left)
+    if photo_bytes:
+        try:
+            slide.shapes.add_picture(io.BytesIO(photo_bytes), Inches(0.5), Inches(1.5),
+                                     width=Inches(5.3))
+        except Exception:
+            _photo_placeholder(slide)
+    else:
+        _photo_placeholder(slide)
+
+    # basic info table (right)
+    rows = [
+        ["施設名", target_name],
+        ["業種", category],
+        ["住所", info.get("address") or "—"],
+        ["アクセス", info.get("access") or "—"],
+        ["開業", info.get("open_year") or "—"],
+        ["口コミ", review_line],
+    ]
+    _table(slide, Inches(6.2), Inches(1.5), Inches(6.6), Inches(0.75 * len(rows)),
+           ["項目", "内容"], rows, header_fill=MAGENTA, accent={"col": 0, "color": NAVY})
+
+
+def _slide_symbolic(prs, ranked: list[dict]):
+    """象徴的な口コミランキング（TF-IDF総合スコア）。"""
+    slide = _blank(prs)
+    _title_bar(slide, "象徴的な口コミ ランキング",
+               "施設の特徴語をどれだけ体現しているかで口コミを総合スコア化")
+    rows = []
+    for r in ranked:
+        snippet = (r["text"][:64] + "…") if len(r["text"]) > 64 else r["text"]
+        star = f'★{r["rating"]}' if r.get("rating") is not None else "-"
+        rows.append([f'#{r["rank"]}', f'{r["share"]:.0f}', star, snippet,
+                     "・".join(r.get("keywords", [])[:4])])
+    if rows:
+        _table(slide, Inches(0.4), Inches(1.4), Inches(12.5),
+               Inches(min(0.9, 4.8 / len(rows)) * len(rows)),
+               ["順位", "象徴度", "評価", "口コミ", "特徴語"], rows,
+               header_fill=MAGENTA, accent={"col": 1, "color": MAGENTA})
+
+
 def build_report(
     conn: sqlite3.Connection,
     target_name: str,
@@ -410,6 +488,8 @@ def build_report(
     insights: Optional[InsightResult] = None,
     topic_list: Optional[list[Topic]] = None,
     topic_score_result: "Optional[topic_score.TopicScoreResult]" = None,
+    profile_info: Optional[dict] = None,
+    photo_bytes: Optional[bytes] = None,
     output_path: str | Path = "report.pptx",
 ) -> Path:
     prs = Presentation()
@@ -437,6 +517,7 @@ def build_report(
 
     _slide_title(prs, target_name, baseline_label)
     _slide_summary(prs, target_name, insights, comp)
+    _slide_profile(prs, conn, target_name, profile_info, photo_bytes)
     if topic_score_result is not None and not topic_score_result.empty:
         _slide_topic_score(prs, topic_score_result)
     if comp is not None:
@@ -444,6 +525,19 @@ def build_report(
         _slide_top5(prs, comp)
     if not profile.empty:
         _slide_text_analysis(prs, profile)
+        try:
+            _rr = conn.execute(
+                "SELECT rating, text FROM review WHERE facility_id = "
+                "(SELECT id FROM facility WHERE name = ?) "
+                "AND text IS NOT NULL AND text != ''", (target_name,)
+            ).fetchall()
+            _ranked = text_analysis.symbolic_ranking(
+                [(x[0], x[1]) for x in _rr], profile.tfidf_keywords, top_k=5
+            )
+        except Exception:
+            _ranked = []
+        if _ranked:
+            _slide_symbolic(prs, _ranked)
     if topic_list:
         _slide_topics(prs, topic_list)
     _slide_insights_sw(prs, insights)

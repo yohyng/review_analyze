@@ -19,6 +19,7 @@ from src import (
     config,
     csv_profiler,
     db,
+    geocode,
     llm,
     preview,
     report,
@@ -782,6 +783,8 @@ if st.session_state["app_mode"] == "analysis":
         st.session_state["analysis_target"] = _target
         st.session_state["insights"] = _insights
         st.session_state["insights_facility"] = _target
+        st.session_state["an_axis"] = _axis if _an_mode == "compare" else "comparison_avg"
+        st.session_state["an_specific_name"] = _specific_name
         st.session_state["an_screen"] = "preview"
         st.rerun()
 
@@ -822,31 +825,95 @@ if st.session_state["app_mode"] == "analysis":
 
         # ── Stacked 16:10 slide canvases ────────────────────────────────── #
         if _bundle:
+            # ── PROFILE 情報を上書き（住所自動取得＋写真＋手入力）──────── #
+            _prof = st.session_state.setdefault("an_profile", {}).setdefault(_target, {})
+            if not _prof.get("address"):   # 初回のみ OSM 自動取得（キャッシュ済）
+                _g = geocode.lookup(_target)
+                if _g and _g.get("address"):
+                    _prof["address"] = _g["address"]
+            if _prof.get("address"):
+                _bundle["address"] = _prof["address"]
+            if _prof.get("access"):
+                _bundle["access"] = _prof["access"]
+            if _prof.get("open_year"):
+                _bundle["open_year"] = _prof["open_year"]
+            if _prof.get("photo_bytes"):
+                import base64 as _b64
+                _bundle["photo_data_uri"] = (
+                    f"data:{_prof.get('mime', 'image/png')};base64,"
+                    + _b64.b64encode(_prof["photo_bytes"]).decode()
+                )
+
             st.markdown(preview.html_overview(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_profile(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide01(_bundle), unsafe_allow_html=True)
-
-            # SLIDE 02 — 23観点の縦棒（plotly）を枠付きカードで
-            with st.container(border=True):
-                st.markdown(preview.slide02_head(), unsafe_allow_html=True)
-                if _bundle.get("topic_names"):
-                    st.plotly_chart(
-                        charts.topic_matrix_bar(
-                            _bundle["topic_names"], _bundle["topic_values"],
-                            overall_value=_bundle.get("overall_sentiment"),
-                        ),
-                        use_container_width=True, key="pv_ts_matrix",
-                    )
-                    st.caption(
-                        f"総合感情スコア {_bundle.get('overall_sentiment')}/100 ・ "
-                        f"分析文数 {_bundle.get('n_sentences')} ・ "
-                        f"感情・トピック統合スコアモデルによる算出"
-                    )
-                else:
-                    st.info("トピックスコアの算出には本文付きの口コミが必要です。")
-
+            st.markdown(preview.html_slide02(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide03(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide04(_bundle), unsafe_allow_html=True)
+
+            # ── PROFILE 編集（写真アップ・住所自動取得・手入力）──────── #
+            with st.expander("🖼️ PROFILEを編集（写真・住所・アクセス・開業）", expanded=False):
+                _up = st.file_uploader(
+                    "施設写真をアップロード（この分析中のみ保持・DLするPPTXに反映）",
+                    type=["png", "jpg", "jpeg", "webp"], key=f"prof_photo_{_target}",
+                )
+                if _up is not None:
+                    _prof["photo_bytes"] = _up.getvalue()
+                    _prof["mime"] = _up.type or "image/png"
+
+                _ka = f"prof_addr_{_target}"
+                if _ka not in st.session_state and _prof.get("address"):
+                    st.session_state[_ka] = _prof["address"]
+                _pc1, _pc2 = st.columns([4, 1])
+                with _pc1:
+                    _prof["address"] = st.text_input("住所", key=_ka)
+                with _pc2:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    if st.button("🗺️ 自動取得", key=f"prof_geo_{_target}",
+                                 help="OpenStreetMapから住所を取得"):
+                        with st.spinner("OpenStreetMapで検索中…"):
+                            _g2 = geocode.lookup(_target)
+                        if _g2 and _g2.get("address"):
+                            st.session_state[_ka] = _g2["address"]
+                            _prof["address"] = _g2["address"]
+                            st.rerun()
+                        else:
+                            st.warning("住所を取得できませんでした（通信不可か該当なし）。手入力してください。")
+
+                _prof["access"] = st.text_input(
+                    "アクセス", value=_prof.get("access", ""), key=f"prof_acc_{_target}",
+                    placeholder="例: 〇〇駅から徒歩5分",
+                )
+                _prof["open_year"] = st.text_input(
+                    "開業", value=_prof.get("open_year", ""), key=f"prof_open_{_target}",
+                    placeholder="例: 2015年",
+                )
+                st.caption(
+                    "※ 住所は OpenStreetMap から自動取得（デプロイ環境で通信可能な場合）。"
+                    "アクセス・開業は OSM では取得できないため手入力してください。"
+                )
+
+                if st.button("📄 この内容でPPTXを更新", type="primary",
+                             key=f"prof_regen_{_target}"):
+                    _info = {
+                        "address": _prof.get("address"), "access": _prof.get("access"),
+                        "open_year": _prof.get("open_year"), "category": _bundle.get("category"),
+                    }
+                    with st.spinner("PPTXを再生成中…"):
+                        _tmp2 = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{_target}.pptx"
+                        report.build_report(
+                            conn, _target,
+                            axis=st.session_state.get("an_axis", "comparison_avg"),
+                            specific_name=st.session_state.get("an_specific_name"),
+                            insights=st.session_state.get("insights"),
+                            topic_list=st.session_state.get("an_topic_list") or None,
+                            topic_score_result=st.session_state.get("an_topic_score"),
+                            profile_info=_info, photo_bytes=_prof.get("photo_bytes"),
+                            output_path=_tmp2,
+                        )
+                    st.session_state["an_result_path"] = str(_tmp2)
+                    st.success("レポートを更新しました。上部の「PowerPointでダウンロード」から取得してください。")
+                    st.rerun()
         else:
             st.warning("分析結果がありません。設定に戻って再実行してください。")
 

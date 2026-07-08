@@ -12,7 +12,7 @@ from datetime import date
 from html import escape
 from typing import Optional
 
-from . import analysis, topic_score
+from . import analysis, text_analysis, topic_score
 
 # palette (VoiceBAUM)
 ACCENT = "#B0338A"
@@ -163,8 +163,17 @@ def build_bundle(
         samples = [r[0] for r in rows]
 
     tfidf_words = []
+    ranked_reviews = []
     if profile is not None and not profile.empty and not profile.tfidf_keywords.empty:
         tfidf_words = [str(w) for w in profile.tfidf_keywords["単語"].head(12).tolist()]
+        if fid:
+            _rows = conn.execute(
+                "SELECT rating, text FROM review WHERE facility_id = ? "
+                "AND text IS NOT NULL AND text != ''", (fid,)
+            ).fetchall()
+            ranked_reviews = text_analysis.symbolic_ranking(
+                [(r[0], r[1]) for r in _rows], profile.tfidf_keywords, top_k=5
+            )
 
     # SLIDE 02 — 22観点の並び順＋各スコア
     topic_names = [t for t in order if t in target_scores]
@@ -187,11 +196,17 @@ def build_bundle(
         "insight": insight,
         "samples": samples,
         "tfidf_words": tfidf_words,
+        "ranked_reviews": ranked_reviews,
         "n1_note": insight["示唆"],
         "topic_names": topic_names,
         "topic_values": topic_values,
         "overall_sentiment": overall_score,
         "n_sentences": ts.n_sentences if (ts and not ts.empty) else 0,
+        # PROFILE（プレビューで写真アップ / 住所自動取得 / 手入力を上書き）
+        "address": None,
+        "access": None,
+        "open_year": None,
+        "photo_data_uri": None,
     }
 
 
@@ -280,17 +295,24 @@ def _table(rows, key_w="14cqw", key_bg="#ECEBE5", key_fs="1.45cqw", val_fs="1.55
 def html_profile(b: dict) -> str:
     rows = [
         ("施設名", b["target"]),
-        ("業種", b["category"]),
-        ("住所", "—"),
-        ("アクセス", "—"),
-        ("開業", "—"),
+        ("業種", b.get("category") or "—"),
+        ("住所", b.get("address") or "—"),
+        ("アクセス", b.get("access") or "—"),
+        ("開業", b.get("open_year") or "—"),
         ("口コミ", (f"平均 ★{b['avg_rating']} ／ {b['n_reviews']:,} 件"
                    if b["avg_rating"] is not None else f"{b['n_reviews']:,} 件")),
     ]
-    photo = (
-        '<div style="width:40cqw;flex:none;border-radius:1.4cqw;background:linear-gradient(160deg,#EFE7EC,#E9ECEE);'
-        'border:1px solid #E4E3DD;display:flex;align-items:center;justify-content:center;color:#A7ABB0;font-size:1.4cqw;">施設写真</div>'
-    )
+    _uri = b.get("photo_data_uri")
+    if _uri:
+        photo = (
+            f'<div style="width:40cqw;flex:none;border-radius:1.4cqw;overflow:hidden;border:1px solid #E4E3DD;'
+            f'background:#F1F0EA url(\'{_uri}\') center/cover no-repeat;"></div>'
+        )
+    else:
+        photo = (
+            '<div style="width:40cqw;flex:none;border-radius:1.4cqw;background:linear-gradient(160deg,#EFE7EC,#E9ECEE);'
+            'border:1px solid #E4E3DD;display:flex;align-items:center;justify-content:center;color:#A7ABB0;font-size:1.4cqw;">施設写真</div>'
+        )
     right = (
         '<div style="flex:1;min-width:0;display:flex;flex-direction:column;">'
         f'<div style="font-size:1.7cqw;font-weight:800;color:{INK};margin-bottom:1.2cqw;">■ 基本情報</div>'
@@ -332,21 +354,64 @@ def html_slide01(b: dict) -> str:
     return _canvas(inner)
 
 
-def slide02_head() -> str:
-    """SLIDE 02 の見出しのみ（棒グラフは app 側で plotly 描画）。"""
-    return (
-        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:2px;">'
-        + _badge_px("SLIDE 02")
-        + f'<span style="font-size:19px;font-weight:800;color:{INK};">感情評価・トピック分類</span></div>'
-        + f'<div style="font-size:12.5px;color:{SUB};margin:2px 0 6px;">23観点での言及・評価スコア（独自指標・50=中立）</div>'
-    )
+def html_slide02(b: dict) -> str:
+    """SLIDE 02: 23観点の縦棒（静的・16:10キャンバス。他スライドと同じ固定サイズ）。"""
+    names = list(b.get("topic_names") or [])
+    values = list(b.get("topic_values") or [])
+    ov = b.get("overall_sentiment")
+    if ov is not None:
+        names, values = names + ["全体"], values + [ov]
 
+    if not names:
+        body = (f'<div style="flex:1;display:flex;align-items:center;justify-content:center;'
+                f'color:{SUB};font-size:1.4cqw;">本文付きの口コミが不足しています。</div>')
+    else:
+        MAXY = 120.0
+        bars = "".join(
+            '<div style="flex:1;display:flex;align-items:flex-end;justify-content:center;height:100%;">'
+            f'<div style="width:62%;height:{max(0.0, min(100.0, v / MAXY * 100)):.1f}%;'
+            f'background:{ACCENT};border-radius:.3cqw .3cqw 0 0;"></div></div>'
+            for v in values
+        )
+        grid = "".join(
+            f'<div style="position:absolute;left:0;right:0;top:{f*100:.1f}%;height:1px;background:#EEEDE7;"></div>'
+            for f in (0, 1 / 3, 2 / 3)
+        )
+        # 50=中立 の破線
+        grid += ('<div style="position:absolute;left:0;right:0;top:%.1f%%;height:0;'
+                 'border-top:1px dashed #C9C3B6;"></div>' % ((1 - 50 / MAXY) * 100))
+        ylabs = "".join(
+            f'<div style="position:absolute;top:{f*100:.1f}%;right:.4cqw;transform:translateY(-50%);'
+            f'font-size:.9cqw;color:#A7ABB0;font-variant-numeric:tabular-nums;">{val}</div>'
+            for val, f in ((120, 0), (80, 1 / 3), (40, 2 / 3), (0, 1))
+        )
+        xlabs = "".join(
+            '<div style="flex:1;display:flex;justify-content:center;">'
+            f'<span style="writing-mode:vertical-rl;font-size:.85cqw;color:#5B6672;'
+            f'white-space:nowrap;letter-spacing:.02em;">{escape(nm)}</span></div>'
+            for nm in names
+        )
+        plot = (
+            '<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
+            '<div style="flex:1;display:flex;min-height:0;">'
+            f'<div style="width:4cqw;flex:none;position:relative;">{ylabs}</div>'
+            '<div style="flex:1;position:relative;display:flex;align-items:flex-end;gap:.4cqw;'
+            f'border-bottom:1px solid #E1E0D9;">{grid}{bars}</div></div>'
+            '<div style="height:11cqw;display:flex;">'
+            '<div style="width:4cqw;flex:none;"></div>'
+            f'<div style="flex:1;display:flex;gap:.4cqw;padding-top:.8cqw;">{xlabs}</div></div>'
+            '</div>'
+        )
+        foot = ""
+        if ov is not None:
+            foot = (f'<div style="font-size:1.15cqw;color:#A7ABB0;margin-top:.6cqw;">'
+                    f'総合感情スコア {ov}/100 ・ 分析文数 {b.get("n_sentences", 0):,} ・ '
+                    f'感情・トピック統合スコアモデルによる算出</div>')
+        body = plot + foot
 
-def _badge_px(text: str, bg: str = ACCENT) -> str:
-    return (
-        f'<span style="font-size:11px;font-weight:800;letter-spacing:.06em;color:#fff;'
-        f'background:{bg};padding:4px 10px;border-radius:6px;white-space:nowrap;">{escape(text)}</span>'
-    )
+    inner = _head("SLIDE 02", "感情評価・トピック分類",
+                  "23観点での言及・評価スコア（独自指標・50=中立）") + body
+    return _canvas(inner)
 
 
 def _sw_table(title: str, rows, header_bg: str, label_col: str, base_label: str = "基準") -> str:
@@ -392,48 +457,49 @@ def html_slide03(b: dict) -> str:
 
 
 def html_slide04(b: dict) -> str:
-    # 左：TF-IDF 特徴語チップ
-    words = b.get("tfidf_words") or []
-    if words:
-        chips = "".join(
-            f'<span style="display:inline-block;background:{ACCENT_SOFT};color:{ACCENT};'
-            'font-weight:700;font-size:1.25cqw;padding:.5cqw 1cqw;border-radius:99px;'
-            f'margin:0 .6cqw .6cqw 0;">{escape(w)}</span>'
-            for w in words
-        )
-        left_body = f'<div style="display:flex;flex-wrap:wrap;align-content:flex-start;flex:1;">{chips}</div>'
-    else:
-        left_body = f'<div style="flex:1;color:{SUB};font-size:1.2cqw;">本文付きの口コミが不足しています。</div>'
-    left = (
-        '<div style="width:32cqw;flex:none;display:flex;flex-direction:column;min-height:0;">'
-        f'<div style="font-size:1.5cqw;font-weight:800;color:{INK};margin-bottom:1cqw;">■ TF-IDF 特徴語</div>'
-        f'{left_body}</div>'
+    # TF-IDF 特徴語（コンパクトな上部ストリップ）
+    words = (b.get("tfidf_words") or [])[:10]
+    chips = "".join(
+        f'<span style="display:inline-block;background:{ACCENT_SOFT};color:{ACCENT};font-weight:700;'
+        f'font-size:1.02cqw;padding:.3cqw .8cqw;border-radius:99px;margin:0 .5cqw .4cqw 0;">{escape(w)}</span>'
+        for w in words
+    ) or f'<span style="color:{SUB};font-size:1.1cqw;">特徴語なし</span>'
+    chips_row = (
+        '<div style="margin-bottom:1cqw;line-height:1.9;">'
+        f'<span style="font-size:1.2cqw;font-weight:800;color:{INK};">■ TF-IDF 特徴語　</span>{chips}</div>'
     )
 
-    # 右：象徴的な N=1 コメント
-    if not b["samples"]:
-        rows_html = f'<div style="flex:1;color:{SUB};font-size:1.2cqw;">口コミ本文がありません。</div>'
+    # 象徴度ランキング（特徴語をどれだけ体現しているか）
+    ranked = b.get("ranked_reviews") or []
+    if not ranked:
+        rows_html = (f'<div style="flex:1;display:flex;align-items:center;justify-content:center;'
+                     f'color:{SUB};font-size:1.3cqw;">本文付きの口コミが不足しています。</div>')
     else:
-        rows_html = '<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
-        for i, s in enumerate(b["samples"], 1):
-            rows_html += (
-                '<div style="display:flex;gap:1.2cqw;flex:1;padding:.6cqw 0;border-top:1px solid #EEEDE7;align-items:center;">'
-                f'<div style="flex:none;width:5.5cqw;font-size:1.05cqw;font-weight:800;color:{ACCENT};line-height:1.2;">N=1<br>#{i}</div>'
-                f'<div style="flex:1;font-size:1.15cqw;line-height:1.5;color:#3A434E;overflow:hidden;">{escape(_clip(s, 120))}</div></div>'
+        rows = ""
+        for r in ranked:
+            kw = "・".join(r.get("keywords", [])[:5])
+            star = f'★{r["rating"]}' if r.get("rating") is not None else ""
+            rows += (
+                '<div style="display:flex;align-items:center;gap:1.4cqw;flex:1;border-top:1px solid #EEEDE7;'
+                'padding:.5cqw 0;min-height:0;">'
+                f'<div style="width:3.4cqw;height:3.4cqw;flex:none;border-radius:50%;background:{ACCENT};'
+                'color:#fff;font-weight:800;font-size:1.5cqw;display:flex;align-items:center;'
+                f'justify-content:center;">{r["rank"]}</div>'
+                '<div style="flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;">'
+                f'<div style="font-size:1.1cqw;line-height:1.4;color:#3A434E;overflow:hidden;">{escape(_clip(r["text"], 95))}</div>'
+                f'<div style="font-size:.92cqw;color:{ACCENT};margin-top:.3cqw;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">{escape(kw)}</div></div>'
+                '<div style="flex:none;width:8.5cqw;text-align:right;">'
+                f'<div style="font-size:1.35cqw;font-weight:800;color:{INK};font-variant-numeric:tabular-nums;">象徴度 {r["share"]:.0f}</div>'
+                f'<div style="font-size:1cqw;color:{SUB};">{star}</div></div></div>'
             )
-        rows_html += '</div>'
-    right = (
-        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0;">'
-        f'<div style="font-size:1.5cqw;font-weight:800;color:{INK};margin-bottom:1cqw;">■ 象徴的な口コミ（N=1）</div>'
-        f'{rows_html}</div>'
-    )
+        rows_html = f'<div style="flex:1;display:flex;flex-direction:column;min-height:0;">{rows}</div>'
 
     note = (
-        '<div style="display:flex;gap:1.4cqw;margin-top:1cqw;padding:1.1cqw 1.4cqw;background:#FBF4F9;border-radius:1cqw;align-items:center;">'
-        f'<div style="flex:none;width:5.5cqw;font-size:1.15cqw;font-weight:800;color:{ACCENT};">示唆</div>'
-        f'<div style="flex:1;font-size:1.15cqw;line-height:1.5;font-weight:600;color:{INK};">{escape(_clip(b["n1_note"], 120))}</div></div>'
+        '<div style="display:flex;gap:1.4cqw;margin-top:.8cqw;padding:1cqw 1.4cqw;background:#FBF4F9;border-radius:1cqw;align-items:center;">'
+        f'<div style="flex:none;width:5.5cqw;font-size:1.1cqw;font-weight:800;color:{ACCENT};">示唆</div>'
+        f'<div style="flex:1;font-size:1.1cqw;line-height:1.5;font-weight:600;color:{INK};">{escape(_clip(b["n1_note"], 110))}</div></div>'
     )
-    body = f'<div style="flex:1;display:flex;gap:2.6cqw;min-height:0;">{left}{right}</div>{note}'
-    inner = _head("SLIDE 04", "特徴語分析と象徴的な口コミ（TF-IDF ／ N=1）",
-                  "平均には表れない、この施設を象徴する特徴語と口コミ") + body
+    body = chips_row + rows_html + note
+    inner = _head("SLIDE 04", "象徴的な口コミ ランキング（TF-IDF 総合分析）",
+                  "施設の特徴語をどれだけ体現しているかで口コミを総合スコア化し上位を抽出") + body
     return _canvas(inner)

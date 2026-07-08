@@ -54,6 +54,39 @@ def tokenize(text: str) -> list[str]:
     return out
 
 
+def symbolic_ranking(reviews, tfidf_keywords, top_k: int = 5) -> list[dict]:
+    """口コミを『施設の特徴語（TF-IDF）をどれだけ体現しているか』で総合ランキング。
+
+    reviews: list[(rating, text)]、tfidf_keywords: build_profile の DataFrame(単語/スコア)。
+    象徴度 = レビュー内に含まれる特徴語の TF-IDF スコア合計（多様な特徴語を語るレビューほど上位）。
+    Returns 上位 top_k: [{rank, rating, text, score, share, keywords}]。
+    """
+    if tfidf_keywords is None or getattr(tfidf_keywords, "empty", True):
+        return []
+    scores = dict(zip(tfidf_keywords["単語"], tfidf_keywords["スコア"]))
+    total = sum(scores.values()) or 1.0
+    ranked = []
+    for rating, text in reviews:
+        if not text or not text.strip():
+            continue
+        toks = set(tokenize(text))
+        matched = [w for w in scores if w in toks]
+        if not matched:
+            continue
+        s = sum(scores[w] for w in matched)
+        ranked.append({
+            "rating": rating,
+            "text": text.strip(),
+            "score": round(float(s), 3),
+            "share": round(100 * s / total, 1),
+            "keywords": sorted(matched, key=lambda w: -scores[w])[:6],
+        })
+    ranked.sort(key=lambda r: -r["score"])
+    for i, r in enumerate(ranked[:top_k], 1):
+        r["rank"] = i
+    return ranked[:top_k]
+
+
 # --------------------------------------------------------------------------- #
 # DB helpers
 # --------------------------------------------------------------------------- #
