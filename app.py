@@ -862,35 +862,36 @@ if st.session_state["app_mode"] == "analysis":
                     _prof["mime"] = _up.type or "image/png"
 
                 _ka = f"prof_addr_{_target}"
-                if _ka not in st.session_state and _prof.get("address"):
-                    st.session_state[_ka] = _prof["address"]
-                _pc1, _pc2 = st.columns([4, 1])
-                with _pc1:
-                    _prof["address"] = st.text_input("住所", key=_ka)
-                with _pc2:
-                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-                    if st.button("🗺️ 自動取得", key=f"prof_geo_{_target}",
-                                 help="OpenStreetMapから住所を取得"):
-                        with st.spinner("OpenStreetMapで検索中…"):
-                            _g2 = geocode.lookup(_target)
-                        if _g2 and _g2.get("address"):
-                            st.session_state[_ka] = _g2["address"]
-                            _prof["address"] = _g2["address"]
-                            st.rerun()
-                        else:
-                            st.warning("住所を取得できませんでした（通信不可か該当なし）。手入力してください。")
+                _kacc = f"prof_acc_{_target}"
+                _kopen = f"prof_open_{_target}"
+                for _k, _v in ((_ka, _prof.get("address")),
+                               (_kacc, _prof.get("access")),
+                               (_kopen, _prof.get("open_year"))):
+                    if _k not in st.session_state and _v:
+                        st.session_state[_k] = _v
 
-                _prof["access"] = st.text_input(
-                    "アクセス", value=_prof.get("access", ""), key=f"prof_acc_{_target}",
-                    placeholder="例: 〇〇駅から徒歩5分",
-                )
-                _prof["open_year"] = st.text_input(
-                    "開業", value=_prof.get("open_year", ""), key=f"prof_open_{_target}",
-                    placeholder="例: 2015年",
-                )
+                if st.button("🗺️ OSMから自動取得（住所・アクセス・開業）", key=f"prof_geo_{_target}",
+                             help="OpenStreetMap / Overpass から機械的に取得（生成AIは使いません）"):
+                    with st.spinner("OpenStreetMap / Overpass で検索中…"):
+                        _en = geocode.enrich(_target)
+                    if _en:
+                        if _en.get("address"):
+                            st.session_state[_ka] = _en["address"]
+                        if _en.get("access"):
+                            st.session_state[_kacc] = _en["access"]
+                        if _en.get("open_year"):
+                            st.session_state[_kopen] = _en["open_year"]
+                        st.success("OSMから取得しました（取れた項目のみ反映）。")
+                        st.rerun()
+                    else:
+                        st.warning("OSMから取得できませんでした（通信不可か該当なし）。手入力してください。")
+
+                _prof["address"] = st.text_input("住所", key=_ka)
+                _prof["access"] = st.text_input("アクセス", key=_kacc, placeholder="例: 〇〇駅 徒歩約5分")
+                _prof["open_year"] = st.text_input("開業", key=_kopen, placeholder="例: 2015年")
                 st.caption(
-                    "※ 住所は OpenStreetMap から自動取得（デプロイ環境で通信可能な場合）。"
-                    "アクセス・開業は OSM では取得できないため手入力してください。"
+                    "※ すべて OpenStreetMap の構造化データから機械取得（生成AIは不使用）。"
+                    "OSMにデータが無い項目は空欄になるので手入力してください。"
                 )
 
                 if st.button("📄 この内容でPPTXを更新", type="primary",
