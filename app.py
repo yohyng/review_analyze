@@ -5,6 +5,7 @@ Admin mode:    dashboard / facilities / data import / detailed analysis / settin
 """
 from __future__ import annotations
 
+import base64
 import tempfile
 from html import escape
 from pathlib import Path
@@ -20,6 +21,7 @@ from src import (
     csv_profiler,
     db,
     geocode,
+    images,
     llm,
     preview,
     report,
@@ -511,6 +513,13 @@ def _topic_matrix_cached(sig):
     return topic_score.facility_topic_matrix(conn, names)
 
 
+@st.cache_data(show_spinner=False)
+def _photo_from_db(fid: int, sig):
+    """(bytes, mime) or None — cached BLOB fetch (sig=updated_at invalidates)."""
+    d = db.get_photo(conn, fid)
+    return (d["image"], d["mime"]) if d else None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ═════════════════════════════════════════════════════════════════════════════
 # ANALYSIS MODE
@@ -827,6 +836,9 @@ if st.session_state["app_mode"] == "analysis":
         if _bundle:
             # ── PROFILE 情報を上書き（住所自動取得＋写真＋手入力）──────── #
             _prof = st.session_state.setdefault("an_profile", {}).setdefault(_target, {})
+            _fid_row = conn.execute("SELECT id FROM facility WHERE name = ?", (_target,)).fetchone()
+            _fid = _fid_row["id"] if _fid_row else None
+
             if not _prof.get("address"):   # 初回のみ OSM 自動取得（キャッシュ済）
                 _g = geocode.lookup(_target)
                 if _g and _g.get("address"):
@@ -837,11 +849,17 @@ if st.session_state["app_mode"] == "analysis":
                 _bundle["access"] = _prof["access"]
             if _prof.get("open_year"):
                 _bundle["open_year"] = _prof["open_year"]
-            if _prof.get("photo_bytes"):
-                import base64 as _b64
+
+            # 写真: セッション（今アップ）優先 → 無ければ DB 保存分（キャッシュ読込）
+            _photo_bytes = _prof.get("photo_bytes")
+            _photo_mime = _prof.get("mime", "image/jpeg")
+            if not _photo_bytes and _fid:
+                _stored = _photo_from_db(_fid, db.photo_updated_at(conn, _fid))
+                if _stored:
+                    _photo_bytes, _photo_mime = _stored
+            if _photo_bytes:
                 _bundle["photo_data_uri"] = (
-                    f"data:{_prof.get('mime', 'image/png')};base64,"
-                    + _b64.b64encode(_prof["photo_bytes"]).decode()
+                    f"data:{_photo_mime};base64," + base64.b64encode(_photo_bytes).decode()
                 )
 
             st.markdown(preview.html_overview(_bundle), unsafe_allow_html=True)
@@ -854,12 +872,37 @@ if st.session_state["app_mode"] == "analysis":
             # ── PROFILE 編集（写真アップ・住所自動取得・手入力）──────── #
             with st.expander("🖼️ PROFILEを編集（写真・住所・アクセス・開業）", expanded=False):
                 _up = st.file_uploader(
-                    "施設写真をアップロード（この分析中のみ保持・DLするPPTXに反映）",
+                    "施設写真をアップロード（自動で長辺1200px/JPEGに縮小）",
                     type=["png", "jpg", "jpeg", "webp"], key=f"prof_photo_{_target}",
                 )
                 if _up is not None:
-                    _prof["photo_bytes"] = _up.getvalue()
-                    _prof["mime"] = _up.type or "image/png"
+                    _rz, _mime = images.resize_for_storage(_up.getvalue())
+                    _prof["photo_bytes"] = _rz
+                    _prof["mime"] = _mime
+                    _photo_bytes, _photo_mime = _rz, _mime
+
+                _has_db_photo = bool(_fid and db.photo_updated_at(conn, _fid))
+                _pcs1, _pcs2 = st.columns(2)
+                with _pcs1:
+                    if st.button("💾 この写真をDBに保存", key=f"prof_save_{_target}",
+                                 disabled=not (_photo_bytes and _fid), use_container_width=True):
+                        db.save_photo(conn, _fid, _photo_bytes, _photo_mime)
+                        _photo_from_db.clear()
+                        st.success("DBに保存しました（次回以降の分析でも表示されます）。")
+                        st.rerun()
+                with _pcs2:
+                    if st.button("🗑️ 保存済み写真を削除", key=f"prof_del_{_target}",
+                                 disabled=not _has_db_photo, use_container_width=True):
+                        db.delete_photo(conn, _fid)
+                        _prof.pop("photo_bytes", None)
+                        _photo_from_db.clear()
+                        st.success("削除しました。")
+                        st.rerun()
+                _sz = f"（{len(_photo_bytes) // 1024}KB）" if _photo_bytes else ""
+                st.caption(
+                    ("💾 DBに保存済み。" if _has_db_photo else "未保存（この分析中のみ表示）。")
+                    + f" 保存すると Turso/DB に永続化されます{_sz}。"
+                )
 
                 _ka = f"prof_addr_{_target}"
                 _kacc = f"prof_acc_{_target}"
@@ -909,7 +952,7 @@ if st.session_state["app_mode"] == "analysis":
                             insights=st.session_state.get("insights"),
                             topic_list=st.session_state.get("an_topic_list") or None,
                             topic_score_result=st.session_state.get("an_topic_score"),
-                            profile_info=_info, photo_bytes=_prof.get("photo_bytes"),
+                            profile_info=_info, photo_bytes=_photo_bytes,
                             output_path=_tmp2,
                         )
                     st.session_state["an_result_path"] = str(_tmp2)

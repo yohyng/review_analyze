@@ -15,6 +15,7 @@ numpy>=1.24          # 感情・トピック統合スコアモデル
 
 # --- report export (step 9) ---
 python-pptx>=1.0
+Pillow>=10.0         # 施設写真の自動リサイズ（PROFILE）
 # scikit-learn>=1.4  # step 7: TF-IDF
 # sudachipy>=0.6     # step 7: Japanese tokenizer
 # sudachidict-core

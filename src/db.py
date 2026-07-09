@@ -18,8 +18,10 @@ Schema:
 """
 from __future__ import annotations
 
+import base64
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -102,6 +104,9 @@ def _encode_params(params) -> list:
             args.append({"type": "integer", "value": str(p)})
         elif isinstance(p, float):
             args.append({"type": "float", "value": p})
+        elif isinstance(p, (bytes, bytearray, memoryview)):
+            args.append({"type": "blob",
+                         "base64": base64.b64encode(bytes(p)).decode("ascii")})
         else:
             args.append({"type": "text", "value": str(p)})
     return args
@@ -121,12 +126,15 @@ def _parse_turso_result(res, row_factory=None) -> "_TursoCursor":
         row = []
         for cell in raw:
             t, v = cell.get("type"), cell.get("value")
-            if t == "null" or v is None:
+            if t == "null" or (v is None and t != "blob"):
                 row.append(None)
             elif t == "integer":
                 row.append(int(v))
             elif t == "float":
                 row.append(float(v))
+            elif t == "blob":
+                b64 = cell.get("base64") or (v if isinstance(v, str) else "") or ""
+                row.append(base64.b64decode(b64) if b64 else b"")
             else:
                 row.append(v)
         rows.append(row)
@@ -249,6 +257,13 @@ CREATE TABLE IF NOT EXISTS score (
     scale           REAL,                      -- 5 / 100 ...
     source          TEXT DEFAULT 'excel',
     UNIQUE(facility_id, metric_name, source)
+);
+
+CREATE TABLE IF NOT EXISTS facility_photo (
+    facility_id     INTEGER PRIMARY KEY REFERENCES facility(id) ON DELETE CASCADE,
+    image           BLOB,                      -- 縮小済み JPEG
+    mime            TEXT,
+    updated_at      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_review_facility ON review(facility_id);
@@ -451,6 +466,46 @@ def upsert_scores(
         n += 1
     conn.commit()
     return n
+
+
+# --------------------------------------------------------------------------- #
+# Facility photo (BLOB) — Turso/SQLite。保存前に縮小しておくこと（src.images）。
+# --------------------------------------------------------------------------- #
+def save_photo(conn, facility_id: int, image_bytes: bytes, mime: str = "image/jpeg") -> None:
+    """施設写真を保存（1施設1枚・上書き）。"""
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute("DELETE FROM facility_photo WHERE facility_id = ?", (facility_id,))
+    conn.execute(
+        "INSERT INTO facility_photo(facility_id, image, mime, updated_at) VALUES (?, ?, ?, ?)",
+        (facility_id, image_bytes, mime, ts),
+    )
+    conn.commit()
+
+
+def get_photo(conn, facility_id: int) -> Optional[dict]:
+    """{image: bytes, mime: str, updated_at: str} or None。"""
+    row = conn.execute(
+        "SELECT image, mime, updated_at FROM facility_photo WHERE facility_id = ?",
+        (facility_id,),
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    img = row[0]
+    if isinstance(img, str):        # 念のため（一部ドライバが str を返す場合）
+        img = img.encode("latin-1", "ignore")
+    return {"image": bytes(img), "mime": row[1] or "image/jpeg", "updated_at": row[2]}
+
+
+def photo_updated_at(conn, facility_id: int) -> Optional[str]:
+    row = conn.execute(
+        "SELECT updated_at FROM facility_photo WHERE facility_id = ?", (facility_id,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def delete_photo(conn, facility_id: int) -> None:
+    conn.execute("DELETE FROM facility_photo WHERE facility_id = ?", (facility_id,))
+    conn.commit()
 
 
 # --------------------------------------------------------------------------- #
