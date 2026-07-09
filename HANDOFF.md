@@ -1,0 +1,203 @@
+# VoiceBAUM 引継ぎ資料
+
+> 口コミ（Google レビュー等）から施設の実力を可視化し、**PowerPoint レポートをワンクリックで書き出す** Streamlit アプリ。
+> このドキュメントだけで、別の開発者／セッションが実装を継続できることを目標に記述しています。
+
+- **リポジトリ**: `yohyng/review_analyze`
+- **開発ブランチ**: `claude/serene-babbage-nxvus`
+- **現在バージョン**: `0.8.3`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **89 passed**
+
+---
+
+## 0. まず動かす
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+# テスト
+python -m pytest tests/ -q
+```
+
+- **DB**: `TURSO_URL` + `TURSO_TOKEN`（環境変数 or `.streamlit/secrets.toml`）があれば Turso、無ければローカル `data/reviews.db`（SQLite）。
+- **LLMインサイト（任意）**: `GEMINI_API_KEY`（無くてもレポートは出る）。
+- **テーマ**: `.streamlit/config.toml` でライト固定（ダークモードでも崩れない）。
+
+---
+
+## 1. プロダクト概要
+
+2モード構成の Streamlit アプリ（`app.py` 単一ファイル、約2000行）。
+
+### 分析モード（一般ユーザー向け・サイドバー非表示のヒーロー画面）
+```
+設定(setup) → ローディング(running) → プレビュー(preview)
+  施設を検索して選ぶ → 6ステップの解析オーバーレイ → 16:10スライド×6 + PPTX DL
+```
+`st.session_state["an_screen"]` が `setup / running / preview` を遷移。
+
+### 管理モード（運用者向け・左サイドバーナビ）
+`st.session_state["admin_page"]`: `dashboard / facilities / import / topic / score / text / report / profiler / integration`
+
+ブランド: **VoiceBAUM**、アクセント **マゼンタ `#B0338A`**、背景 `#F7F7F4`、フォント Manrope + Noto Sans JP。
+
+---
+
+## 2. コア資産：感情・トピック統合スコアモデル（`src/topic_score.py`）
+
+ユーザー提供の仕様書（`sentiment_topic_score_model`）を**忠実移植した「正」の実装**。SLIDE 01–03 の全数値はこのモデルから算出（TF-IDF は SLIDE 04 のみ）。
+
+**フロー**（文単位）:
+```
+文 → 感情分析(キーワード辞書) → 温度スケーリング(T=0.7) → 非線形補正(α=0.7) → v_sentiment∈[0,1]
+文 → 埋め込み → コサイン類似 → z-score → 適応温度 → softmax → Top-kブースト(0.5) → p_topic
+文×トピック = v_sentiment × p_topic → レビュー平均 → 重み合算 → 全体
+```
+
+- **忠実性**: 参照コードと数値完全一致を検証済み（`tests/test_topic_score.py`）。ベクトル化バッチ（`_topic_probabilities_batch`）で高速化（2000件/5000文 ≈ 2秒、逐次版とビット一致）。
+- **トピック軸 = 22観点**（`DEFAULT_TOPICS`、順序は `TOPIC_ORDER`）+「全体」。ReviewLens の23観点に一致。各軸にキーワード群と重み。
+- **バックエンド（差し替え可能）**:
+  - **既定 = 軽量**: 共有 TF-IDF 空間のコサイン類似（torch 不要・どこでも動く）。
+  - **任意 = SBERT**: `analyze_facility(conn, name, backend="sbert")`。`sentence-transformers` + `sonoisa/sentence-bert-base-ja-mean-tokens` が必要（torch ~1-2GB）。
+  - ⚠️ **軽量版の限界**: 22観点は粒度が細かく（提供内容の品質/多様性/独自性…）、軽量バックエンドではスコアが平坦になりがち。精度を出すなら SBERT 推奨。
+- **主API**: `analyze_reviews(reviews, topics, backend)` / `analyze_facility(conn, name)` / `facility_topic_matrix(conn, names)`（全施設分・比較用）。
+- 出力 `TopicScoreResult`: `topics[TopicScore]`（name/weight/avg_score/salience/sentiment）、`weighted_sentiment_100`（表示用の総合スコア）、`sentiment_by_topic()` 等。
+
+---
+
+## 3. 分析結果スライド（`src/preview.py`）
+
+`build_bundle(conn, target, topic_results, profile, insights)` が**素材dict（bundle）を一括生成**し、`html_*` 関数が **16:10 の固定サイズHTMLキャンバス**（`container-type:inline-size` + `cqw` 単位）を返す。app.py はそれを `st.markdown(..., unsafe_allow_html=True)` で縦に並べる。
+
+| スライド | 関数 | 内容 / データ源 |
+|---|---|---|
+| OVERVIEW | `html_overview` | 施設名＋KPI4枚（総合評価/比較順位/レビュー件数/ポジティブ率） |
+| PROFILE | `html_profile` | 写真＋基本情報（施設名/業種/住所/アクセス/開業/口コミ） |
+| SLIDE 01 | `html_slide01` | 比較分析による特徴点抽出＋インサイト（**topic_score**、単体時は中立50基準） |
+| SLIDE 02 | `html_slide02` | 感情評価・トピック分類（**23観点の静的縦棒**・0-120軸・50中立破線） |
+| SLIDE 03 | `html_slide03` | 数値による比較評価（強み/弱みTOP5・対象 vs 全体平均） |
+| SLIDE 04 | `html_slide04` | **象徴的な口コミ ランキング**（TF-IDF総合＝`text_analysis.symbolic_ranking`） |
+
+- SLIDE 02 は以前 plotly（可変/ツールバー付き）だったが、**他スライドと揃えて静的HTML**に変更（ユーザー要望）。
+- `bundle` は分析時に1回作って `st.session_state["an_preview"]` にキャッシュ（プレビュー再描画を高速化）。
+
+---
+
+## 4. PROFILE（写真・住所補完）
+
+### 写真（Turso/SQLite に永続化・自動リサイズ）
+- **`src/images.py` `resize_for_storage`**: 長辺1200px/JPEG q80 に縮小（Pillow）。1枚150-350KB。
+- **`src/db.py`**: `facility_photo(facility_id PK, image BLOB, mime, updated_at)` ＋ `save_photo/get_photo/photo_updated_at/delete_photo`。
+- **Turso HTTPクライアントのBLOB対応**（重要）: `_encode_params` が bytes→`{"type":"blob","base64":...}`、`_parse_turso_result` が blobセル→bytes。ローカルSQLiteはネイティブ。
+- app.py プレビューの「🖼️ PROFILEを編集」: アップ→自動リサイズ→「💾 DBに保存」で永続化、「🗑️ 削除」。読込は `@st.cache_data`（`updated_at`でキャッシュ無効化）。**セッションアップ（非保存）でも表示＋DL反映**。
+- **容量**: 250KB/枚 → 9GBで約3.6万枚。46施設で約11MB。問題なし。
+
+### 住所・アクセス・開業（`src/geocode.py`・OSM/Wikidata・生成AI不使用）
+| 項目 | ソース | 関数 |
+|---|---|---|
+| 住所/緯度経度/開業(start_date)/業種 | Nominatim | `_geocode` |
+| アクセス（最寄り駅・徒歩分） | Overpass（`railway=station`）+ ハバースイン距離 | `_nearest_station` |
+| 開業（OSMに無い場合の補完） | Wikidata 設立(P571) | `_wikidata_facts` |
+
+- 統合API `enrich(name)` → 取れた項目のみのdict。全て構造化データ（**嘘=ハルシネーションは出ない**）。失敗時は空（手入力フォールバック）。全て `lru_cache` + 短タイムアウト + try/except。
+
+---
+
+## 5. PPTXレポート（`src/report.py`）
+
+`build_report(conn, target, axis, insights, topic_list, topic_score_result, profile_info, photo_bytes, output_path)` が **python-pptx のネイティブ図表**（画像埋め込みでない＝日本語が正しく出る/編集可）でデッキを生成。
+
+スライド構成: 表紙 / エグゼクティブサマリー / **PROFILE（写真＋基本情報）** / 感情・トピック統合スコア / スコア比較（比較データがある時）/ 強み・弱みTOP5 / テキスト分析 / **象徴的な口コミランキング** / トピック分析 / インサイト①② 。
+- ファイル名 `VoiceBAUM_<施設名>.pptx`。16:9（13.333×7.5in）。
+- プレビューで PROFILE を編集後、「📄 この内容でPPTXを更新」で **写真＋住所等を反映して再生成**（`an_axis`/`an_specific_name`/`an_topic_score`等を session から使う）。
+
+---
+
+## 6. データ層とデモデータ
+
+### DBスキーマ（`src/db.py` の `SCHEMA`）
+`facility`（施設マスタ: name/type/category/general_rating/total_reviews） / `review`（口コミ本文） / `review_subscore`（Google観点別） / `score`（Excel定量指標） / **`facility_photo`（写真BLOB）**。
+`get_conn()` は Turso（`_secret("TURSO_URL")`+`_secret("TURSO_TOKEN")`）優先、無ければローカルSQLite。行は `_Row`（sqlite3.Row互換・**dict非継承**なので pandas に位置で渡せる）。
+
+### 企業ミュージアム デモデータ
+- **`data/museums/reviews.csv.gz`**（46施設・約32k件の口コミ。元は `all_1.xlsx`）。
+- **`scripts/import_museums.py`**: `db.get_conn()` の接続先へ取り込み（Turso認証があればTurso）。
+  - category=「企業ミュージアム」固定、**容器文化ミュージアム=対象(target)**、他45=比較(comparison)。
+  - `--max-per-facility 200`（既定・比較施設のみ／対象は全件・デモを軽く）、`--max-per-facility 0` で全件、`--reset` で既存削除。
+  - review_id は決定論ハッシュ（再実行で重複しない）。
+- **Turso一括挿入を高速化済み**: `db.insert_reviews` の Turso 経路は **50件/HTTP のバッチ**（1件1HTTPだと数万件で数十分→数秒）。
+- デモ検証値（容器文化ミュージアム・軽量backend）: 総合感情52.1 / 順位38/46 / 強み=美的完成度+5.8 / 弱み=比較優位性-5.9。46施設のトピック行列 ≈ 32秒（`@st.cache_data`で以降即時）。
+
+---
+
+## 7. 重要な設計判断（なぜそうしたか）
+
+1. **軽量バックエンド既定**: Streamlit Cloud 無料枠で動かすため torch を避ける。SBERTは任意（精度優先時）。
+2. **施設選択はネイティブ `st.button`（クエリパラメータ・リンク方式は撤去）**: `?pick=`等の `<a>` はページ全リロードを起こし、(1)一瞬ブラックアウト (2)`session_state` リセットで `an_target` が消え分析が始まらない、という不具合が出たため（v0.7.3で修正）。**今後もリロード方式は使わないこと**。
+3. **スライドは16:10固定HTMLキャンバス**（plotly可変ではなく）: 見た目統一・DLと一致。SLIDE 02も静的化。
+4. **PROFILE自動補完は生成AI不使用**: OSM/Overpass/Wikidata の構造化データのみ（ユーザー方針）。取れなければ空欄。
+5. **写真はTurso BLOB＋自動リサイズ**: リクエストサイズ上限・DB肥大を回避（長辺1200px）。
+6. **デモ取り込みはサンプリング既定**: 全件だと行列計算が155秒→キャップで32秒。
+
+---
+
+## 8. 既知の制約・注意点
+
+- **この開発サンドボックスは外部通信（OSM/Nominatim/Overpass/Wikidata）がプロキシで403ブロック**。→ geocode系は実ネットワーク往復を**この環境では検証不可**。ロジックはモック/オフラインでテスト済み（`tests/test_geocode.py`）。**デプロイ先（通信可）で動く想定**。
+- **Turso認証情報はこの環境に無い**ため、Tursoへの実書き込みは未実施。BLOB encode/decode は**モックpipeline接続で検証済み**。実Tursoへ入れるには認証情報を設定して `python scripts/import_museums.py` を実行（ユーザーが実施する運用）。
+- **22観点は軽量backendで平坦**になりがち（§2）。
+- **PPTXは16:9固定**（プレビューは16:10）。合わせたい場合は座標再調整が必要。
+- Nominatim は User-Agent の実在連絡先が必要（現在プレースホルダ）。本番投入時は正規のUAに。
+
+---
+
+## 9. 未着手・進行中・次の一手
+
+**直前の課題（かわら美術館でPROFILEが空だった件）への対応が途中**:
+- ⏳ **業種(category)の配線漏れ**: `geocode.enrich` は category を返すが、プレビューの bundle 注入・エディタに反映されていない → 要配線。
+- ⏳ **自動取得がボタン依存**: 現状プレビュー描画時に自動取得するのは住所のみ（`geocode.lookup`）。アクセス/開業/業種はボタン必須。→ **ローディング中に `enrich` を実行して自動化**（`_prof` に格納・`_enriched` フラグで1回だけ）する改修を検討中だった。
+- ⏳ **長い施設名のヒット率**: 「高浜市やきものの里かわら美術館・図書館」等はNominatimがヒットしにくい。→ `_geocode` に**名称簡略化フォールバック**（`・`で分割・括弧除去して再検索）を入れる予定だった。
+- ⏳ **取得結果のフィードバック**: どの項目が取れた/取れなかったをエディタに明示。
+
+**その他の候補**:
+- SBERTバックエンドの本番採用（requirements追加＋デプロイ要件確認）。
+- 業種のWikidata(P31)マッピング。
+- 画像をオブジェクトストレージ（R2/S3）に移す（大量運用時）。
+
+---
+
+## 10. ファイル早見表
+
+| ファイル | 役割 |
+|---|---|
+| `app.py` | 全UI（分析モード3画面＋管理モード9ページ）。約2000行 |
+| `src/topic_score.py` | **感情・トピック統合スコアモデル（正）**。22観点 |
+| `src/preview.py` | 分析結果スライド（bundle生成＋16:10 HTML） |
+| `src/report.py` | PPTX生成（python-pptxネイティブ） |
+| `src/text_analysis.py` | TF-IDF/N-gram/代表口コミ/**symbolic_ranking** |
+| `src/geocode.py` | 住所/アクセス/開業の**OSM/Wikidata補完（生成なし）** |
+| `src/images.py` | 写真の自動リサイズ（Pillow） |
+| `src/db.py` | Turso(HTTP)/SQLite・スキーマ・**BLOB対応**・写真CRUD |
+| `src/analysis.py` | 施設比較（`build_comparison`・comparison_avg/all_avg/specific） |
+| `src/charts.py` | plotly図（管理モード/詳細分析で使用） |
+| `src/scoring.py` | 口コミ→定量スコア自動算出 |
+| `src/review_csv.py` `src/score_excel.py` `src/csv_profiler.py` | 取り込み系 |
+| `src/llm.py` `src/search.py` `src/topics.py` | LLMインサイト / あいまい検索 / 旧トピック(KMeans) |
+| `scripts/import_museums.py` | 企業ミュージアム46施設の取り込み |
+| `data/museums/reviews.csv.gz` | デモ口コミデータ |
+
+---
+
+## 11. 変更履歴（要約）
+
+- **v0.8.3** 開業のWikidata(設立)補完
+- **v0.8.2** 写真をTurso/SQLiteにBLOB永続化＋自動リサイズ
+- **v0.8.1** PROFILE自動補完（OSM/Overpass、生成なし）
+- **v0.8.0** SLIDE 02静的化 / PROFILE写真＋住所 / SLIDE 04ランキング
+- **v0.7.3** 施設選択のブラックアウト＆分析停止を修正（ネイティブボタン化）
+- **v0.7.2** 企業ミュージアム デモデータ＋importer / Tursoバッチ挿入
+- **v0.7.1** 分析ヒーロー画面を画像忠実化（検索/候補/選択）
+- **v0.7.0** SLIDE 01-03を22観点モデル駆動 / TF-IDFはSLIDE 04のみ
+- **v0.6.x** 統合スコアモデル実装 / VoiceBAUM UI / 16:10スライド / ダークモード対策 / ローディングオーバーレイ
+- **v0.5.0** VoiceBAUM リデザイン（2モード）
+```
