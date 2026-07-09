@@ -57,3 +57,26 @@ def test_wikidata_no_hit(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **k: _fake_resp({"search": []}))
     geocode._wikidata_facts.cache_clear()
     assert geocode._wikidata_facts("該当なし施設_テスト_DEF") == {}
+
+
+def test_simplify_long_name():
+    assert geocode._simplify("高浜市やきものの里かわら美術館・図書館") == "高浜市やきものの里かわら美術館"
+    assert geocode._simplify("トヨタ博物館（愛知県長久手市）") == "トヨタ博物館"
+    assert geocode._simplify("トヨタ博物館") == "トヨタ博物館"
+
+
+def test_geocode_falls_back_to_simplified(monkeypatch):
+    tried = []
+
+    def fake_one(q):
+        tried.append(q)
+        if q == "高浜市やきものの里かわら美術館":   # 簡略名だけヒット
+            return {"address": "愛知県高浜市青木町9-6-18", "lat": "34.9", "lon": "137.0",
+                    "open_year": None, "category": "美術館・博物館"}
+        return None
+
+    monkeypatch.setattr(geocode, "_nominatim_one", fake_one)
+    geocode._geocode.cache_clear()
+    r = geocode._geocode("高浜市やきものの里かわら美術館・図書館")
+    assert r and r["address"].startswith("愛知県高浜市")
+    assert tried == ["高浜市やきものの里かわら美術館・図書館", "高浜市やきものの里かわら美術館"]

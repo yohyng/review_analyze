@@ -839,16 +839,26 @@ if st.session_state["app_mode"] == "analysis":
             _fid_row = conn.execute("SELECT id FROM facility WHERE name = ?", (_target,)).fetchone()
             _fid = _fid_row["id"] if _fid_row else None
 
-            if not _prof.get("address"):   # 初回のみ OSM 自動取得（キャッシュ済）
-                _g = geocode.lookup(_target)
-                if _g and _g.get("address"):
-                    _prof["address"] = _g["address"]
+            if not _prof.get("_enriched"):   # 初回のみ自動補完（OSM/Overpass/Wikidata・キャッシュ済）
+                with st.spinner("施設情報（住所・アクセス・開業）を取得中…"):
+                    _en = geocode.enrich(_target)
+                for _ek in ("address", "access", "open_year"):
+                    if _en.get(_ek) and not _prof.get(_ek):
+                        _prof[_ek] = _en[_ek]
+                if _en.get("category"):
+                    _prof["category_auto"] = _en["category"]
+                _prof["_enriched"] = True
             if _prof.get("address"):
                 _bundle["address"] = _prof["address"]
             if _prof.get("access"):
                 _bundle["access"] = _prof["access"]
             if _prof.get("open_year"):
                 _bundle["open_year"] = _prof["open_year"]
+            # 業種: 手入力 > DB > OSM。DBが空のときだけ OSM で補完
+            if _prof.get("category"):
+                _bundle["category"] = _prof["category"]
+            elif (not _bundle.get("category") or _bundle["category"] == "—") and _prof.get("category_auto"):
+                _bundle["category"] = _prof["category_auto"]
 
             # 写真: セッション（今アップ）優先 → 無ければ DB 保存分（キャッシュ読込）
             _photo_bytes = _prof.get("photo_bytes")
@@ -907,33 +917,44 @@ if st.session_state["app_mode"] == "analysis":
                 _ka = f"prof_addr_{_target}"
                 _kacc = f"prof_acc_{_target}"
                 _kopen = f"prof_open_{_target}"
+                _kcat = f"prof_cat_{_target}"
+                # 業種プレフィル: DB(bundle)に意味ある値があればそれ、無ければ OSM 自動値
+                if _kcat not in st.session_state:
+                    _init_cat = _bundle.get("category")
+                    if not _init_cat or _init_cat == "—":
+                        _init_cat = _prof.get("category_auto") or ""
+                    st.session_state[_kcat] = "" if (not _init_cat or _init_cat == "—") else _init_cat
                 for _k, _v in ((_ka, _prof.get("address")),
                                (_kacc, _prof.get("access")),
                                (_kopen, _prof.get("open_year"))):
                     if _k not in st.session_state and _v:
                         st.session_state[_k] = _v
 
-                if st.button("🗺️ 自動取得（住所・アクセス・開業）", key=f"prof_geo_{_target}",
-                             help="OpenStreetMap（住所・アクセス）＋Wikidata（開業）から機械取得。生成AIは使いません"):
+                if st.button("🗺️ 自動取得（住所・アクセス・開業・業種）", key=f"prof_geo_{_target}",
+                             help="OpenStreetMap（住所・アクセス・業種）＋Wikidata（開業）から機械取得。生成AIは使いません"):
                     with st.spinner("OpenStreetMap / Overpass / Wikidata で検索中…"):
                         _en = geocode.enrich(_target)
-                    if _en:
-                        if _en.get("address"):
-                            st.session_state[_ka] = _en["address"]
-                        if _en.get("access"):
-                            st.session_state[_kacc] = _en["access"]
-                        if _en.get("open_year"):
-                            st.session_state[_kopen] = _en["open_year"]
-                        st.success("OSMから取得しました（取れた項目のみ反映）。")
+                    _got = []
+                    if _en.get("address"):
+                        st.session_state[_ka] = _en["address"]; _got.append("住所")
+                    if _en.get("access"):
+                        st.session_state[_kacc] = _en["access"]; _got.append("アクセス")
+                    if _en.get("open_year"):
+                        st.session_state[_kopen] = _en["open_year"]; _got.append("開業")
+                    if _en.get("category"):
+                        st.session_state[_kcat] = _en["category"]; _got.append("業種")
+                    if _got:
+                        st.success("取得しました: " + "・".join(_got))
                         st.rerun()
                     else:
-                        st.warning("OSMから取得できませんでした（通信不可か該当なし）。手入力してください。")
+                        st.warning("該当情報が見つかりませんでした（施設名が長い／通信不可の可能性）。手入力してください。")
 
+                _prof["category"] = st.text_input("業種", key=_kcat, placeholder="例: 美術館・博物館")
                 _prof["address"] = st.text_input("住所", key=_ka)
                 _prof["access"] = st.text_input("アクセス", key=_kacc, placeholder="例: 〇〇駅 徒歩約5分")
                 _prof["open_year"] = st.text_input("開業", key=_kopen, placeholder="例: 2015年")
                 st.caption(
-                    "※ 住所・アクセス=OpenStreetMap、開業=Wikidata の構造化データから機械取得"
+                    "※ 住所・アクセス・業種=OpenStreetMap、開業=Wikidata の構造化データから機械取得"
                     "（生成AIは不使用）。データが無い項目は空欄になるので手入力してください。"
                 )
 
@@ -941,7 +962,8 @@ if st.session_state["app_mode"] == "analysis":
                              key=f"prof_regen_{_target}"):
                     _info = {
                         "address": _prof.get("address"), "access": _prof.get("access"),
-                        "open_year": _prof.get("open_year"), "category": _bundle.get("category"),
+                        "open_year": _prof.get("open_year"),
+                        "category": _prof.get("category") or _bundle.get("category"),
                     }
                     with st.spinner("PPTXを再生成中…"):
                         _tmp2 = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{_target}.pptx"

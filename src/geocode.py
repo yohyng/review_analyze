@@ -46,18 +46,20 @@ def _year(val: str) -> Optional[str]:
     return f"{m.group(1)}年" if m else None
 
 
-@lru_cache(maxsize=512)
-def _geocode(name: str, hint: str = "") -> Optional[dict]:
-    if not name or not name.strip():
-        return None
-    try:
-        import requests
-    except Exception:
-        return None
+def _simplify(name: str) -> str:
+    """長い正式名称を検索しやすい形へ（括弧書き除去・『・』等の前半を採用）。"""
+    import re
+    n = re.sub(r"[（(][^）)]*[）)]", "", name or "")     # （…）除去
+    n = re.split(r"[・･/／|｜]", n)[0]                   # 『高浜市…美術館・図書館』→ 前半
+    return n.strip()
+
+
+def _nominatim_one(query: str) -> Optional[dict]:
+    import requests
     try:
         resp = requests.get(
             NOMINATIM,
-            params={"q": f"{name} {hint}".strip(), "format": "jsonv2", "limit": 1,
+            params={"q": query, "format": "jsonv2", "limit": 1,
                     "accept-language": "ja", "addressdetails": 1, "extratags": 1},
             headers={"User-Agent": _UA}, timeout=5,
         )
@@ -77,6 +79,28 @@ def _geocode(name: str, hint: str = "") -> Optional[dict]:
         "open_year": _year(extra.get("start_date") or extra.get("opening_date") or ""),
         "category": _CATEGORY_MAP.get(otype) or _CATEGORY_MAP.get(top.get("category") or ""),
     }
+
+
+@lru_cache(maxsize=512)
+def _geocode(name: str, hint: str = "") -> Optional[dict]:
+    if not name or not name.strip():
+        return None
+    try:
+        import requests  # noqa: F401  存在確認
+    except Exception:
+        return None
+    # フル名称 → 簡略名 の順で試す（長い正式名はヒットしにくいため）
+    full = f"{name} {hint}".strip()
+    queries = [full]
+    simp = _simplify(name)
+    simp_q = f"{simp} {hint}".strip()
+    if simp and simp != name and simp_q != full:
+        queries.append(simp_q)
+    for q in queries:
+        r = _nominatim_one(q)
+        if r and r.get("address"):
+            return r
+    return None
 
 
 @lru_cache(maxsize=512)
