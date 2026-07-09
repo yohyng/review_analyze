@@ -15,6 +15,7 @@ from typing import Optional
 
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 OVERPASS = "https://overpass-api.de/api/interpreter"
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 _UA = "VoiceBAUM/0.8 (facility review analysis; contact: admin@example.com)"
 
 # OSM の type/class → 表示用の業種ラベル
@@ -110,6 +111,43 @@ def _nearest_station(lat: float, lon: float) -> Optional[tuple]:
     return (name, walk_min)
 
 
+@lru_cache(maxsize=512)
+def _wikidata_facts(name: str) -> dict:
+    """Wikidata の設立(P571) → 開業年。生成なし・構造化データのみ。無ければ {}。"""
+    if not name or not name.strip():
+        return {}
+    try:
+        import requests
+    except Exception:
+        return {}
+    try:
+        s = requests.get(WIKIDATA_API, params={
+            "action": "wbsearchentities", "search": name, "language": "ja",
+            "format": "json", "limit": 1, "type": "item"},
+            headers={"User-Agent": _UA}, timeout=5)
+        s.raise_for_status()
+        hits = s.json().get("search", [])
+        if not hits:
+            return {}
+        qid = hits[0]["id"]
+        e = requests.get(WIKIDATA_API, params={
+            "action": "wbgetentities", "ids": qid, "props": "claims", "format": "json"},
+            headers={"User-Agent": _UA}, timeout=5)
+        e.raise_for_status()
+        claims = e.json().get("entities", {}).get(qid, {}).get("claims", {})
+    except Exception:
+        return {}
+    for c in claims.get("P571", []):   # P571 = inception（設立/開業）
+        try:
+            t = c["mainsnak"]["datavalue"]["value"]["time"]   # 例 "+2015-04-01T00:00:00Z"
+        except Exception:
+            continue
+        y = _year(t)
+        if y:
+            return {"open_year": y}
+    return {}
+
+
 def lookup(name: str, hint: str = "") -> Optional[dict]:
     """住所のみの軽量取得（プレビュー初期表示用）。"""
     g = _geocode(name, hint)
@@ -120,9 +158,7 @@ def lookup(name: str, hint: str = "") -> Optional[dict]:
 
 def enrich(name: str, hint: str = "") -> dict:
     """住所・アクセス・開業・業種をまとめて機械補完（取れた項目のみ）。"""
-    g = _geocode(name, hint)
-    if not g:
-        return {}
+    g = _geocode(name, hint) or {}
     out = {
         "address": g.get("address"),
         "open_year": g.get("open_year"),
@@ -135,4 +171,9 @@ def enrich(name: str, hint: str = "") -> dict:
             st = None
         if st:
             out["access"] = f"{st[0]} 徒歩約{st[1]}分"
+    # 開業は OSM に無いことが多いので Wikidata(設立) で補完
+    if not out.get("open_year"):
+        wf = _wikidata_facts(name)
+        if wf.get("open_year"):
+            out["open_year"] = wf["open_year"]
     return {k: v for k, v in out.items() if v}

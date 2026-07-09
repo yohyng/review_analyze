@@ -913,9 +913,9 @@ if st.session_state["app_mode"] == "analysis":
                     if _k not in st.session_state and _v:
                         st.session_state[_k] = _v
 
-                if st.button("🗺️ OSMから自動取得（住所・アクセス・開業）", key=f"prof_geo_{_target}",
-                             help="OpenStreetMap / Overpass から機械的に取得（生成AIは使いません）"):
-                    with st.spinner("OpenStreetMap / Overpass で検索中…"):
+                if st.button("🗺️ 自動取得（住所・アクセス・開業）", key=f"prof_geo_{_target}",
+                             help="OpenStreetMap（住所・アクセス）＋Wikidata（開業）から機械取得。生成AIは使いません"):
+                    with st.spinner("OpenStreetMap / Overpass / Wikidata で検索中…"):
                         _en = geocode.enrich(_target)
                     if _en:
                         if _en.get("address"):
@@ -933,8 +933,8 @@ if st.session_state["app_mode"] == "analysis":
                 _prof["access"] = st.text_input("アクセス", key=_kacc, placeholder="例: 〇〇駅 徒歩約5分")
                 _prof["open_year"] = st.text_input("開業", key=_kopen, placeholder="例: 2015年")
                 st.caption(
-                    "※ すべて OpenStreetMap の構造化データから機械取得（生成AIは不使用）。"
-                    "OSMにデータが無い項目は空欄になるので手入力してください。"
+                    "※ 住所・アクセス=OpenStreetMap、開業=Wikidata の構造化データから機械取得"
+                    "（生成AIは不使用）。データが無い項目は空欄になるので手入力してください。"
                 )
 
                 if st.button("📄 この内容でPPTXを更新", type="primary",
