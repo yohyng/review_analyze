@@ -89,7 +89,7 @@ python -m pytest tests/ -q
 - **`src/images.py` `resize_for_storage`**: 長辺1200px/JPEG q80 に縮小（Pillow）。1枚150-350KB。
 - **`src/db.py`**: `facility_photo(facility_id PK, image BLOB, mime, updated_at)` ＋ `save_photo/get_photo/photo_updated_at/delete_photo`。
 - **Turso HTTPクライアントのBLOB対応**（重要）: `_encode_params` が bytes→`{"type":"blob","base64":...}`、`_parse_turso_result` が blobセル→bytes。ローカルSQLiteはネイティブ。
-- app.py プレビューの「🖼️ PROFILEを編集」: アップ→自動リサイズ→「💾 DBに保存」で永続化、「🗑️ 削除」。読込は `@st.cache_data`（`updated_at`でキャッシュ無効化）。**セッションアップ（非保存）でも表示＋DL反映**。
+- app.py プレビューの PROFILE は **「✏️ 編集」トグルでその場をインライン編集**（静的スライド ↔ 編集フォームを切替）。左に写真アップローダ＋プレビュー＋保存/削除、右に業種/住所/アクセス/開業の手入力＋「🗺️ 自動取得」＋「📄 PPTXを更新」。アップ→自動リサイズ→「💾 保存」で永続化。読込は `@st.cache_data`（`updated_at`で無効化）。**非保存でも表示＋DL反映**。
 - **容量**: 250KB/枚 → 9GBで約3.6万枚。46施設で約11MB。問題なし。
 
 ### 住所・アクセス・開業（`src/geocode.py`・OSM/Wikidata・生成AI不使用）
@@ -190,6 +190,7 @@ python -m pytest tests/ -q
 
 ## 11. 変更履歴（要約）
 
+- **v0.8.5** PROFILEをその場でインライン編集（✏️トグルで写真アップ＋各項目の手入力）。下部の折りたたみ編集は廃止
 - **v0.8.4** PROFILE自動補完を完成（業種配線・自動化・長い名称フォールバック・取得フィードバック）
 - **v0.8.3** 開業のWikidata(設立)補完
 - **v0.8.2** 写真をTurso/SQLiteにBLOB永続化＋自動リサイズ

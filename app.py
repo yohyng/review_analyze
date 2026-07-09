@@ -873,113 +873,130 @@ if st.session_state["app_mode"] == "analysis":
                 )
 
             st.markdown(preview.html_overview(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_profile(_bundle), unsafe_allow_html=True)
+
+            # ── PROFILE：この場でインライン編集（写真アップ＋各項目の手入力）──── #
+            _ekey = f"prof_editing_{_target}"
+            _ka, _kacc, _kopen, _kcat = (f"prof_addr_{_target}", f"prof_acc_{_target}",
+                                         f"prof_open_{_target}", f"prof_cat_{_target}")
+            if _kcat not in st.session_state:
+                _init_cat = _bundle.get("category")
+                if not _init_cat or _init_cat == "—":
+                    _init_cat = _prof.get("category_auto") or ""
+                st.session_state[_kcat] = "" if (not _init_cat or _init_cat == "—") else _init_cat
+            for _k, _v in ((_ka, _prof.get("address")), (_kacc, _prof.get("access")),
+                           (_kopen, _prof.get("open_year"))):
+                if _k not in st.session_state and _v:
+                    st.session_state[_k] = _v
+
+            if st.session_state.get(_ekey):
+                with st.container(border=True):
+                    st.markdown(
+                        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">'
+                        f'<span style="font-size:11px;font-weight:800;letter-spacing:.06em;color:#fff;'
+                        f'background:{ACCENT};padding:4px 10px;border-radius:6px;">PROFILE 編集</span>'
+                        '<span style="font-size:15px;font-weight:800;color:#16202B;">写真アップロードと情報の書き込み</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    _ecol1, _ecol2 = st.columns([2, 3], gap="large")
+                    with _ecol1:
+                        _up = st.file_uploader("施設写真（自動で長辺1200px/JPEGに縮小）",
+                                               type=["png", "jpg", "jpeg", "webp"],
+                                               key=f"prof_photo_{_target}")
+                        if _up is not None:
+                            _rz, _mime = images.resize_for_storage(_up.getvalue())
+                            _prof["photo_bytes"] = _rz
+                            _prof["mime"] = _mime
+                            _photo_bytes, _photo_mime = _rz, _mime
+                        if _photo_bytes:
+                            st.image(_photo_bytes, use_container_width=True)
+                        else:
+                            st.markdown(
+                                '<div style="aspect-ratio:1;border-radius:12px;background:#F1F0EA;'
+                                'display:flex;align-items:center;justify-content:center;color:#A7ABB0;">施設写真</div>',
+                                unsafe_allow_html=True)
+                        _has_db_photo = bool(_fid and db.photo_updated_at(conn, _fid))
+                        _b1, _b2 = st.columns(2)
+                        with _b1:
+                            if st.button("💾 保存", key=f"prof_save_{_target}",
+                                         disabled=not (_photo_bytes and _fid), use_container_width=True):
+                                db.save_photo(conn, _fid, _photo_bytes, _photo_mime)
+                                _photo_from_db.clear()
+                                st.success("DBに保存しました。")
+                                st.rerun()
+                        with _b2:
+                            if st.button("🗑️ 削除", key=f"prof_del_{_target}",
+                                         disabled=not _has_db_photo, use_container_width=True):
+                                db.delete_photo(conn, _fid)
+                                _prof.pop("photo_bytes", None)
+                                _photo_from_db.clear()
+                                st.success("削除しました。")
+                                st.rerun()
+                        st.caption("💾 DB保存済み" if _has_db_photo else "未保存（保存で Turso/DB に永続化）")
+                    with _ecol2:
+                        st.text_input("施設名", value=_target, disabled=True, key=f"prof_name_{_target}")
+                        _prof["category"] = st.text_input("業種", key=_kcat, placeholder="例: 美術館・博物館")
+                        _prof["address"] = st.text_input("住所", key=_ka)
+                        _prof["access"] = st.text_input("アクセス", key=_kacc, placeholder="例: 〇〇駅 徒歩約5分")
+                        _prof["open_year"] = st.text_input("開業", key=_kopen, placeholder="例: 2015年")
+                        if st.button("🗺️ 自動取得（OSM／Wikidata）", key=f"prof_geo_{_target}",
+                                     use_container_width=True,
+                                     help="住所・アクセス・業種=OpenStreetMap、開業=Wikidata（生成AI不使用）"):
+                            with st.spinner("OpenStreetMap / Overpass / Wikidata で検索中…"):
+                                _en = geocode.enrich(_target)
+                            _got = []
+                            if _en.get("address"):
+                                st.session_state[_ka] = _en["address"]; _got.append("住所")
+                            if _en.get("access"):
+                                st.session_state[_kacc] = _en["access"]; _got.append("アクセス")
+                            if _en.get("open_year"):
+                                st.session_state[_kopen] = _en["open_year"]; _got.append("開業")
+                            if _en.get("category"):
+                                st.session_state[_kcat] = _en["category"]; _got.append("業種")
+                            if _got:
+                                st.success("取得しました: " + "・".join(_got))
+                                st.rerun()
+                            else:
+                                st.warning("該当が見つかりませんでした（施設名が長い／通信不可の可能性）。手入力してください。")
+                        st.caption("※ 生成AIは不使用。取れない項目は手入力してください。")
+                    _a1, _a2 = st.columns(2)
+                    with _a1:
+                        if st.button("📄 この内容でPPTXを更新", type="primary",
+                                     use_container_width=True, key=f"prof_regen_{_target}"):
+                            _info = {"address": _prof.get("address"), "access": _prof.get("access"),
+                                     "open_year": _prof.get("open_year"),
+                                     "category": _prof.get("category") or _bundle.get("category")}
+                            with st.spinner("PPTXを再生成中…"):
+                                _tmp2 = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{_target}.pptx"
+                                report.build_report(
+                                    conn, _target,
+                                    axis=st.session_state.get("an_axis", "comparison_avg"),
+                                    specific_name=st.session_state.get("an_specific_name"),
+                                    insights=st.session_state.get("insights"),
+                                    topic_list=st.session_state.get("an_topic_list") or None,
+                                    topic_score_result=st.session_state.get("an_topic_score"),
+                                    profile_info=_info, photo_bytes=_photo_bytes,
+                                    output_path=_tmp2)
+                            st.session_state["an_result_path"] = str(_tmp2)
+                            st.success("レポートを更新しました。上部のダウンロードから取得してください。")
+                            st.rerun()
+                    with _a2:
+                        if st.button("✓ 編集を終える（プレビューに戻る）", use_container_width=True,
+                                     key=f"prof_done_{_target}"):
+                            st.session_state[_ekey] = False
+                            st.rerun()
+            else:
+                st.markdown(preview.html_profile(_bundle), unsafe_allow_html=True)
+                _pe1, _pe2, _pe3 = st.columns([1, 1.4, 1])
+                with _pe2:
+                    if st.button("✏️ PROFILEを編集（写真・住所など）", use_container_width=True,
+                                 key=f"prof_edit_btn_{_target}"):
+                        st.session_state[_ekey] = True
+                        st.rerun()
+
             st.markdown(preview.html_slide01(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide02(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide03(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide04(_bundle), unsafe_allow_html=True)
-
-            # ── PROFILE 編集（写真アップ・住所自動取得・手入力）──────── #
-            with st.expander("🖼️ PROFILEを編集（写真・住所・アクセス・開業）", expanded=False):
-                _up = st.file_uploader(
-                    "施設写真をアップロード（自動で長辺1200px/JPEGに縮小）",
-                    type=["png", "jpg", "jpeg", "webp"], key=f"prof_photo_{_target}",
-                )
-                if _up is not None:
-                    _rz, _mime = images.resize_for_storage(_up.getvalue())
-                    _prof["photo_bytes"] = _rz
-                    _prof["mime"] = _mime
-                    _photo_bytes, _photo_mime = _rz, _mime
-
-                _has_db_photo = bool(_fid and db.photo_updated_at(conn, _fid))
-                _pcs1, _pcs2 = st.columns(2)
-                with _pcs1:
-                    if st.button("💾 この写真をDBに保存", key=f"prof_save_{_target}",
-                                 disabled=not (_photo_bytes and _fid), use_container_width=True):
-                        db.save_photo(conn, _fid, _photo_bytes, _photo_mime)
-                        _photo_from_db.clear()
-                        st.success("DBに保存しました（次回以降の分析でも表示されます）。")
-                        st.rerun()
-                with _pcs2:
-                    if st.button("🗑️ 保存済み写真を削除", key=f"prof_del_{_target}",
-                                 disabled=not _has_db_photo, use_container_width=True):
-                        db.delete_photo(conn, _fid)
-                        _prof.pop("photo_bytes", None)
-                        _photo_from_db.clear()
-                        st.success("削除しました。")
-                        st.rerun()
-                _sz = f"（{len(_photo_bytes) // 1024}KB）" if _photo_bytes else ""
-                st.caption(
-                    ("💾 DBに保存済み。" if _has_db_photo else "未保存（この分析中のみ表示）。")
-                    + f" 保存すると Turso/DB に永続化されます{_sz}。"
-                )
-
-                _ka = f"prof_addr_{_target}"
-                _kacc = f"prof_acc_{_target}"
-                _kopen = f"prof_open_{_target}"
-                _kcat = f"prof_cat_{_target}"
-                # 業種プレフィル: DB(bundle)に意味ある値があればそれ、無ければ OSM 自動値
-                if _kcat not in st.session_state:
-                    _init_cat = _bundle.get("category")
-                    if not _init_cat or _init_cat == "—":
-                        _init_cat = _prof.get("category_auto") or ""
-                    st.session_state[_kcat] = "" if (not _init_cat or _init_cat == "—") else _init_cat
-                for _k, _v in ((_ka, _prof.get("address")),
-                               (_kacc, _prof.get("access")),
-                               (_kopen, _prof.get("open_year"))):
-                    if _k not in st.session_state and _v:
-                        st.session_state[_k] = _v
-
-                if st.button("🗺️ 自動取得（住所・アクセス・開業・業種）", key=f"prof_geo_{_target}",
-                             help="OpenStreetMap（住所・アクセス・業種）＋Wikidata（開業）から機械取得。生成AIは使いません"):
-                    with st.spinner("OpenStreetMap / Overpass / Wikidata で検索中…"):
-                        _en = geocode.enrich(_target)
-                    _got = []
-                    if _en.get("address"):
-                        st.session_state[_ka] = _en["address"]; _got.append("住所")
-                    if _en.get("access"):
-                        st.session_state[_kacc] = _en["access"]; _got.append("アクセス")
-                    if _en.get("open_year"):
-                        st.session_state[_kopen] = _en["open_year"]; _got.append("開業")
-                    if _en.get("category"):
-                        st.session_state[_kcat] = _en["category"]; _got.append("業種")
-                    if _got:
-                        st.success("取得しました: " + "・".join(_got))
-                        st.rerun()
-                    else:
-                        st.warning("該当情報が見つかりませんでした（施設名が長い／通信不可の可能性）。手入力してください。")
-
-                _prof["category"] = st.text_input("業種", key=_kcat, placeholder="例: 美術館・博物館")
-                _prof["address"] = st.text_input("住所", key=_ka)
-                _prof["access"] = st.text_input("アクセス", key=_kacc, placeholder="例: 〇〇駅 徒歩約5分")
-                _prof["open_year"] = st.text_input("開業", key=_kopen, placeholder="例: 2015年")
-                st.caption(
-                    "※ 住所・アクセス・業種=OpenStreetMap、開業=Wikidata の構造化データから機械取得"
-                    "（生成AIは不使用）。データが無い項目は空欄になるので手入力してください。"
-                )
-
-                if st.button("📄 この内容でPPTXを更新", type="primary",
-                             key=f"prof_regen_{_target}"):
-                    _info = {
-                        "address": _prof.get("address"), "access": _prof.get("access"),
-                        "open_year": _prof.get("open_year"),
-                        "category": _prof.get("category") or _bundle.get("category"),
-                    }
-                    with st.spinner("PPTXを再生成中…"):
-                        _tmp2 = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{_target}.pptx"
-                        report.build_report(
-                            conn, _target,
-                            axis=st.session_state.get("an_axis", "comparison_avg"),
-                            specific_name=st.session_state.get("an_specific_name"),
-                            insights=st.session_state.get("insights"),
-                            topic_list=st.session_state.get("an_topic_list") or None,
-                            topic_score_result=st.session_state.get("an_topic_score"),
-                            profile_info=_info, photo_bytes=_photo_bytes,
-                            output_path=_tmp2,
-                        )
-                    st.session_state["an_result_path"] = str(_tmp2)
-                    st.success("レポートを更新しました。上部の「PowerPointでダウンロード」から取得してください。")
-                    st.rerun()
         else:
             st.warning("分析結果がありません。設定に戻って再実行してください。")
 
