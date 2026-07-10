@@ -119,6 +119,18 @@ python -m pytest tests/ -q
 `facility`（施設マスタ: name/type/category/general_rating/total_reviews） / `review`（口コミ本文） / `review_subscore`（Google観点別） / `score`（Excel定量指標） / **`facility_photo`（写真BLOB）**。
 `get_conn()` は Turso（`_secret("TURSO_URL")`+`_secret("TURSO_TOKEN")`）優先、無ければローカルSQLite。行は `_Row`（sqlite3.Row互換・**dict非継承**なので pandas に位置で渡せる）。
 
+### KAIZODE 連携（口コミ対象施設の自動取得・v0.9.0）
+「画面を閉じていても動く」バックグラウンド収集。KAIZODE 側がレビュー収集を非同期で行うため、こちらのジョブは軽い（発注と回収の2役）。
+
+- **`src/kaizode.py`**: APIクライアント。`x-api-key` 認証・**3.2秒スロットル（20req/分制限）**・429リトライ・ページネーション（`iter_reviews`、既定5000件/回=30MB上限対策）・`published_since` 差分取得。`to_parsed_review()` が KAIZODE Review → `ParsedReview` 変換（`review_id` がそのまま使え重複排除が自然に効く）。同期状態は **`kaizode_sync` テーブル**（db.py SCHEMA に追加済み）に `last_published_at` を記録。
+- **`scripts/fetch_kaizode.py`**: CLI。
+  - `--status` … データセット一覧と収集状況（status 10=抽出中/20=解析中/30=完了/40=失敗）
+  - `--create facilities.csv` … 施設リスト（name,url,since）からデータセット作成→収集開始（発注）
+  - `--sync` … **status=30 のみ**差分DL→施設ごとに `upsert_facility`+`insert_reviews`（回収）。`--category`/`--ftype`/`--full`/`--dataset-id` オプションあり
+- **`.github/workflows/kaizode-sync.yml`**: 毎日 JST 3:00 に `--sync` を実行（`workflow_dispatch` で手動も可）。必要 Secrets: `KAIZODE_API_KEY` / `TURSO_URL` / `TURSO_TOKEN`。
+- サンプル: `data/kaizode/facilities.sample.csv`。テスト: `tests/test_kaizode.py`（モックセッションで11本）。
+- ⚠️ **実APIとの疎通はこのサンドボックスでは未検証**（外部通信遮断のため）。モックで検証済み。初回はローカルで `--status` から確認を。
+
 ### 企業ミュージアム デモデータ
 - **`data/museums/reviews.csv.gz`**（46施設・約32k件の口コミ。元は `all_1.xlsx`）。
 - **`scripts/import_museums.py`**: `db.get_conn()` の接続先へ取り込み（Turso認証があればTurso）。
@@ -190,6 +202,7 @@ python -m pytest tests/ -q
 
 ## 11. 変更履歴（要約）
 
+- **v0.9.0** KAIZODE連携（APIクライアント＋発注/回収CLI＋GitHub Actions定期同期＝画面を閉じても動く収集）
 - **v0.8.5** PROFILEをその場でインライン編集（✏️トグルで写真アップ＋各項目の手入力）。下部の折りたたみ編集は廃止
 - **v0.8.4** PROFILE自動補完を完成（業種配線・自動化・長い名称フォールバック・取得フィードバック）
 - **v0.8.3** 開業のWikidata(設立)補完

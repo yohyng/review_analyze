@@ -1,0 +1,42 @@
+# KAIZODE → Turso 定期同期（画面を閉じていても動くバックグラウンドジョブ）
+#
+# 必要な Repository Secrets（Settings > Secrets and variables > Actions）:
+#   KAIZODE_API_KEY   … KAIZODE 画面「APIキー表示」から
+#   TURSO_URL         … libsql://your-db-xxx.turso.io
+#   TURSO_TOKEN       … Turso のトークン
+#
+# 収集の発注（データセット作成）は手元で:
+#   python scripts/fetch_kaizode.py --create data/kaizode/facilities.csv
+# このワークフローは「解析完了分を差分DLしてTursoへ入れる」回収係のみを担う。
+name: KAIZODE sync
+
+on:
+  schedule:
+    - cron: "0 18 * * *"   # 毎日 JST 3:00（UTC 18:00）
+  workflow_dispatch: {}     # 手動実行も可
+
+concurrency:
+  group: kaizode-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync reviews from KAIZODE to Turso
+        env:
+          KAIZODE_API_KEY: ${{ secrets.KAIZODE_API_KEY }}
+          TURSO_URL: ${{ secrets.TURSO_URL }}
+          TURSO_TOKEN: ${{ secrets.TURSO_TOKEN }}
+        run: python scripts/fetch_kaizode.py --sync

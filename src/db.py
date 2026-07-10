@@ -266,6 +266,13 @@ CREATE TABLE IF NOT EXISTS facility_photo (
     updated_at      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS kaizode_sync (
+    dataset_id        TEXT PRIMARY KEY,        -- KAIZODE データセットID
+    dataset_name      TEXT,
+    last_published_at TEXT,                    -- 差分取得用: 取得済みレビューの最新 published_at
+    synced_at         TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_review_facility ON review(facility_id);
 CREATE INDEX IF NOT EXISTS idx_subscore_review ON review_subscore(review_db_id);
 CREATE INDEX IF NOT EXISTS idx_score_facility ON score(facility_id);
