@@ -130,6 +130,52 @@ def test_sync_state_roundtrip():
     assert n == 1
 
 
+def test_sync_datasets_full_flow():
+    """list_datasets → status=30のみ → reviews取得 → DB挿入 → 同期状態の記録。"""
+    datasets = {"data": [
+        {"dataset_id": "d30", "dataset_name": "口コミ対象", "status": 30},
+        {"dataset_id": "d10", "dataset_name": "収集中", "status": 10},
+    ]}
+    reviews = {"data": [
+        {"review_id": "k1", "review": "良い。", "review_rating": 5,
+         "published_at": "2025-05-01 10:00:00", "review_target_name": "施設A"},
+        {"review_id": "k2", "review": "普通。", "review_rating": 3,
+         "published_at": "2025-05-03 09:00:00", "review_target_name": "施設B"},
+    ], "pagination": {"total_items": 2, "limit": 5000, "page": 0}}
+    c, sess = _client([FakeResp(200, datasets), FakeResp(200, reviews)])
+
+    conn = db.get_conn(":memory:")
+    db.init_db(conn)
+    logs = []
+    res = kaizode.sync_datasets(c, conn, category="口コミ対象", log=logs.append)
+
+    assert res["inserted"] == 2 and res["skipped_dup"] == 0
+    assert res["datasets_synced"] == 1 and res["datasets_skipped"] == 1
+    # 施設が2件でき、categoryが付いている
+    rows = conn.execute(
+        "SELECT name, category FROM facility ORDER BY name"
+    ).fetchall()
+    assert [(r[0], r[1]) for r in rows] == [("施設A", "口コミ対象"), ("施設B", "口コミ対象")]
+    # 同期状態: 最新 published_at が記録され、次回は差分になる
+    assert kaizode.get_last_sync(conn, "d30") == "2025-05-03 09:00:00"
+    # 収集中データセットはスキップのログ
+    assert any("スキップ" in l for l in logs)
+
+
+def test_sync_datasets_uses_since_on_second_run():
+    datasets = {"data": [{"dataset_id": "d30", "dataset_name": "DS", "status": 30}]}
+    empty = {"data": [], "pagination": {"total_items": 0, "limit": 5000, "page": 0}}
+    c, sess = _client([FakeResp(200, datasets), FakeResp(200, empty)])
+    conn = db.get_conn(":memory:")
+    db.init_db(conn)
+    kaizode.set_last_sync(conn, "d30", "DS", "2025-06-01 00:00:00")
+
+    res = kaizode.sync_datasets(c, conn)
+    assert res["inserted"] == 0
+    # 2番目の呼び出し（reviews）に published_since が付いている
+    assert sess.calls[1]["params"]["published_since"] == "2025-06-01 00:00:00"
+
+
 def test_end_to_end_sync_into_db():
     """モックAPI → to_parsed_review → insert_reviews の一気通貫。"""
     reviews = {"data": [

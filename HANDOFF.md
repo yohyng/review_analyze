@@ -36,8 +36,13 @@ python -m pytest tests/ -q
 ```
 `st.session_state["an_screen"]` が `setup / running / preview` を遷移。
 
-### 管理モード（運用者向け・左サイドバーナビ）
-`st.session_state["admin_page"]`: `dashboard / facilities / import / topic / score / text / report / profiler / integration`
+### 管理モード（運用者向け・左サイドバーナビ・**ログイン必須**）
+`st.session_state["admin_page"]`: `dashboard / facilities / import / topic / score / text / report / profiler / kaizode / integration`
+
+**認証（v0.10.0）**: 管理モードは `ADMIN_PASSWORD`（secrets or 環境変数）によるログインゲート付き。
+- 照合は `hmac.compare_digest`、失敗時1秒スリープ（総当たり抑止）。合格で `session_state["admin_authed"]=True`。サイドバー下部に🔓ログアウト。
+- **未設定時はフェイルクローズ（ロック画面＋設定手順を表示）**。ローカル開発では `ADMIN_PASSWORD=xxx streamlit run app.py`。
+- AppTest でも `at.session_state["admin_authed"]=True` を先にセットしないと管理ページに到達できない点に注意。
 
 ブランド: **VoiceBAUM**、アクセント **マゼンタ `#B0338A`**、背景 `#F7F7F4`、フォント Manrope + Noto Sans JP。
 
@@ -128,7 +133,8 @@ python -m pytest tests/ -q
   - `--create facilities.csv` … 施設リスト（name,url,since）からデータセット作成→収集開始（発注）
   - `--sync` … **status=30 のみ**差分DL→施設ごとに `upsert_facility`+`insert_reviews`（回収）。`--category`/`--ftype`/`--full`/`--dataset-id` オプションあり
 - **`.github/workflows/kaizode-sync.yml`**: 毎日 JST 3:00 に `--sync` を実行（`workflow_dispatch` で手動も可）。必要 Secrets: `KAIZODE_API_KEY` / `TURSO_URL` / `TURSO_TOKEN`。
-- サンプル: `data/kaizode/facilities.sample.csv`。テスト: `tests/test_kaizode.py`（モックセッションで11本）。
+- **管理画面「📡 KAIZODE連携」ページ（v0.10.0）**: ログイン後のみ到達。3タブ＝収集状況（一覧）/収集を発注（施設名,URL,since を行入力）/DBへ取り込み（差分同期・category指定可）。同期の実体は CLI と共通の `kaizode.sync_datasets()`。**APIキーは secrets/環境変数を優先し、無ければ「セッション限り」のパスワード入力**（DB・ファイルに保存しない、末尾4桁のみ表示、破棄ボタンあり）。
+- サンプル: `data/kaizode/facilities.sample.csv`。テスト: `tests/test_kaizode.py`（モックセッションで13本）。
 - ⚠️ **実APIとの疎通はこのサンドボックスでは未検証**（外部通信遮断のため）。モックで検証済み。初回はローカルで `--status` から確認を。
 
 ### 企業ミュージアム デモデータ
@@ -202,6 +208,7 @@ python -m pytest tests/ -q
 
 ## 11. 変更履歴（要約）
 
+- **v0.10.0** 管理モードのログイン必須化（ADMIN_PASSWORD・フェイルクローズ）＋管理画面「📡 KAIZODE連携」ページ（発注/状況/取り込み、キーはsecrets優先・セッション限り入力可）
 - **v0.9.0** KAIZODE連携（APIクライアント＋発注/回収CLI＋GitHub Actions定期同期＝画面を閉じても動く収集）
 - **v0.8.5** PROFILEをその場でインライン編集（✏️トグルで写真アップ＋各項目の手入力）。下部の折りたたみ編集は廃止
 - **v0.8.4** PROFILE自動補完を完成（業種配線・自動化・長い名称フォールバック・取得フィードバック）

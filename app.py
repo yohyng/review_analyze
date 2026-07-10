@@ -6,7 +6,10 @@ Admin mode:    dashboard / facilities / data import / detailed analysis / settin
 from __future__ import annotations
 
 import base64
+import hmac
+import os
 import tempfile
+import time
 from html import escape
 from pathlib import Path
 
@@ -22,6 +25,7 @@ from src import (
     db,
     geocode,
     images,
+    kaizode,
     llm,
     preview,
     report,
@@ -313,6 +317,63 @@ if _is_an:
         st.markdown("<hr style='margin:6px 0 4px;'>", unsafe_allow_html=True)
 
 else:
+    # ── 管理モードはログイン必須（ADMIN_PASSWORD 未設定時は安全側でロック）── #
+    def _admin_password() -> str:
+        pw = os.environ.get("ADMIN_PASSWORD", "")
+        if not pw:
+            try:
+                pw = st.secrets.get("ADMIN_PASSWORD", "")
+            except Exception:
+                pw = ""
+        return pw or ""
+
+    if not st.session_state.get("admin_authed"):
+        _adm_pw = _admin_password()
+        st.markdown(
+            "<style>[data-testid='stSidebar']{display:none!important;}"
+            "[data-testid='collapsedControl']{display:none!important;}</style>",
+            unsafe_allow_html=True,
+        )
+        _sp1, _mid, _sp2 = st.columns([1, 1.1, 1])
+        with _mid:
+            st.markdown("<div style='height:12vh'></div>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="text-align:center;margin-bottom:16px;">
+              <div style="width:52px;height:52px;border-radius:14px;background:{ACCENT};
+                          display:inline-flex;align-items:center;justify-content:center;
+                          color:#fff;font-weight:800;font-size:22px;">V</div>
+              <div style="font-weight:800;font-size:20px;color:#16202B;margin-top:10px;">管理コンソール</div>
+              <div style="font-size:12.5px;color:#8A9098;margin-top:4px;">
+                管理モードへのアクセスにはログインが必要です</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if not _adm_pw:
+                st.warning("ADMIN_PASSWORD が未設定のため、管理画面はロックされています。")
+                st.code(
+                    '# .streamlit/secrets.toml（Streamlit Cloud は Settings > Secrets）\n'
+                    'ADMIN_PASSWORD = "強いパスワードを設定"',
+                    language="toml",
+                )
+            else:
+                with st.form("admin_login"):
+                    _pw_in = st.text_input("パスワード", type="password", key="adm_pw_input")
+                    _login = st.form_submit_button(
+                        "🔐 ログイン", type="primary", use_container_width=True
+                    )
+                if _login:
+                    if hmac.compare_digest(_pw_in, _adm_pw):
+                        st.session_state["admin_authed"] = True
+                        st.rerun()
+                    else:
+                        time.sleep(1)   # 総当たり抑止
+                        st.error("パスワードが違います。")
+
+            if st.button("← 分析モードに戻る", use_container_width=True, key="adm_back"):
+                st.session_state["app_mode"] = "analysis"
+                st.rerun()
+        st.stop()
+
     with st.sidebar:
         st.markdown(f"""
         <div style="display:flex;align-items:center;gap:10px;padding:14px 4px 14px;">
@@ -348,6 +409,7 @@ else:
             ("📑 レポート出力", "report"),
             None,
             ("🔬 CSVプロファイラ", "profiler"),
+            ("📡 KAIZODE連携", "kaizode"),
             ("🔗 連携設定", "integration"),
         ]
         for _item in _NAV:
@@ -365,6 +427,12 @@ else:
                 ):
                     st.session_state["admin_page"] = _key
                     st.rerun()
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        if st.button("🔓 ログアウト", key="adm_logout", use_container_width=True):
+            st.session_state["admin_authed"] = False
+            st.session_state["app_mode"] = "analysis"
+            st.rerun()
 
         st.markdown(
             f"<div style='padding:20px 4px 4px;font-size:11px;color:#C5C4BC;'>v{config.APP_VERSION}</div>",
@@ -1930,6 +1998,158 @@ else:
                 "以下のテキストをコピーして Claude（claude.ai など）に貼り付けてください。"
             )
             st.code(_pf_prompt, language="markdown")
+
+    # ══════════════════════════════════════════════════════════════════════ #
+    # KAIZODE連携（発注・状況確認・DB取り込み）※ログイン後のみ到達
+    # ══════════════════════════════════════════════════════════════════════ #
+    elif _page == "kaizode":
+        st.markdown(
+            '<div class="vb-step">連携</div>'
+            '<h1 class="vb-h1">KAIZODE連携</h1>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "KAIZODEにレビュー収集を発注し、解析完了分をDBへ取り込みます。"
+            "レート制限（20リクエスト/分）には自動で対応します。"
+        )
+
+        # ── APIキーの解決（secrets/環境変数を推奨。無ければセッション限りの入力）─ #
+        _kz_key = os.environ.get("KAIZODE_API_KEY", "")
+        _key_src = "secrets/環境変数"
+        if not _kz_key:
+            try:
+                _kz_key = st.secrets.get("KAIZODE_API_KEY", "")
+            except Exception:
+                _kz_key = ""
+        if not _kz_key:
+            _kz_key = st.session_state.get("kz_session_key", "")
+            _key_src = "セッション入力"
+
+        if not _kz_key:
+            st.info(
+                "KAIZODE APIキーが未設定です。恒久利用は secrets の `KAIZODE_API_KEY` を推奨。"
+                "下で入力した場合は**このセッション限り**で使用し、DBやファイルには保存しません。"
+            )
+            _kz_in = st.text_input(
+                "KAIZODE APIキー（セッション限り）", type="password", key="kz_key_input",
+            )
+            if st.button("このセッションで使用する", type="primary", key="kz_key_use"):
+                if _kz_in.strip():
+                    st.session_state["kz_session_key"] = _kz_in.strip()
+                    st.rerun()
+                else:
+                    st.warning("APIキーを入力してください。")
+            st.stop()
+
+        _kc1, _kc2 = st.columns([3, 1])
+        with _kc1:
+            st.caption(f"🔑 APIキー: 設定済み（{_key_src}・末尾 …{_kz_key[-4:]}）")
+        with _kc2:
+            if _key_src == "セッション入力":
+                if st.button("🔒 キーを破棄", key="kz_key_clear", use_container_width=True):
+                    st.session_state.pop("kz_session_key", None)
+                    st.rerun()
+
+        _kz_client = kaizode.KaizodeClient(api_key=_kz_key)
+        tab_kst, tab_knew, tab_ksync = st.tabs(
+            ["📋 収集状況", "🛒 収集を発注", "⬇️ DBへ取り込み"]
+        )
+
+        # ── 収集状況 ────────────────────────────────────────────────── #
+        with tab_kst:
+            if st.button("🔄 最新の状況を取得", key="kz_refresh"):
+                st.session_state.pop("kz_datasets", None)
+            if "kz_datasets" not in st.session_state:
+                with st.spinner("KAIZODEに問い合わせ中…"):
+                    try:
+                        st.session_state["kz_datasets"] = _kz_client.list_datasets()
+                    except kaizode.KaizodeError as _e:
+                        st.error(str(_e))
+                        st.stop()
+            _kz_dss = st.session_state.get("kz_datasets") or []
+            if not _kz_dss:
+                st.info("データセットがまだありません。「🛒 収集を発注」から作成してください。")
+            else:
+                st.dataframe(
+                    pd.DataFrame([
+                        {
+                            "データセット": d.get("dataset_name", ""),
+                            "状態": kaizode.STATUS_LABELS.get(d.get("status"), d.get("status")),
+                            "定期": "✓" if d.get("is_scheduled") else "",
+                            "更新": str(d.get("updated_at", ""))[:19],
+                            "ID": d.get("dataset_id", ""),
+                        }
+                        for d in _kz_dss
+                    ]),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption("収集はKAIZODE側で非同期に進みます。「解析完了」になったら取り込めます。")
+
+        # ── 収集を発注 ──────────────────────────────────────────────── #
+        with tab_knew:
+            st.caption("1行1施設で「施設名,レビューURL[,取得開始日]」を入力してください。")
+            _kz_name = st.text_input("データセット名", value="口コミ対象", key="kz_ds_name")
+            _kz_lines = st.text_area(
+                "施設リスト", height=170, key="kz_lines",
+                placeholder="容器文化ミュージアム,https://www.google.com/maps/...,2024-01-01\nトヨタ博物館,https://www.google.com/maps/...",
+            )
+            if st.button("🛒 収集を発注する", type="primary", key="kz_create"):
+                _urls = []
+                for _ln in _kz_lines.splitlines():
+                    _parts = [p.strip() for p in _ln.split(",")]
+                    if len(_parts) >= 2 and _parts[1]:
+                        _item = {"url": _parts[1],
+                                 "review_target_name": _parts[0] or None}
+                        if len(_parts) >= 3 and _parts[2]:
+                            _item["since"] = _parts[2]
+                        _urls.append(_item)
+                if not _urls:
+                    st.warning("1件も読み取れませんでした。「施設名,URL」の形式で入力してください。")
+                else:
+                    try:
+                        with st.spinner("データセットを作成中…"):
+                            _ds = _kz_client.create_dataset(
+                                _kz_name.strip() or "口コミ対象", _urls
+                            )
+                        st.success(
+                            f"✅ {len(_urls)} 施設で発注しました"
+                            f"（dataset_id: {_ds.get('dataset_id')}）。"
+                            "収集完了後に「⬇️ DBへ取り込み」を実行してください。"
+                        )
+                        st.session_state.pop("kz_datasets", None)
+                    except kaizode.KaizodeError as _e:
+                        st.error(str(_e))
+
+        # ── DBへ取り込み ────────────────────────────────────────────── #
+        with tab_ksync:
+            _sc1, _sc2 = st.columns(2)
+            with _sc1:
+                _kz_cat = st.text_input(
+                    "category（任意）", key="kz_cat", placeholder="例: 企業ミュージアム",
+                )
+            with _sc2:
+                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                _kz_full = st.checkbox("全件取り直し（通常は差分）", key="kz_full")
+            if st.button("⬇️ 解析完了分をDBへ取り込む", type="primary", key="kz_sync"):
+                _logbox = st.container(height=260)
+                try:
+                    with st.spinner("同期中…（件数により数分かかります）"):
+                        _res = kaizode.sync_datasets(
+                            _kz_client, conn,
+                            category=(_kz_cat.strip() or None),
+                            full=_kz_full, log=_logbox.write,
+                        )
+                    st.success(
+                        f"✅ 完了: 新規 {_res['inserted']:,} 件 / "
+                        f"重複 {_res['skipped_dup']:,} 件 / "
+                        f"{_res['datasets_synced']} データセット"
+                    )
+                    _topic_matrix_cached.clear()
+                except kaizode.KaizodeError as _e:
+                    st.error(str(_e))
+            st.caption(
+                "差分取得: 前回取り込み以降のレビューだけをDLします（重複は自動スキップ）。"
+            )
 
     # ══════════════════════════════════════════════════════════════════════ #
     # 連携設定

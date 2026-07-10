@@ -176,6 +176,72 @@ def facility_name_of(r: dict, fallback: str = "不明") -> str:
 
 
 # ---------------------------------------------------------------------- #
+# 同期の本体（CLI と 管理画面の両方から使う）
+# ---------------------------------------------------------------------- #
+def sync_datasets(
+    client: "KaizodeClient",
+    conn,
+    *,
+    category: Optional[str] = None,
+    ftype: str = "comparison",
+    dataset_id: Optional[str] = None,
+    full: bool = False,
+    limit: int = DEFAULT_PAGE_LIMIT,
+    log=print,
+) -> dict:
+    """解析完了(status=30)のデータセットからレビューを差分取得し、DBへ取り込む。
+
+    Returns {"inserted", "skipped_dup", "datasets_synced", "datasets_skipped"}.
+    """
+    from . import db as _db
+
+    datasets = client.list_datasets()
+    if dataset_id:
+        datasets = [d for d in datasets if d.get("dataset_id") == dataset_id]
+        if not datasets:
+            raise KaizodeError(f"データセットが見つかりません: {dataset_id}")
+
+    total_ins = total_skip = synced = skipped = 0
+    for ds in datasets:
+        dsid = ds.get("dataset_id")
+        name = ds.get("dataset_name", "")
+        status = ds.get("status")
+        if status != STATUS_DONE:
+            log(f"⏭️ {name}: {STATUS_LABELS.get(status, status)} のためスキップ")
+            skipped += 1
+            continue
+
+        since = None if full else get_last_sync(conn, dsid)
+        log(f"⬇️ {name}: {'全件' if since is None else f'差分（{since} 以降）'}を取得中…")
+        reviews = list(client.iter_reviews(dsid, published_since=since, limit=limit))
+        if not reviews:
+            log("　　新着なし")
+            set_last_sync(conn, dsid, name, since)
+            synced += 1
+            continue
+
+        by_fac: dict[str, list] = {}
+        for r in reviews:
+            by_fac.setdefault(facility_name_of(r, fallback=name), []).append(r)
+
+        for fac_name, revs in sorted(by_fac.items()):
+            fid = _db.upsert_facility(conn, fac_name, ftype=ftype, category=category)
+            ins, skip = _db.insert_reviews(
+                conn, fid, [to_parsed_review(r) for r in revs]
+            )
+            total_ins += ins
+            total_skip += skip
+            log(f"　　{fac_name}: {len(revs)}件 (新規{ins}/重複{skip})")
+
+        last_pub = max((r.get("published_at") or "") for r in reviews)[:19] or since
+        set_last_sync(conn, dsid, name, last_pub)
+        synced += 1
+
+    return {"inserted": total_ins, "skipped_dup": total_skip,
+            "datasets_synced": synced, "datasets_skipped": skipped}
+
+
+# ---------------------------------------------------------------------- #
 # 同期状態（差分取得のための published_since 記録）— kaizode_sync テーブル
 # ---------------------------------------------------------------------- #
 def get_last_sync(conn, dataset_id: str) -> Optional[str]:

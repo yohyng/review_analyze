@@ -77,52 +77,18 @@ def cmd_sync(client: kaizode.KaizodeClient, args) -> None:
     backend = "Turso" if hasattr(conn, "execute_pipeline") else "ローカルSQLite"
     print(f"DB接続先: {backend}")
 
-    datasets = client.list_datasets()
-    if args.dataset_id:
-        datasets = [d for d in datasets if d.get("dataset_id") == args.dataset_id]
-        if not datasets:
-            sys.exit(f"データセットが見つかりません: {args.dataset_id}")
+    try:
+        res = kaizode.sync_datasets(
+            client, conn,
+            category=args.category, ftype=args.ftype,
+            dataset_id=args.dataset_id, full=args.full, limit=args.limit,
+        )
+    except kaizode.KaizodeError as e:
+        sys.exit(f"❌ {e}")
 
-    total_ins = total_skip = 0
-    for ds in datasets:
-        dsid = ds.get("dataset_id")
-        name = ds.get("dataset_name", "")
-        status = ds.get("status")
-        if status != kaizode.STATUS_DONE:
-            label = kaizode.STATUS_LABELS.get(status, status)
-            print(f"⏭️  {name}（{dsid}）: {label} のためスキップ")
-            continue
-
-        since = None if args.full else kaizode.get_last_sync(conn, dsid)
-        mode = "全件" if since is None else f"差分（published_since={since}）"
-        print(f"⬇️  {name}（{dsid}）: {mode} 取得中…")
-
-        reviews = list(client.iter_reviews(dsid, published_since=since, limit=args.limit))
-        if not reviews:
-            print("    新着なし")
-            kaizode.set_last_sync(conn, dsid, name, since)
-            continue
-
-        # 施設（review_target_name）ごとにまとめて取り込み
-        by_fac: dict[str, list] = {}
-        for r in reviews:
-            by_fac.setdefault(kaizode.facility_name_of(r, fallback=name), []).append(r)
-
-        for fac_name, revs in sorted(by_fac.items()):
-            fid = db.upsert_facility(
-                conn, fac_name, ftype=args.ftype, category=args.category,
-            )
-            parsed = [kaizode.to_parsed_review(r) for r in revs]
-            ins, skip = db.insert_reviews(conn, fid, parsed)
-            total_ins += ins
-            total_skip += skip
-            print(f"    {fac_name}: {len(parsed)}件 (新規{ins}/重複{skip})")
-
-        last_pub = max((r.get("published_at") or "") for r in reviews)[:19] or since
-        kaizode.set_last_sync(conn, dsid, name, last_pub)
-
-    print(f"\n✅ 同期完了: 新規 {total_ins:,} 件 / 重複スキップ {total_skip:,} 件")
-    if total_ins:
+    print(f"\n✅ 同期完了: 新規 {res['inserted']:,} 件 / 重複スキップ {res['skipped_dup']:,} 件"
+          f"（{res['datasets_synced']} データセット / スキップ {res['datasets_skipped']}）")
+    if res["inserted"]:
         print("   アプリを開くと新データで分析できます（トピック行列は自動で再計算）。")
 
 
