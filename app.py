@@ -362,7 +362,10 @@ else:
                         "🔐 ログイン", type="primary", use_container_width=True
                     )
                 if _login:
-                    if hmac.compare_digest(_pw_in, _adm_pw):
+                    # bytesで比較（strのままだと非ASCIIパスワードでTypeError）
+                    if hmac.compare_digest(
+                        (_pw_in or "").encode("utf-8"), _adm_pw.encode("utf-8")
+                    ):
                         st.session_state["admin_authed"] = True
                         st.rerun()
                     else:
