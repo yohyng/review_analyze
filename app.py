@@ -6,7 +6,6 @@ Admin mode:    dashboard / facilities / data import / detailed analysis / settin
 from __future__ import annotations
 
 import base64
-import hmac
 import os
 import tempfile
 import time
@@ -19,6 +18,7 @@ import streamlit as st
 
 from src import (
     analysis,
+    auth,
     charts,
     config,
     csv_profiler,
@@ -266,6 +266,7 @@ for _k, _v in {
     "an_topic_list": [],
     "an_topic_score": None,
     "admin_page": "dashboard",
+    "admin_email": None,
     "analysis_target": None,
     "insights": None,
     "insights_facility": None,
@@ -317,18 +318,19 @@ if _is_an:
         st.markdown("<hr style='margin:6px 0 4px;'>", unsafe_allow_html=True)
 
 else:
-    # ── 管理モードはログイン必須（ADMIN_PASSWORD 未設定時は安全側でロック）── #
-    def _admin_password() -> str:
-        pw = os.environ.get("ADMIN_PASSWORD", "")
-        if not pw:
-            try:
-                pw = st.secrets.get("ADMIN_PASSWORD", "")
-            except Exception:
-                pw = ""
-        return pw or ""
-
+    # ── 管理モードはログイン必須（メール＋パスワードのアカウント制）── #
+    #   ・新規登録は招待コード SIGNUP_CODE を知っている人だけ（登録ゲート）
+    #   ・ADMIN_PASSWORD は「最初の1人を作る/ロックアウト回避」用の非常口
     if not st.session_state.get("admin_authed"):
-        _adm_pw = _admin_password()
+        try:
+            _n_users = auth.count_users(conn)
+        except Exception:
+            _n_users = 0
+        _has_signup = bool(auth.signup_code())
+        _has_master = bool(auth.admin_password())
+        # 入口が一つも無い（登録もできない・非常口も無い・既存ユーザーも無い）ときだけロック
+        _locked = (_n_users == 0 and not _has_signup and not _has_master)
+
         st.markdown(
             "<style>[data-testid='stSidebar']{display:none!important;}"
             "[data-testid='collapsedControl']{display:none!important;}</style>",
@@ -336,9 +338,9 @@ else:
         )
         _sp1, _mid, _sp2 = st.columns([1, 1.1, 1])
         with _mid:
-            st.markdown("<div style='height:12vh'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:9vh'></div>", unsafe_allow_html=True)
             st.markdown(f"""
-            <div style="text-align:center;margin-bottom:16px;">
+            <div style="text-align:center;margin-bottom:14px;">
               <div style="width:52px;height:52px;border-radius:14px;background:{ACCENT};
                           display:inline-flex;align-items:center;justify-content:center;
                           color:#fff;font-weight:800;font-size:22px;">V</div>
@@ -348,29 +350,82 @@ else:
             </div>
             """, unsafe_allow_html=True)
 
-            if not _adm_pw:
-                st.warning("ADMIN_PASSWORD が未設定のため、管理画面はロックされています。")
+            if _locked:
+                st.warning("管理画面はロックされています。招待コード（SIGNUP_CODE）を設定すると"
+                           "アカウント登録できるようになります。")
                 st.code(
                     '# .streamlit/secrets.toml（Streamlit Cloud は Settings > Secrets）\n'
-                    'ADMIN_PASSWORD = "強いパスワードを設定"',
+                    'SIGNUP_CODE    = "登録に必要な招待コード（合言葉）"\n'
+                    'ADMIN_PASSWORD = "任意: 非常口のマスターパスワード"',
                     language="toml",
                 )
             else:
-                with st.form("admin_login"):
-                    _pw_in = st.text_input("パスワード", type="password", key="adm_pw_input")
-                    _login = st.form_submit_button(
-                        "🔐 ログイン", type="primary", use_container_width=True
-                    )
-                if _login:
-                    # bytesで比較（strのままだと非ASCIIパスワードでTypeError）
-                    if hmac.compare_digest(
-                        (_pw_in or "").encode("utf-8"), _adm_pw.encode("utf-8")
-                    ):
-                        st.session_state["admin_authed"] = True
-                        st.rerun()
+                _tab_login, _tab_reg = st.tabs(["ログイン", "新規登録"])
+
+                # ── ログイン ────────────────────────────────────────────── #
+                with _tab_login:
+                    with st.form("admin_login"):
+                        _em_in = st.text_input("メールアドレス", key="adm_login_email")
+                        _pw_in = st.text_input("パスワード", type="password", key="adm_login_pw")
+                        _login = st.form_submit_button(
+                            "🔐 ログイン", type="primary", use_container_width=True
+                        )
+                    if _login:
+                        _user = None
+                        try:
+                            _user = auth.authenticate(conn, _em_in, _pw_in)
+                        except Exception:
+                            _user = None
+                        if _user:
+                            st.session_state["admin_authed"] = True
+                            st.session_state["admin_email"] = _user["email"]
+                            st.rerun()
+                        elif auth.check_admin_password(_pw_in):
+                            # 非常口（マスターパスワード）: メール欄は任意
+                            st.session_state["admin_authed"] = True
+                            st.session_state["admin_email"] = (
+                                auth.normalize_email(_em_in) or "master"
+                            )
+                            st.rerun()
+                        else:
+                            time.sleep(1)   # 総当たり抑止
+                            st.error("メールアドレスまたはパスワードが違います。")
+
+                # ── 新規登録（招待コード必須）───────────────────────────── #
+                with _tab_reg:
+                    if not _has_signup:
+                        st.info("新規登録は現在無効です。管理者が招待コード（SIGNUP_CODE）を"
+                                "設定すると有効になります。")
+                        st.code('SIGNUP_CODE = "登録に必要な招待コード"', language="toml")
                     else:
-                        time.sleep(1)   # 総当たり抑止
-                        st.error("パスワードが違います。")
+                        with st.form("admin_register"):
+                            _rem = st.text_input("メールアドレス", key="adm_reg_email")
+                            _rpw = st.text_input("パスワード（8文字以上）", type="password",
+                                                 key="adm_reg_pw")
+                            _rpw2 = st.text_input("パスワード（確認）", type="password",
+                                                  key="adm_reg_pw2")
+                            _code = st.text_input("招待コード", type="password",
+                                                  key="adm_reg_code",
+                                                  help="管理者から共有された合言葉を入力")
+                            _reg = st.form_submit_button(
+                                "✳️ アカウント作成", type="primary", use_container_width=True
+                            )
+                        if _reg:
+                            if not auth.check_signup_code(_code):
+                                time.sleep(1)
+                                st.error("招待コードが違います。")
+                            elif _rpw != _rpw2:
+                                st.error("パスワード（確認）が一致しません。")
+                            else:
+                                try:
+                                    _u = auth.create_user(conn, _rem, _rpw)
+                                    st.session_state["admin_authed"] = True
+                                    st.session_state["admin_email"] = _u["email"]
+                                    st.rerun()
+                                except auth.AuthError as _e:
+                                    st.error(str(_e))
+                                except Exception as _e:
+                                    st.error(f"登録に失敗しました: {_e}")
 
             if st.button("← 分析モードに戻る", use_container_width=True, key="adm_back"):
                 st.session_state["app_mode"] = "analysis"
@@ -414,6 +469,7 @@ else:
             ("🔬 CSVプロファイラ", "profiler"),
             ("📡 KAIZODE連携", "kaizode"),
             ("🔗 連携設定", "integration"),
+            ("👤 アカウント", "account"),
         ]
         for _item in _NAV:
             if _item is None:
@@ -432,8 +488,16 @@ else:
                     st.rerun()
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        _who = st.session_state.get("admin_email")
+        if _who:
+            st.markdown(
+                f"<div style='font-size:11px;color:#8A9098;padding:0 4px 4px;'>"
+                f"ログイン中: <b style='color:#16202B;'>{escape(str(_who))}</b></div>",
+                unsafe_allow_html=True,
+            )
         if st.button("🔓 ログアウト", key="adm_logout", use_container_width=True):
             st.session_state["admin_authed"] = False
+            st.session_state["admin_email"] = None
             st.session_state["app_mode"] = "analysis"
             st.rerun()
 
@@ -2272,3 +2336,113 @@ GEMINI_API_KEY = "AIza..."
                 "Turso 未設定の場合はローカルの `data/reviews.db` を使用します。"
                 "データはサーバー再起動で消えるためクラウドDBの設定を推奨します。"
             )
+
+    elif _page == "account":
+        st.markdown(
+            '<div class="vb-step">ツール</div>'
+            '<h1 class="vb-h1">アカウント</h1>',
+            unsafe_allow_html=True,
+        )
+
+        _me = st.session_state.get("admin_email") or "—"
+        _gate_signup = bool(auth.signup_code())
+        _gate_master = bool(auth.admin_password())
+        st.markdown(f"""
+        <div style="display:flex;align-items:center;gap:12px;padding:16px 18px;
+                    background:#fff;border:1px solid #E9E8E2;border-radius:12px;
+                    margin-bottom:16px;">
+          <div style="width:10px;height:10px;border-radius:50%;background:#4F8A6B;"></div>
+          <div>
+            <div style="font-weight:700;color:#16202B;">ログイン中: {escape(str(_me))}</div>
+            <div style="font-size:12px;color:#8A9098;margin-top:2px;">
+              招待コード(SIGNUP_CODE): {"設定済み ✅" if _gate_signup else "未設定 —（新規登録は無効）"}
+              ／ 非常口(ADMIN_PASSWORD): {"設定済み ✅" if _gate_master else "未設定 —"}
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        tab_users, tab_add, tab_pw = st.tabs(
+            ["👥 ユーザー一覧", "➕ ユーザー追加", "🔑 自分のパスワード変更"]
+        )
+
+        # ── ユーザー一覧 ─────────────────────────────────────────────── #
+        with tab_users:
+            try:
+                _users = auth.list_users(conn)
+            except Exception as _e:
+                _users = []
+                st.error(f"ユーザー一覧を取得できませんでした: {_e}")
+            if not _users:
+                st.caption("登録済みアカウントはまだありません。"
+                           "（非常口パスワードでログイン中の可能性があります）")
+            else:
+                st.caption(f"{len(_users)} 件のアカウント")
+                for _u in _users:
+                    _uc1, _uc2, _uc3 = st.columns([3, 2, 1])
+                    with _uc1:
+                        st.markdown(
+                            f"<div style='padding:8px 0;font-weight:600;color:#16202B;'>"
+                            f"{escape(_u['email'])}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    with _uc2:
+                        st.markdown(
+                            f"<div style='padding:8px 0;font-size:12px;color:#8A9098;'>"
+                            f"{escape(str(_u.get('created_at') or ''))[:10]}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    with _uc3:
+                        _is_self = (auth.normalize_email(str(_me)) == _u["email"])
+                        if st.button("削除", key=f"deluser_{_u['email']}",
+                                     use_container_width=True, disabled=_is_self,
+                                     help="ログイン中の自分は削除できません" if _is_self else None):
+                            auth.delete_user(conn, _u["email"])
+                            st.toast(f"{_u['email']} を削除しました。", icon="🗑️")
+                            st.rerun()
+
+        # ── ユーザー追加（ログイン済み管理者が招待コード無しで追加）──── #
+        with tab_add:
+            st.caption("ログイン中の管理者は、招待コードなしで新しいアカウントを追加できます。")
+            with st.form("account_add_user"):
+                _nem = st.text_input("メールアドレス", key="acc_add_email")
+                _npw = st.text_input("パスワード（8文字以上）", type="password",
+                                     key="acc_add_pw")
+                _add = st.form_submit_button("➕ 追加", type="primary")
+            if _add:
+                try:
+                    auth.create_user(conn, _nem, _npw)
+                    st.success(f"{auth.normalize_email(_nem)} を追加しました。")
+                    st.rerun()
+                except auth.AuthError as _e:
+                    st.error(str(_e))
+                except Exception as _e:
+                    st.error(f"追加に失敗しました: {_e}")
+
+        # ── 自分のパスワード変更 ─────────────────────────────────────── #
+        with tab_pw:
+            _me_norm = auth.normalize_email(str(_me))
+            _is_account = bool(_me_norm) and auth.user_exists(conn, _me_norm)
+            if not _is_account:
+                st.info("非常口パスワードでログイン中のため、ここでは変更できません。"
+                        "アカウントを作成するとパスワードを管理できます。")
+            else:
+                with st.form("account_change_pw"):
+                    _cur = st.text_input("現在のパスワード", type="password", key="acc_cur_pw")
+                    _new1 = st.text_input("新しいパスワード（8文字以上）", type="password",
+                                          key="acc_new_pw1")
+                    _new2 = st.text_input("新しいパスワード（確認）", type="password",
+                                          key="acc_new_pw2")
+                    _chg = st.form_submit_button("🔑 変更", type="primary")
+                if _chg:
+                    if not auth.authenticate(conn, _me_norm, _cur):
+                        time.sleep(1)
+                        st.error("現在のパスワードが違います。")
+                    elif _new1 != _new2:
+                        st.error("新しいパスワード（確認）が一致しません。")
+                    else:
+                        try:
+                            auth.set_password(conn, _me_norm, _new1)
+                            st.success("パスワードを変更しました。")
+                        except auth.AuthError as _e:
+                            st.error(str(_e))

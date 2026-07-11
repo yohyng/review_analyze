@@ -5,7 +5,7 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.8.3`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **現在バージョン**: `0.11.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
 - **テスト**: `python -m pytest tests/ -q` → **89 passed**
 
 ---
@@ -37,12 +37,16 @@ python -m pytest tests/ -q
 `st.session_state["an_screen"]` が `setup / running / preview` を遷移。
 
 ### 管理モード（運用者向け・左サイドバーナビ・**ログイン必須**）
-`st.session_state["admin_page"]`: `dashboard / facilities / import / topic / score / text / report / profiler / kaizode / integration`
+`st.session_state["admin_page"]`: `dashboard / facilities / import / topic / score / text / report / profiler / kaizode / integration / account`
 
-**認証（v0.10.0）**: 管理モードは `ADMIN_PASSWORD`（secrets or 環境変数）によるログインゲート付き。
-- 照合は `hmac.compare_digest`、失敗時1秒スリープ（総当たり抑止）。合格で `session_state["admin_authed"]=True`。サイドバー下部に🔓ログアウト。
-- **未設定時はフェイルクローズ（ロック画面＋設定手順を表示）**。ローカル開発では `ADMIN_PASSWORD=xxx streamlit run app.py`。
-- AppTest でも `at.session_state["admin_authed"]=True` を先にセットしないと管理ページに到達できない点に注意。
+**認証（v0.11.0：メール＋パスワードのアカウント制・招待コードゲート）** — `src/auth.py`
+- ログインは **メールアドレス＋パスワード**。ユーザーは **`app_user` テーブル**（db.py SCHEMA）に保存。パスワードは **`pbkdf2_hmac(sha256, 20万回)` でハッシュ化＋ソルト**（平文は持たない）。照合は `hmac.compare_digest`、失敗時1秒スリープ。合格で `session_state["admin_authed"]=True` / `admin_email` に格納。サイドバー下部にログイン中メール表示＋🔓ログアウト。
+- **新規登録は招待コード `SIGNUP_CODE`（secrets/環境変数）を知っている人だけ**＝URLを知っているだけでは管理者になれない「登録ゲート」。登録画面（ログイン画面のタブ）でメール＋PW＋招待コードを入力→合致すれば作成し自動ログイン。**`SIGNUP_CODE` 未設定なら新規登録は無効**（登録タブに設定手順を表示）。
+- **`ADMIN_PASSWORD` は「最初の1人を作る/ロックアウト回避」用の非常口**（マスターパスワード）として併存。ログインのパスワード欄にこれを入れると、アカウントが無くても入れる。後方互換。
+- **完全ロック**は「ユーザー0人 かつ `SIGNUP_CODE` 未設定 かつ `ADMIN_PASSWORD` 未設定」のときのみ（入口が一つも無い状態）。それ以外はログイン/新規登録タブを表示。
+- **アカウント管理ページ `👤 アカウント`**: ユーザー一覧（自分は削除不可）、招待コード無しでのユーザー追加（ログイン済み管理者の権限）、自分のパスワード変更、招待コード/非常口の設定状況表示。
+- ローカル開発では `SIGNUP_CODE=xxx ADMIN_PASSWORD=yyy streamlit run app.py`。
+- AppTest でも `at.session_state["admin_authed"]=True`（＋`admin_email`）を先にセットしないと管理ページに到達できない。フォーム越しの登録/ログイン検証は「シナリオごとに fresh な AppTest ＋ 一時DBファイル固定」で行う（`session_state` を使い回すとウィジェット状態が壊れる）。
 
 ブランド: **VoiceBAUM**、アクセント **マゼンタ `#B0338A`**、背景 `#F7F7F4`、フォント Manrope + Noto Sans JP。
 
@@ -121,7 +125,7 @@ python -m pytest tests/ -q
 ## 6. データ層とデモデータ
 
 ### DBスキーマ（`src/db.py` の `SCHEMA`）
-`facility`（施設マスタ: name/type/category/general_rating/total_reviews） / `review`（口コミ本文） / `review_subscore`（Google観点別） / `score`（Excel定量指標） / **`facility_photo`（写真BLOB）**。
+`facility`（施設マスタ: name/type/category/general_rating/total_reviews） / `review`（口コミ本文） / `review_subscore`（Google観点別） / `score`（Excel定量指標） / **`facility_photo`（写真BLOB）** / `kaizode_sync`（KAIZODE差分同期状態） / **`app_user`（管理ログイン用: email PK / password_hash / salt / role / created_at）**。
 `get_conn()` は Turso（`_secret("TURSO_URL")`+`_secret("TURSO_TOKEN")`）優先、無ければローカルSQLite。行は `_Row`（sqlite3.Row互換・**dict非継承**なので pandas に位置で渡せる）。
 
 ### KAIZODE 連携（口コミ対象施設の自動取得・v0.9.0）
@@ -188,7 +192,8 @@ python -m pytest tests/ -q
 
 | ファイル | 役割 |
 |---|---|
-| `app.py` | 全UI（分析モード3画面＋管理モード9ページ）。約2000行 |
+| `app.py` | 全UI（分析モード3画面＋管理モード10ページ）。約2100行 |
+| `src/auth.py` | **管理ログインの認証**（pbkdf2ハッシュ・招待コードゲート・ユーザーCRUD） |
 | `src/topic_score.py` | **感情・トピック統合スコアモデル（正）**。22観点 |
 | `src/preview.py` | 分析結果スライド（bundle生成＋16:10 HTML） |
 | `src/report.py` | PPTX生成（python-pptxネイティブ） |
@@ -208,6 +213,8 @@ python -m pytest tests/ -q
 
 ## 11. 変更履歴（要約）
 
+- **v0.11.0** 管理ログインを**メール＋パスワードのアカウント制**に（`src/auth.py`・`app_user`テーブル・pbkdf2ハッシュ）。**新規登録は招待コード`SIGNUP_CODE`ゲート**、`ADMIN_PASSWORD`は非常口として併存。画面上のログイン/新規登録タブ＋`👤 アカウント`管理ページ（一覧/追加/自分のPW変更）
+- **v0.10.1** 管理ログインの非ASCIIパスワードでの `hmac.compare_digest` TypeError 修正（UTF-8 bytesで比較）
 - **v0.10.0** 管理モードのログイン必須化（ADMIN_PASSWORD・フェイルクローズ）＋管理画面「📡 KAIZODE連携」ページ（発注/状況/取り込み、キーはsecrets優先・セッション限り入力可）
 - **v0.9.0** KAIZODE連携（APIクライアント＋発注/回収CLI＋GitHub Actions定期同期＝画面を閉じても動く収集）
 - **v0.8.5** PROFILEをその場でインライン編集（✏️トグルで写真アップ＋各項目の手入力）。下部の折りたたみ編集は廃止

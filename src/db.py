@@ -273,6 +273,14 @@ CREATE TABLE IF NOT EXISTS kaizode_sync (
     synced_at         TEXT
 );
 
+CREATE TABLE IF NOT EXISTS app_user (
+    email           TEXT PRIMARY KEY,          -- ログインID（メールアドレス, 小文字正規化）
+    password_hash   TEXT NOT NULL,             -- pbkdf2_hmac(sha256) の16進
+    salt            TEXT NOT NULL,             -- 16進ソルト
+    role            TEXT NOT NULL DEFAULT 'admin',
+    created_at      TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_review_facility ON review(facility_id);
 CREATE INDEX IF NOT EXISTS idx_subscore_review ON review_subscore(review_db_id);
 CREATE INDEX IF NOT EXISTS idx_score_facility ON score(facility_id);
