@@ -65,8 +65,10 @@ class ParseResult:
 # low-level helpers
 # --------------------------------------------------------------------------- #
 def _load_text(source) -> str:
-    """Read a path or file-like into text, trying common JP encodings."""
-    if hasattr(source, "read"):
+    """Read raw bytes, a path, or a file-like into text (common JP encodings)."""
+    if isinstance(source, (bytes, bytearray)):
+        data = bytes(source)
+    elif hasattr(source, "read"):
         data = source.read()
     else:
         with open(source, "rb") as f:
@@ -226,11 +228,46 @@ def infer_facilities(source) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # public API
 # --------------------------------------------------------------------------- #
+def _extract_review(row: dict) -> Optional[ParsedReview]:
+    """Row → ParsedReview, or None for empty junk lines (no text and no rating)."""
+    # 'review' (KAIZODE) or 'クチコミ内容' (simple JP format)
+    text = _col(row, "review", "クチコミ内容")
+    if not text and not _col(row, "review_rating"):
+        return None
+    date = _col(row, "review_date")
+    # 'reviewer_name' (KAIZODE) or '投稿者' (simple JP format)
+    reviewer = _col(row, "reviewer_name", "投稿者")
+    review_id = _col(row, "review_id") or _fallback_id(text, date, reviewer)
+    return ParsedReview(
+        review_id=review_id,
+        rating=_to_int(_col(row, "review_rating")),
+        text=text,
+        review_date=date,
+        reviewer_name=reviewer,
+        local_guide=_col(row, "local_guide").strip().upper() == "TRUE",
+        likes=_to_int(_col(row, "number_of_likes")),
+        owner_response=_col(row, "response_of_owner"),
+        owner_response_date=_col(row, "response_date"),
+        subscores=_parse_subscores(_col(row, "review_details")),
+    )
+
+
+def _row_meta(row: dict) -> tuple:
+    """(general_rating, total_reviews, category) for one row — any may be None."""
+    return (
+        _to_float(_col(row, "place_general_rating")),
+        _to_int(_col(row, "overall_place_reviews", "overall_place_riviews")),
+        _col(row, "category") or None,
+    )
+
+
 def parse_reviews(source, facility_key: Optional[str] = None) -> ParseResult:
     """Parse a review CSV/TSV (path or file-like) into a ParseResult.
 
     If facility_key is given, only rows belonging to that facility (per
     infer_facilities' grouping) are included — used for multi-facility CSVs.
+    NOTE: for importing *many* facilities at once, use parse_reviews_grouped()
+    which reads the file a single time instead of once per facility.
     """
     df = _read_dataframe(_load_text(source))
     records = df.to_dict("records")
@@ -249,42 +286,21 @@ def parse_reviews(source, facility_key: Optional[str] = None) -> ParseResult:
         if facility_key is not None and _facility_key_name(row)[0] != facility_key:
             continue
 
-        # 'review' (KAIZODE) or 'クチコミ内容' (simple JP format)
-        text = _col(row, "review", "クチコミ内容")
-        date = _col(row, "review_date")
-        # 'reviewer_name' (KAIZODE) or '投稿者' (simple JP format)
-        reviewer = _col(row, "reviewer_name", "投稿者")
-        review_id = _col(row, "review_id") or _fallback_id(text, date, reviewer)
-
-        # drop empty junk lines
-        if not text and not _col(row, "review_rating"):
+        rv = _extract_review(row)
+        if rv is None:
             n_skipped += 1
             continue
-
-        reviews.append(
-            ParsedReview(
-                review_id=review_id,
-                rating=_to_int(_col(row, "review_rating")),
-                text=text,
-                review_date=date,
-                reviewer_name=reviewer,
-                local_guide=_col(row, "local_guide").strip().upper() == "TRUE",
-                likes=_to_int(_col(row, "number_of_likes")),
-                owner_response=_col(row, "response_of_owner"),
-                owner_response_date=_col(row, "response_date"),
-                subscores=_parse_subscores(_col(row, "review_details")),
-            )
-        )
+        reviews.append(rv)
 
         # facility-level meta: take first non-empty
-        if general_rating is None:
-            general_rating = _to_float(_col(row, "place_general_rating"))
-        if total_reviews is None:
-            total_reviews = _to_int(
-                _col(row, "overall_place_reviews", "overall_place_riviews")
-            )
-        if category is None:
-            category = _col(row, "category") or None
+        if general_rating is None or total_reviews is None or category is None:
+            gr, tr, cat = _row_meta(row)
+            if general_rating is None:
+                general_rating = gr
+            if total_reviews is None:
+                total_reviews = tr
+            if category is None:
+                category = cat
 
     return ParseResult(
         reviews=reviews,
@@ -294,6 +310,56 @@ def parse_reviews(source, facility_key: Optional[str] = None) -> ParseResult:
         n_raw=len(records),
         n_skipped=n_skipped,
     )
+
+
+def parse_reviews_grouped(source) -> dict[str, tuple[str, ParseResult]]:
+    """Parse ONCE → {facility_key: (facility_name, ParseResult)} for every facility.
+
+    Equivalent to calling parse_reviews(source, facility_key=k) for each detected
+    facility k, but reads and parses the file a single time — O(rows) instead of
+    O(rows × facilities). Use this for bulk multi-facility import.
+    """
+    df = _read_dataframe(_load_text(source))
+    records = df.to_dict("records")
+
+    groups: dict[str, dict] = {}
+    for row in records:
+        if _col(row, "error", "error_code"):
+            continue
+        key, name = _facility_key_name(row)
+        key = key or "(不明)"
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"names": Counter(), "reviews": [],
+                               "gr": None, "tr": None, "cat": None,
+                               "n_raw": 0, "n_skipped": 0}
+        g["n_raw"] += 1
+        if name:
+            g["names"][name] += 1
+
+        rv = _extract_review(row)
+        if rv is None:
+            g["n_skipped"] += 1
+            continue
+        g["reviews"].append(rv)
+
+        if g["gr"] is None or g["tr"] is None or g["cat"] is None:
+            gr, tr, cat = _row_meta(row)
+            if g["gr"] is None:
+                g["gr"] = gr
+            if g["tr"] is None:
+                g["tr"] = tr
+            if g["cat"] is None:
+                g["cat"] = cat
+
+    out: dict[str, tuple[str, ParseResult]] = {}
+    for key, g in groups.items():
+        name = g["names"].most_common(1)[0][0] if g["names"] else "(不明)"
+        out[key] = (name, ParseResult(
+            reviews=g["reviews"], general_rating=g["gr"], total_reviews=g["tr"],
+            category=g["cat"], n_raw=g["n_raw"], n_skipped=g["n_skipped"],
+        ))
+    return out
 
 
 if __name__ == "__main__":  # quick manual check

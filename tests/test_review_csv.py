@@ -130,3 +130,27 @@ def test_parse_reviews_from_bytesio_with_and_without_key():
     assert len(only_b.reviews) == 3
     all_rows = review_csv.parse_reviews(io.BytesIO(MULTI_CSV_BYTES), facility_key=None)
     assert len(all_rows.reviews) == 5
+
+
+def test_parse_reviews_grouped_matches_per_facility():
+    """grouped の各施設レビューが per-facility parse と一致する（バルク取込の要）。"""
+    inf = review_csv.infer_facilities(io.BytesIO(MULTI_CSV_BYTES))
+    grouped = review_csv.parse_reviews_grouped(io.BytesIO(MULTI_CSV_BYTES))
+    assert set(grouped.keys()) == {f["key"] for f in inf}
+    for f in inf:
+        k = f["key"]
+        single = review_csv.parse_reviews(io.BytesIO(MULTI_CSV_BYTES), facility_key=k)
+        name, res = grouped[k]
+        assert [r.review_id for r in res.reviews] == [r.review_id for r in single.reviews]
+        assert len(res.reviews) == f["count"]
+        assert res.category == single.category
+
+
+def test_parsers_accept_raw_bytes():
+    """アプリは uploaded.getvalue()（生bytes）を渡す — bytes 経路が壊れていないこと。"""
+    inf = review_csv.infer_facilities(MULTI_CSV_BYTES)
+    assert [f["name"] for f in inf] == ["施設B", "施設A"]
+    grp = review_csv.parse_reviews_grouped(MULTI_CSV_BYTES)
+    assert set(grp.keys()) == {f["key"] for f in inf}
+    res = review_csv.parse_reviews(MULTI_CSV_BYTES)
+    assert len(res.reviews) == 5

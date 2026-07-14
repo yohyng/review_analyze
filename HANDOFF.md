@@ -5,8 +5,8 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.12.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **140 passed**
+- **現在バージョン**: `0.12.1`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **142 passed**
 
 ---
 
@@ -214,6 +214,7 @@ python -m pytest tests/ -q
 
 ## 11. 変更履歴（要約）
 
+- **v0.12.1** マルチ施設取り込みが途中(約20/46施設)で力尽きる問題を修正。原因は保存ループが施設ごとに `parse_reviews` を呼び**ファイル全体を毎回再解析**（O(n²)、実測46施設で約22秒→Cloudで更に遅くヘルスチェック切れ）。`review_csv.parse_reviews_grouped()`（1回解析で全施設へ振り分け＝実測18.7倍高速）を追加し保存ループを置換。ネストした`st.status`ウィジェットを廃し施設ベースの単一プログレスバーに。`_load_text` を**生bytes対応**（アプリは `uploaded.getvalue()` を渡す）。Turso挿入バッチ 50→100
 - **v0.12.0** 分析資料の最後に **APPENDIX「比較対象施設一覧」スライド**を追加（プレビュー＝`preview.html_appendix`／PPTX＝`report._slide_appendix`、3カラム・ピア施設名・施設数バッジ・上限45で「ほかN施設」）。ピア0件なら非表示
 - **v0.11.1** 取り込み画面のクラッシュ修正: マルチ施設のチェック操作の再実行ごとに `infer_facilities`（数万行フル再解析）が走りOOMで落ちていた → `@st.cache_data` でファイル内容キャッシュ化（返り値は小さいサマリ）。単一施設プレビューの `parse_reviews` も同様にキャッシュ（max_entries=8）。保存ループは1件ずつ処理でメモリ安全なので据え置き
 - **v0.11.0** 管理ログインを**メール＋パスワードのアカウント制**に（`src/auth.py`・`app_user`テーブル・pbkdf2ハッシュ）。**新規登録は招待コード`SIGNUP_CODE`ゲート**、`ADMIN_PASSWORD`は非常口として併存。画面上のログイン/新規登録タブ＋`👤 アカウント`管理ページ（一覧/追加/自分のPW変更）

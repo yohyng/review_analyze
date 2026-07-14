@@ -1387,76 +1387,62 @@ else:
                         f"💾 {len(selected_fac)} 施設を保存する",
                         type="primary", use_container_width=True, key="csv_save_multi",
                     ):
+                        _total_fac = len(selected_fac)
                         with st.status(
-                            f"保存中... 0 / {len(selected_fac)} 完了", expanded=True
+                            f"保存中... 0 / {_total_fac} 完了", expanded=True
                         ) as status:
-                            for i, chosen_fac in enumerate(selected_fac, 1):
-                                with st.status(
-                                    f"🔄 {chosen_fac['name']} 処理中...", expanded=False
-                                ) as fac_status:
-                                    try:
-                                        st.write(f"📖 データを解析中...")
-                                        result = review_csv.parse_reviews(
-                                            uploaded, facility_key=chosen_fac["key"]
-                                        )
-                                        uploaded.seek(0)
-                                        st.write(f"✅ {len(result.reviews)} 件のパース完了")
-                                    except Exception as e:
-                                        st.error(f"パース失敗: {e}")
-                                        fac_status.update(
-                                            label=f"❌ {chosen_fac['name']} パース失敗",
-                                            state="error",
-                                        )
-                                        continue
+                            # ① ファイルは1回だけ解析して施設ごとに振り分ける
+                            #    （施設数ぶん再解析するとO(n²)になり大きいファイルで力尽きる）
+                            status.write("📖 ファイルを1回だけ解析中...")
+                            _grouped = None
+                            try:
+                                _grouped = review_csv.parse_reviews_grouped(uploaded.getvalue())
+                            except Exception as e:
+                                status.update(label=f"❌ 解析に失敗しました: {e}", state="error")
 
-                                    try:
-                                        st.write("💾 DB に保存中...")
-                                        fid = db.upsert_facility(
-                                            conn, chosen_fac["name"], ftype=ftype,
-                                            category=result.category,
-                                            general_rating=result.general_rating,
-                                            total_reviews=result.total_reviews,
-                                        )
-                                        n_total = len(result.reviews)
-                                        _pb = st.progress(0, text=f"0 / {n_total} 件")
-                                        inserted, skipped = db.insert_reviews(
-                                            conn, fid, result.reviews,
-                                            progress_callback=lambda cur, tot, pb=_pb: pb.progress(
-                                                cur / tot, text=f"{cur} / {tot} 件保存中..."
-                                            ),
-                                        )
-                                        _pb.empty()
-                                        st.write(
-                                            f"✅ {inserted} 件保存（重複 {skipped} 件スキップ）"
-                                        )
-                                    except Exception as e:
-                                        st.error(f"DB保存失敗: {e}")
-                                        fac_status.update(
-                                            label=f"❌ {chosen_fac['name']} 保存失敗",
-                                            state="error",
-                                        )
-                                        continue
+                            if _grouped is not None:
+                                _pb = st.progress(0.0, text=f"0 / {_total_fac} 施設")
+                                _n_ok = _n_rev = _n_dup = 0
+                                # ② 以降はDB書き込みのみ（再解析なし）
+                                for i, chosen_fac in enumerate(selected_fac, 1):
+                                    _entry = _grouped.get(chosen_fac["key"])
+                                    if not _entry:
+                                        status.write(f"⏭️ {chosen_fac['name']}: 該当データなし")
+                                    else:
+                                        _result = _entry[1]
+                                        try:
+                                            fid = db.upsert_facility(
+                                                conn, chosen_fac["name"], ftype=ftype,
+                                                category=_result.category,
+                                                general_rating=_result.general_rating,
+                                                total_reviews=_result.total_reviews,
+                                            )
+                                            inserted, skipped = db.insert_reviews(
+                                                conn, fid, _result.reviews
+                                            )
+                                            try:
+                                                scoring.compute_and_store(conn, fid)
+                                            except Exception:
+                                                pass  # スコア算出は任意（失敗しても取り込みは成功）
+                                            _n_ok += 1
+                                            _n_rev += inserted
+                                            _n_dup += skipped
+                                            status.write(
+                                                f"✅ {chosen_fac['name']}: {inserted:,}件保存"
+                                                f"（重複{skipped:,}件）"
+                                            )
+                                        except Exception as e:
+                                            status.write(f"❌ {chosen_fac['name']}: {e}")
+                                    _pb.progress(i / _total_fac, text=f"{i} / {_total_fac} 施設")
+                                    status.update(label=f"保存中... {i} / {_total_fac} 完了")
 
-                                    try:
-                                        st.write("🔢 定量スコアを算出中...")
-                                        n_axes = scoring.compute_and_store(conn, fid)
-                                        if n_axes:
-                                            st.write(f"✅ {n_axes} 軸のスコアを算出")
-                                    except Exception as e:
-                                        st.warning(f"スコア算出スキップ: {e}")
-
-                                    fac_status.update(
-                                        label=f"✅ {chosen_fac['name']} 完了（{inserted}件保存）",
-                                        state="complete",
-                                    )
-
-                                status.update(label=f"保存中... {i} / {len(selected_fac)} 完了")
-
-                            status.update(
-                                label=f"✅ {len(selected_fac)} 施設の保存が完了しました",
-                                state="complete",
-                            )
-                        st.balloons()
+                                _pb.empty()
+                                status.update(
+                                    label=f"✅ {_n_ok} / {_total_fac} 施設・計 {_n_rev:,} 件を保存"
+                                          f"（重複 {_n_dup:,} 件スキップ）",
+                                    state="complete",
+                                )
+                                st.balloons()
                 else:
                     st.warning("施設を1つ以上選択してください。")
 

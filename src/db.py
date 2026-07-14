@@ -406,7 +406,7 @@ def insert_reviews(
     # (was one HTTP per review → prohibitively slow for bulk loads). A review
     # and its subscore INSERTs always stay together and in order within a chunk.
     if use_pipeline:
-        _CHUNK_STMTS = 50
+        _CHUNK_STMTS = 100   # 1 HTTPリクエストあたりの文数（多いほど往復が減る）
         batch: list[tuple[str, tuple]] = []
         for idx, r in enumerate(reviews):
             if r.review_id in existing:
