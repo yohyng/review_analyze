@@ -6,6 +6,7 @@ Admin mode:    dashboard / facilities / data import / detailed analysis / settin
 from __future__ import annotations
 
 import base64
+import io
 import os
 import tempfile
 import time
@@ -653,6 +654,20 @@ def _photo_from_db(fid: int, sig):
     """(bytes, mime) or None — cached BLOB fetch (sig=updated_at invalidates)."""
     d = db.get_photo(conn, fid)
     return (d["image"], d["mime"]) if d else None
+
+
+@st.cache_data(show_spinner=False)
+def _infer_facilities_cached(file_bytes: bytes):
+    """施設推定はファイル全体を再解析するため重い。チェック操作のたびに走ると
+    大きなCSVでプロセスが落ちる → ファイル内容でキャッシュ（返り値は小さいサマリ）。"""
+    return review_csv.infer_facilities(io.BytesIO(file_bytes))
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _parse_reviews_cached(file_bytes: bytes, facility_key):
+    """単一施設プレビューの再解析（テキスト入力の再実行ごと）を防ぐためキャッシュ。
+    max_entries でメモリを抑制。複数施設の保存ループでは使わない（1件ずつ処理）。"""
+    return review_csv.parse_reviews(io.BytesIO(file_bytes), facility_key=facility_key)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1316,12 +1331,11 @@ else:
 
             inferred = []
             if uploaded:
-                with st.spinner("CSVを解析中..."):
-                    try:
-                        inferred = review_csv.infer_facilities(uploaded)
-                        uploaded.seek(0)
-                    except Exception:
-                        inferred = []
+                # ファイル内容でキャッシュ（チェック操作の再実行ごとに再解析しない）
+                try:
+                    inferred = _infer_facilities_cached(uploaded.getvalue())
+                except Exception:
+                    inferred = []
 
             if len(inferred) > 1:
                 sel_key = "csv_facilities_checked"
@@ -1485,7 +1499,7 @@ else:
 
                 if uploaded and facility_name:
                     try:
-                        result = review_csv.parse_reviews(uploaded, facility_key=_f["key"])
+                        result = _parse_reviews_cached(uploaded.getvalue(), _f["key"])
                     except Exception as e:
                         st.error(f"パースに失敗しました: {e}")
                         st.stop()
@@ -1545,7 +1559,7 @@ else:
 
                 if facility_name:
                     try:
-                        result = review_csv.parse_reviews(uploaded)
+                        result = _parse_reviews_cached(uploaded.getvalue(), None)
                     except Exception as e:
                         st.error(f"パースに失敗しました: {e}")
                         st.stop()

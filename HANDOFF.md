@@ -5,8 +5,8 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.11.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **89 passed**
+- **現在バージョン**: `0.11.1`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **134 passed**
 
 ---
 
@@ -213,6 +213,7 @@ python -m pytest tests/ -q
 
 ## 11. 変更履歴（要約）
 
+- **v0.11.1** 取り込み画面のクラッシュ修正: マルチ施設のチェック操作の再実行ごとに `infer_facilities`（数万行フル再解析）が走りOOMで落ちていた → `@st.cache_data` でファイル内容キャッシュ化（返り値は小さいサマリ）。単一施設プレビューの `parse_reviews` も同様にキャッシュ（max_entries=8）。保存ループは1件ずつ処理でメモリ安全なので据え置き
 - **v0.11.0** 管理ログインを**メール＋パスワードのアカウント制**に（`src/auth.py`・`app_user`テーブル・pbkdf2ハッシュ）。**新規登録は招待コード`SIGNUP_CODE`ゲート**、`ADMIN_PASSWORD`は非常口として併存。画面上のログイン/新規登録タブ＋`👤 アカウント`管理ページ（一覧/追加/自分のPW変更）
 - **v0.10.1** 管理ログインの非ASCIIパスワードでの `hmac.compare_digest` TypeError 修正（UTF-8 bytesで比較）
 - **v0.10.0** 管理モードのログイン必須化（ADMIN_PASSWORD・フェイルクローズ）＋管理画面「📡 KAIZODE連携」ページ（発注/状況/取り込み、キーはsecrets優先・セッション限り入力可）

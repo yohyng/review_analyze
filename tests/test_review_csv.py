@@ -93,3 +93,40 @@ def test_jp_format_infer_facilities():
     assert len(facilities) == 1
     assert facilities[0]["name"] == "かわら美術館"
     assert facilities[0]["count"] == 3
+
+
+# --------------------------------------------------------------------------- #
+# 取り込み画面のキャッシュが依存する契約:
+#   infer_facilities / parse_reviews は BytesIO を受け取り、同じ内容なら
+#   何度呼んでも同じ結果を返す（＝ファイル内容キーでのキャッシュが安全）。
+# --------------------------------------------------------------------------- #
+MULTI_CSV_BYTES = (
+    "施設名,review,review_rating,review_date,publisher_name\n"
+    "施設A,とても良い,5,2025-01-01,山田\n"
+    "施設A,普通,3,2025-01-02,佐藤\n"
+    "施設B,最高,5,2025-02-01,田中\n"
+    "施設B,いまいち,2,2025-02-02,鈴木\n"
+    "施設B,良い,4,2025-02-03,高橋\n"
+).encode("utf-8")
+
+
+def test_infer_facilities_from_bytesio_multi():
+    inf = review_csv.infer_facilities(io.BytesIO(MULTI_CSV_BYTES))
+    assert [f["name"] for f in inf] == ["施設B", "施設A"]   # 件数の多い順
+    assert [f["count"] for f in inf] == [3, 2]
+
+
+def test_infer_facilities_is_idempotent_on_same_bytes():
+    """同じ内容の別 BytesIO で2回呼んでも同一結果（キャッシュ前提の契約）。"""
+    a = review_csv.infer_facilities(io.BytesIO(MULTI_CSV_BYTES))
+    b = review_csv.infer_facilities(io.BytesIO(MULTI_CSV_BYTES))
+    assert a == b
+
+
+def test_parse_reviews_from_bytesio_with_and_without_key():
+    inf = review_csv.infer_facilities(io.BytesIO(MULTI_CSV_BYTES))
+    key_b = next(f["key"] for f in inf if f["name"] == "施設B")
+    only_b = review_csv.parse_reviews(io.BytesIO(MULTI_CSV_BYTES), facility_key=key_b)
+    assert len(only_b.reviews) == 3
+    all_rows = review_csv.parse_reviews(io.BytesIO(MULTI_CSV_BYTES), facility_key=None)
+    assert len(all_rows.reviews) == 5
