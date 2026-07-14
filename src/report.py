@@ -480,6 +480,64 @@ def _slide_symbolic(prs, ranked: list[dict]):
                header_fill=MAGENTA, accent={"col": 1, "color": MAGENTA})
 
 
+def _facility_column(slide, left, top, width, height, names):
+    """1カラム分の施設名（マゼンタ●＋濃色テキスト）。"""
+    box = slide.shapes.add_textbox(left, top, width, height)
+    tf = box.text_frame
+    tf.word_wrap = True
+    for i, nm in enumerate(names):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.space_after = Pt(6)
+        r1 = p.add_run()
+        r1.text = "● "
+        r1.font.size = Pt(12)
+        r1.font.bold = True
+        r1.font.color.rgb = MAGENTA
+        r2 = p.add_run()
+        r2.text = nm
+        r2.font.size = Pt(14)
+        r2.font.color.rgb = NAVY
+    return box
+
+
+def _slide_appendix(prs, conn, target_name):
+    """APPENDIX: 比較対象（ピア）施設の一覧。ピアが無ければスライドを作らない。"""
+    try:
+        # 口コミが1件以上ある比較施設のみ（プレビューのピア集合に合わせる）
+        rows = conn.execute(
+            "SELECT f.name, COUNT(r.id) c FROM facility f "
+            "LEFT JOIN review r ON r.facility_id = f.id "
+            "WHERE f.type = 'comparison' AND f.name <> ? "
+            "GROUP BY f.id HAVING c > 0 ORDER BY f.name",
+            (target_name,),
+        ).fetchall()
+        peers = [r[0] for r in rows]
+    except Exception:
+        peers = []
+    if not peers:
+        return
+    slide = _blank(prs)
+    _title_bar(slide, "比較対象施設一覧",
+               "同市場の施設からも口コミを抽出し、比較して特徴点を可視化")
+    # 施設数（ヘッダー帯の右端に白文字）
+    _textbox(slide, Inches(9.9), Inches(0.0), Inches(3.2), Inches(1.0),
+             f"{len(peers)} 施設", size=18, bold=True, color=WHITE,
+             align=PP_ALIGN.RIGHT, anchor=MSO_ANCHOR.MIDDLE)
+
+    CAP = 54                       # 3カラム×約18行に収める
+    overflow = max(0, len(peers) - CAP)
+    shown = peers[:CAP]
+    per = (len(shown) + 2) // 3
+    cols = [shown[0:per], shown[per:2 * per], shown[2 * per:]]
+    lefts = [Inches(0.5), Inches(4.77), Inches(9.04)]
+    for chunk, left in zip(cols, lefts):
+        if chunk:
+            _facility_column(slide, left, Inches(1.5), Inches(4.1), Inches(5.4), chunk)
+    if overflow:
+        _textbox(slide, Inches(0.5), Inches(7.0), Inches(6), Inches(0.4),
+                 f"ほか {overflow} 施設", size=12, bold=True, color=MAGENTA)
+
+
 def build_report(
     conn: sqlite3.Connection,
     target_name: str,
@@ -542,6 +600,7 @@ def build_report(
         _slide_topics(prs, topic_list)
     _slide_insights_sw(prs, insights)
     _slide_insights_action(prs, insights)
+    _slide_appendix(prs, conn, target_name)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

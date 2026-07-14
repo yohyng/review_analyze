@@ -5,8 +5,8 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.11.1`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **134 passed**
+- **現在バージョン**: `0.12.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **140 passed**
 
 ---
 
@@ -32,7 +32,7 @@ python -m pytest tests/ -q
 ### 分析モード（一般ユーザー向け・サイドバー非表示のヒーロー画面）
 ```
 設定(setup) → ローディング(running) → プレビュー(preview)
-  施設を検索して選ぶ → 6ステップの解析オーバーレイ → 16:10スライド×6 + PPTX DL
+  施設を検索して選ぶ → 6ステップの解析オーバーレイ → 16:10スライド×6+APPENDIX + PPTX DL
 ```
 `st.session_state["an_screen"]` が `setup / running / preview` を遷移。
 
@@ -86,6 +86,7 @@ python -m pytest tests/ -q
 | SLIDE 02 | `html_slide02` | 感情評価・トピック分類（**23観点の静的縦棒**・0-120軸・50中立破線） |
 | SLIDE 03 | `html_slide03` | 数値による比較評価（強み/弱みTOP5・対象 vs 全体平均） |
 | SLIDE 04 | `html_slide04` | **象徴的な口コミ ランキング**（TF-IDF総合＝`text_analysis.symbolic_ranking`） |
+| APPENDIX | `html_appendix` | **比較対象施設一覧**（3カラム・ピア施設名。`bundle["peer_names"]`＝口コミのある比較施設。ピア0件なら空文字を返し非表示） |
 
 - SLIDE 02 は以前 plotly（可変/ツールバー付き）だったが、**他スライドと揃えて静的HTML**に変更（ユーザー要望）。
 - `bundle` は分析時に1回作って `st.session_state["an_preview"]` にキャッシュ（プレビュー再描画を高速化）。
@@ -213,6 +214,7 @@ python -m pytest tests/ -q
 
 ## 11. 変更履歴（要約）
 
+- **v0.12.0** 分析資料の最後に **APPENDIX「比較対象施設一覧」スライド**を追加（プレビュー＝`preview.html_appendix`／PPTX＝`report._slide_appendix`、3カラム・ピア施設名・施設数バッジ・上限45で「ほかN施設」）。ピア0件なら非表示
 - **v0.11.1** 取り込み画面のクラッシュ修正: マルチ施設のチェック操作の再実行ごとに `infer_facilities`（数万行フル再解析）が走りOOMで落ちていた → `@st.cache_data` でファイル内容キャッシュ化（返り値は小さいサマリ）。単一施設プレビューの `parse_reviews` も同様にキャッシュ（max_entries=8）。保存ループは1件ずつ処理でメモリ安全なので据え置き
 - **v0.11.0** 管理ログインを**メール＋パスワードのアカウント制**に（`src/auth.py`・`app_user`テーブル・pbkdf2ハッシュ）。**新規登録は招待コード`SIGNUP_CODE`ゲート**、`ADMIN_PASSWORD`は非常口として併存。画面上のログイン/新規登録タブ＋`👤 アカウント`管理ページ（一覧/追加/自分のPW変更）
 - **v0.10.1** 管理ログインの非ASCIIパスワードでの `hmac.compare_digest` TypeError 修正（UTF-8 bytesで比較）

@@ -1147,6 +1147,9 @@ if st.session_state["app_mode"] == "analysis":
             st.markdown(preview.html_slide02(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide03(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide04(_bundle), unsafe_allow_html=True)
+            _appendix_html = preview.html_appendix(_bundle)
+            if _appendix_html:
+                st.markdown(_appendix_html, unsafe_allow_html=True)
         else:
             st.warning("分析結果がありません。設定に戻って再実行してください。")
 

@@ -202,6 +202,9 @@ def build_bundle(
         "topic_values": topic_values,
         "overall_sentiment": overall_score,
         "n_sentences": ts.n_sentences if (ts and not ts.empty) else 0,
+        # APPENDIX — 比較対象（ピア）施設の一覧
+        "peer_names": sorted(peer_valid),
+        "peer_count": len(peer_valid),
         # PROFILE（プレビューで写真アップ / 住所自動取得 / 手入力を上書き）
         "address": None,
         "access": None,
@@ -503,3 +506,45 @@ def html_slide04(b: dict) -> str:
     inner = _head("SLIDE 04", "象徴的な口コミ ランキング（TF-IDF 総合分析）",
                   "施設の特徴語をどれだけ体現しているかで口コミを総合スコア化し上位を抽出") + body
     return _canvas(inner)
+
+
+def html_appendix(b: dict) -> str:
+    """APPENDIX: 比較対象（ピア）施設の一覧。ピアが無ければ空文字を返す。"""
+    names = list(b.get("peer_names") or [])
+    if not names:
+        return ""
+    count = b.get("peer_count", len(names))
+
+    CAP = 45                       # 1スライドに収まる上限（超過分は「ほかN施設」）
+    overflow = max(0, len(names) - CAP)
+    shown = names[:CAP]
+
+    header = (
+        '<div style="display:flex;align-items:center;gap:1.2cqw;margin-bottom:.2cqw;">'
+        + _badge("APPENDIX")
+        + f'<span style="font-size:2.4cqw;font-weight:800;color:{INK};line-height:1.1;">比較対象施設一覧</span>'
+        + f'<span style="margin-left:auto;font-size:1.6cqw;font-weight:800;color:{ACCENT};'
+          f'white-space:nowrap;">{count} 施設</span>'
+        + '</div>'
+        + f'<div style="font-size:1.25cqw;color:{SUB};margin:.3cqw 0 1.8cqw;">'
+          '同市場の施設からも口コミを抽出し、比較して特徴点を可視化</div>'
+    )
+
+    items = "".join(
+        '<div style="break-inside:avoid;display:flex;align-items:center;gap:.9cqw;padding:.5cqw 0;">'
+        f'<span style="flex:none;width:1.05cqw;height:1.05cqw;border-radius:50%;background:{ACCENT};"></span>'
+        f'<span style="flex:1;min-width:0;font-size:1.2cqw;color:{INK};overflow:hidden;'
+        f'white-space:nowrap;text-overflow:ellipsis;">{escape(n)}</span></div>'
+        for n in shown
+    )
+    over_html = (
+        f'<div style="margin-top:.8cqw;font-size:1.1cqw;color:{ACCENT};font-weight:700;">'
+        f'ほか {overflow} 施設</div>' if overflow else ""
+    )
+    card = (
+        f'<div style="flex:1;background:{ACCENT_SOFT};border-radius:1.4cqw;padding:2.2cqw 2.6cqw;'
+        'min-height:0;overflow:hidden;">'
+        '<div style="column-count:3;column-gap:2.4cqw;">'
+        f'{items}</div>{over_html}</div>'
+    )
+    return _canvas(header + card)
