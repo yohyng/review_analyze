@@ -6,7 +6,6 @@ Admin mode:    dashboard / facilities / data import / detailed analysis / settin
 from __future__ import annotations
 
 import base64
-import io
 import os
 import tempfile
 import time
@@ -52,206 +51,19 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 # Design tokens + global CSS
 # ─────────────────────────────────────────────────────────────────────────────
-ACCENT = "#B0338A"
-ACCENT_SOFT = "rgba(176,51,138,0.09)"
-ACCENT_RING = "rgba(176,51,138,0.22)"
+# Design tokens + global CSS live in src/ui/theme.py
+from src.ui import theme
+from src.ui.theme import ACCENT, ACCENT_SOFT, ACCENT_RING
 
-st.markdown(f"""
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
-<style>
-html, body, [class*="css"] {{
-  font-family: 'Manrope', 'Noto Sans JP', system-ui, sans-serif !important;
-  -webkit-font-smoothing: antialiased;
-}}
-.stApp, [data-testid="stAppViewContainer"] {{
-  background-color: #F7F7F4 !important;
-}}
-[data-testid="stSidebar"] {{
-  background-color: #FFFFFF !important;
-  border-right: 1px solid #E9E8E2 !important;
-}}
-/* Metrics */
-[data-testid="metric-container"] {{
-  background: #fff;
-  border: 1px solid #E9E8E2;
-  border-radius: 14px;
-  padding: 18px 20px !important;
-  box-shadow: 0 1px 2px rgba(20,30,40,.04), 0 6px 20px rgba(20,30,40,.04);
-}}
-[data-testid="metric-container"] > label {{
-  color: #8A9098 !important;
-  font-size: 12px !important;
-  font-weight: 600 !important;
-  letter-spacing: .03em;
-}}
-[data-testid="metric-container"] [data-testid="stMetricValue"] {{
-  color: #16202B !important;
-  font-weight: 800 !important;
-}}
-/* Primary button */
-.stButton > button[kind="primary"] {{
-  background: {ACCENT} !important;
-  border: none !important;
-  border-radius: 11px !important;
-  font-weight: 700 !important;
-  box-shadow: 0 8px 18px rgba(20,30,40,.14) !important;
-}}
-.stButton > button[kind="primary"]:hover {{
-  filter: brightness(1.08) !important;
-}}
-.stButton > button[kind="secondary"] {{
-  border-color: #E4E3DD !important;
-  border-radius: 10px !important;
-  color: #16202B !important;
-}}
-.stButton > button[kind="secondary"]:hover {{
-  border-color: #16202B !important;
-}}
-/* Download button */
-.stDownloadButton > button {{
-  background: {ACCENT} !important;
-  color: #fff !important;
-  border: none !important;
-  border-radius: 11px !important;
-  font-weight: 700 !important;
-  box-shadow: 0 8px 18px rgba(20,30,40,.14) !important;
-}}
-.stDownloadButton > button:hover {{ filter: brightness(1.08) !important; }}
-/* Inputs */
-.stTextInput input, .stTextArea textarea {{
-  border-radius: 10px !important;
-  border-color: #E4E3DD !important;
-}}
-/* Tabs */
-[data-testid="stTabs"] [role="tablist"] {{
-  background: #F1F0EA;
-  border-radius: 10px;
-  padding: 3px;
-  gap: 3px;
-  border: none !important;
-  border-bottom: none !important;
-}}
-[data-testid="stTabs"] [role="tab"] {{
-  border-radius: 8px !important;
-  font-weight: 600 !important;
-  color: #5B6672 !important;
-  border: none !important;
-  background: transparent !important;
-}}
-[data-testid="stTabs"] [role="tab"][aria-selected="true"] {{
-  background: #fff !important;
-  color: #16202B !important;
-  box-shadow: 0 1px 4px rgba(20,30,40,.10) !important;
-}}
-[data-testid="stTabs"] [role="tabpanel"] {{
-  padding-top: 16px !important;
-}}
-/* Expanders */
-[data-testid="stExpander"] {{
-  border: 1px solid #E9E8E2 !important;
-  border-radius: 12px !important;
-  background: #fff !important;
-}}
-/* Divider */
-hr {{ border-color: #E9E8E2 !important; margin: 18px 0 !important; }}
-/* Alert boxes */
-[data-testid="stAlert"] {{ border-radius: 10px !important; }}
-/* Dataframes */
-[data-testid="stDataFrame"] {{
-  border-radius: 12px !important;
-  overflow: hidden !important;
-  border: 1px solid #E9E8E2 !important;
-}}
-/* Utility */
-.vb-step {{
-  font-size: 11.5px; font-weight: 700; letter-spacing: .12em;
-  color: {ACCENT}; margin-bottom: 6px; text-transform: uppercase;
-}}
-.vb-h1 {{
-  font-size: clamp(22px, 3vw, 30px); font-weight: 800;
-  letter-spacing: -.02em; color: #16202B; margin: 0 0 8px; line-height: 1.2;
-}}
-.vb-sub {{
-  font-size: 15px; color: #5B6672; margin: 0; line-height: 1.6;
-}}
-/* Hero (analysis setup) */
-.vb-hero-title {{
-  font-size: clamp(46px, 8vw, 88px); font-weight: 800; letter-spacing: -.03em;
-  color: #16202B; text-align: center; margin: 0; line-height: 1.0;
-}}
-.vb-hero-sub {{
-  font-size: clamp(13px, 1.6vw, 16px); color: #8A9098; text-align: center;
-  margin: 14px 0 0; line-height: 1.6;
-}}
-/* Search input — larger, pill-ish, centered feel */
-.vb-search .stTextInput input {{
-  height: 58px !important; font-size: 17px !important;
-  border-radius: 15px !important; border: 1.5px solid #E4E3DD !important;
-  padding-left: 46px !important; background: #fff !important;
-  box-shadow: 0 1px 2px rgba(20,30,40,.04), 0 12px 30px rgba(20,30,40,.05) !important;
-}}
-.vb-search .stTextInput input:focus {{
-  border-color: {ACCENT} !important; box-shadow: 0 0 0 4px {ACCENT_RING} !important;
-}}
-.vb-search {{ position: relative; }}
-.vb-search::before {{
-  content: "🔍"; position: absolute; left: 16px; top: 40px; z-index: 5;
-  font-size: 16px; opacity: .55; pointer-events: none;
-}}
-/* Suggestion rows rendered as secondary buttons */
-.vb-suggest .stButton > button {{
-  text-align: left !important; justify-content: flex-start !important;
-  border: 1px solid #EEEDE7 !important; background: #fff !important;
-  border-radius: 12px !important; padding: 12px 16px !important;
-  font-weight: 600 !important; color: #16202B !important;
-  box-shadow: 0 1px 2px rgba(20,30,40,.03) !important;
-}}
-.vb-suggest .stButton > button:hover {{
-  background: #F7F3F6 !important; border-color: {ACCENT} !important;
-}}
-/* Loading card */
-@keyframes vb-spin {{ to {{ transform: rotate(360deg); }} }}
-.vb-load-card {{
-  max-width: 460px; margin: 40px auto; background: #fff;
-  border: 1px solid #E9E8E2; border-radius: 22px; padding: 32px 34px;
-  box-shadow: 0 1px 2px rgba(20,30,40,.04), 0 24px 60px rgba(20,30,40,.10);
-}}
-.vb-load-title {{ font-size: 22px; font-weight: 800; color: #16202B; margin: 0; }}
-.vb-load-sub {{ font-size: 13px; color: #8A9098; margin: 4px 0 22px; }}
-.vb-step-row {{ display: flex; align-items: center; gap: 14px; padding: 9px 0; }}
-.vb-step-done {{
-  width: 28px; height: 28px; border-radius: 50%; background: {ACCENT};
-  color: #fff; display: flex; align-items: center; justify-content: center;
-  font-size: 14px; flex: none;
-}}
-.vb-step-active {{
-  width: 24px; height: 24px; border-radius: 50%; border: 3px solid {ACCENT_RING};
-  border-top-color: {ACCENT}; animation: vb-spin .8s linear infinite; flex: none;
-  margin: 2px;
-}}
-.vb-step-todo {{
-  width: 26px; height: 26px; border-radius: 50%; border: 2px solid #E4E3DD;
-  flex: none; margin: 1px;
-}}
-.vb-step-label {{ font-size: 15px; font-weight: 700; color: #16202B; }}
-.vb-step-label-todo {{ font-size: 15px; font-weight: 600; color: #C5C4BC; }}
-</style>
-""", unsafe_allow_html=True)
+theme.inject_global_css()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DB connection
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_resource
-def _conn():
-    c = db.get_conn()
-    db.init_db(c)
-    return c
+from src.ui import components, data
 
-
-conn = _conn()
+conn = data.get_conn()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -511,163 +323,19 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def _all_facility_names() -> list[str]:
-    return analysis.facility_names(conn)
-
-
-def _facility_card(name: str) -> None:
-    """Render a facility info card with key stats."""
-    stats = db.facility_stats(conn, name)
-    if not stats:
-        return
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("口コミ数", f"{stats['n_reviews']} 件")
-    c2.metric("本文あり", f"{stats['n_text_reviews']} 件")
-    c3.metric(
-        "平均評点",
-        f"★{stats['avg_rating']}" if stats["avg_rating"] else "-",
-    )
-    c4.metric(
-        "スコア軸",
-        f"{len(stats['score_axes'])} 軸" if stats["score_axes"] else "なし",
-    )
-    if stats["date_oldest"] != "-":
-        st.caption(f"口コミ期間: {stats['date_oldest']} 〜 {stats['date_newest']}")
-
-
-_LOADING_STEPS = [
-    "口コミデータを収集中",
-    "評価スコアを集計中",
-    "ポジ／ネガの感情を分析中",
-    "トピックを分類中（TF-IDF）",
-    "競合と比較中",
-    "レポートを生成中",
-]
-
-
-def _loading_card_html(current: int, detail: str = "") -> str:
-    """Full-screen loading overlay with the 6-step list + numeric progress.
-
-    Rendered as a fixed, opaque overlay so nothing behind shows through.
-    """
-    total = len(_LOADING_STEPS)
-    done = min(current, total)
-    pct = round(100 * done / total)
-
-    rows = []
-    for i, label in enumerate(_LOADING_STEPS):
-        if i < current:
-            icon = '<div class="vb-step-done">✓</div>'
-            lab = f'<div class="vb-step-label">{label}</div>'
-        elif i == current:
-            icon = '<div class="vb-step-active"></div>'
-            lab = f'<div class="vb-step-label">{label}</div>'
-        else:
-            icon = '<div class="vb-step-todo"></div>'
-            lab = f'<div class="vb-step-label-todo">{label}</div>'
-        rows.append(f'<div class="vb-step-row">{icon}{lab}</div>')
-
-    detail_html = (
-        f'<div style="font-size:12px;color:#8A9098;margin-top:14px;text-align:center;">{detail}</div>'
-        if detail else ""
-    )
-    progress = (
-        '<div style="margin:4px 0 18px;">'
-        '<div style="display:flex;justify-content:space-between;align-items:baseline;'
-        'font-size:12.5px;font-weight:700;color:#5B6672;margin-bottom:8px;">'
-        f'<span>{done} / {total} ステップ完了</span>'
-        f'<span style="font-size:18px;font-weight:800;color:{ACCENT};">{pct}%</span></div>'
-        '<div style="height:9px;background:#F1F0EA;border-radius:99px;overflow:hidden;">'
-        f'<div style="height:100%;width:{pct}%;background:{ACCENT};border-radius:99px;transition:width .3s ease;"></div>'
-        '</div></div>'
-    )
-    return (
-        '<div style="position:fixed;inset:0;z-index:2147483000;background:#F7F7F4;'
-        'display:flex;align-items:center;justify-content:center;padding:20px;">'
-        '<div class="vb-load-card" style="margin:0;">'
-        '<div class="vb-load-title">口コミを解析しています…</div>'
-        '<div class="vb-load-sub">評価・感情・キーワードを集計中</div>'
-        + progress
-        + "".join(rows)
-        + detail_html
-        + "</div></div>"
-    )
-
-
-def _review_counts() -> dict[str, int]:
-    """name -> review count (single query, for search suggestions)."""
-    rows = conn.execute(
-        """SELECT f.name, COUNT(r.id) FROM facility f
-           LEFT JOIN review r ON r.facility_id = f.id
-           GROUP BY f.id""",
-    ).fetchall()
-    return {r[0]: r[1] for r in rows}
-
-
-def _facility_meta() -> dict[str, str]:
-    """name -> sub-line (category, else review count) for the search dropdown."""
-    rows = conn.execute(
-        """SELECT f.name, f.category, COUNT(r.id) FROM facility f
-           LEFT JOIN review r ON r.facility_id = f.id GROUP BY f.id""",
-    ).fetchall()
-    out = {}
-    for name, cat, cnt in rows:
-        out[name] = cat if cat else (f"口コミ {cnt}件" if cnt else "口コミ未登録")
-    return out
-
-
-def _selected_card_html(name: str, meta: dict[str, str]) -> str:
-    """Selected-facility card (magenta ring + tinted icon + name + area)."""
-    sub = meta.get(name, "")
-    return (
-        f'<div style="display:flex;align-items:center;gap:14px;padding:16px 18px;'
-        f'border:2px solid {ACCENT};border-radius:16px;background:#fff;'
-        'box-shadow:0 1px 2px rgba(20,30,40,.04),0 12px 30px rgba(20,30,40,.05);">'
-        f'<span style="width:46px;height:46px;flex:none;border-radius:12px;background:{ACCENT_SOFT};'
-        f'color:{ACCENT};display:flex;align-items:center;justify-content:center;'
-        f'font-weight:800;font-size:18px;">{escape(name[:1])}</span>'
-        '<span style="flex:1;min-width:0;display:flex;flex-direction:column;">'
-        f'<span style="font-weight:800;font-size:17px;color:#16202B;overflow:hidden;'
-        f'text-overflow:ellipsis;white-space:nowrap;">{escape(name)}</span>'
-        f'<span style="font-size:13px;color:#8A9098;margin-top:2px;">{escape(sub)}</span></span></div>'
-    )
-
-
-def _topic_sig() -> tuple:
-    """Data signature so the topic matrix cache invalidates when reviews change."""
-    rows = conn.execute(
-        """SELECT f.name, COUNT(r.id) FROM facility f
-           LEFT JOIN review r ON r.facility_id = f.id GROUP BY f.id""",
-    ).fetchall()
-    return tuple(sorted((r[0], r[1]) for r in rows))
-
-
-@st.cache_data(show_spinner=False)
-def _topic_matrix_cached(sig):
-    """{facility: TopicScoreResult} for all facilities (heavy → cached by data sig)."""
-    names = analysis.facility_names(conn)
-    return topic_score.facility_topic_matrix(conn, names)
-
-
-@st.cache_data(show_spinner=False)
-def _photo_from_db(fid: int, sig):
-    """(bytes, mime) or None — cached BLOB fetch (sig=updated_at invalidates)."""
-    d = db.get_photo(conn, fid)
-    return (d["image"], d["mime"]) if d else None
-
-
-@st.cache_data(show_spinner=False)
-def _infer_facilities_cached(file_bytes: bytes):
-    """施設推定はファイル全体を再解析するため重い。チェック操作のたびに走ると
-    大きなCSVでプロセスが落ちる → ファイル内容でキャッシュ（返り値は小さいサマリ）。"""
-    return review_csv.infer_facilities(io.BytesIO(file_bytes))
-
-
-@st.cache_data(show_spinner=False, max_entries=8)
-def _parse_reviews_cached(file_bytes: bytes, facility_key):
-    """単一施設プレビューの再解析（テキスト入力の再実行ごと）を防ぐためキャッシュ。
-    max_entries でメモリを抑制。複数施設の保存ループでは使わない（1件ずつ処理）。"""
-    return review_csv.parse_reviews(io.BytesIO(file_bytes), facility_key=facility_key)
+# UI helpers moved to src/ui/data.py (data/cache) and src/ui/components.py
+# (presentational). Aliased so the page code below reads unchanged.
+_all_facility_names = data.all_facility_names
+_facility_card = components.facility_card
+_loading_card_html = components.loading_card_html
+_review_counts = data.review_counts
+_facility_meta = data.facility_meta
+_selected_card_html = components.selected_card_html
+_topic_sig = data.topic_sig
+_topic_matrix_cached = data.topic_matrix_cached
+_photo_from_db = data.photo_from_db
+_infer_facilities_cached = data.infer_facilities_cached
+_parse_reviews_cached = data.parse_reviews_cached
 
 
 # ─────────────────────────────────────────────────────────────────────────────
