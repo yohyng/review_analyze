@@ -57,3 +57,13 @@ def test_excel_import_wide(tmp_path):
     scores = score_excel.extract_scores_wide(df, guess.name_col, guess.numeric_cols)
     assert scores["風の海"]["清潔感"] == 4.2
     assert set(scores["風の海"]) == {"清潔感", "スタッフ対応", "食事", "設備", "立地"}
+
+
+def test_migration_sets_user_version():
+    """init_db が PRAGMA user_version を設定し、再実行しても壊れない。"""
+    conn = db.get_conn(":memory:")
+    db.init_db(conn)
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert v == db._SCHEMA_VERSION
+    db.init_db(conn)                       # idempotent
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db._SCHEMA_VERSION

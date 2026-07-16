@@ -5,8 +5,8 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.12.1`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **142 passed**
+- **現在バージョン**: `0.13.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **143 passed**（push/PRでCI自動実行）
 
 ---
 
@@ -27,7 +27,10 @@ python -m pytest tests/ -q
 
 ## 1. プロダクト概要
 
-2モード構成の Streamlit アプリ（`app.py` 単一ファイル、約2000行）。
+2モード構成の Streamlit アプリ。**`app.py` は薄いオーケストレータ（約360行）**で、
+UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイントークン）/
+`data.py`（DB接続＋キャッシュ層）/ `components.py`（HTMLビルダー）/
+`analysis_mode.py`（分析モード `render()`）/ `admin_mode.py`（管理モード `render()`）。
 
 ### 分析モード（一般ユーザー向け・サイドバー非表示のヒーロー画面）
 ```
@@ -193,7 +196,12 @@ python -m pytest tests/ -q
 
 | ファイル | 役割 |
 |---|---|
-| `app.py` | 全UI（分析モード3画面＋管理モード10ページ）。約2100行 |
+| `app.py` | 薄いオーケストレータ（約360行）: 設定/CSS/session/ナビ+ログインゲート→ `*_mode.render()` へ振り分け |
+| `src/ui/theme.py` | デザイントークン＋グローバルCSS（`inject_global_css()`） |
+| `src/ui/data.py` | DB接続（`get_conn` cache_resource）＋キャッシュ済みデータ層 |
+| `src/ui/components.py` | 純粋HTMLビルダー（loading/selected カード、facility_card） |
+| `src/ui/analysis_mode.py` | 分析モード `render()`（setup/running/preview） |
+| `src/ui/admin_mode.py` | 管理モード `render()`（全11ページ） |
 | `src/auth.py` | **管理ログインの認証**（pbkdf2ハッシュ・招待コードゲート・ユーザーCRUD） |
 | `src/topic_score.py` | **感情・トピック統合スコアモデル（正）**。22観点 |
 | `src/preview.py` | 分析結果スライド（bundle生成＋16:10 HTML） |
@@ -214,6 +222,7 @@ python -m pytest tests/ -q
 
 ## 11. 変更履歴（要約）
 
+- **v0.13.0** 抜本アップデート（A/B/E）: ①**依存バージョン固定**＋**テストCI**（push/PRでpytest）＋**アップロード上限50MB**（安定化）。②**`app.py` を `src/ui/` へ分割**（2451→約360行、theme/data/components/analysis_mode/admin_mode）。③非推奨 **`use_container_width`→`width="stretch"`** 全50箇所移行、解析エラーの見える化＋ログ。④取り込みに**「1施設あたり最大件数」上限**（大量取込の現実化）＋**PRAGMA user_version マイグレーション土台**。分割中に潜在バグ（関数内 `import os` による UnboundLocalError）も修正
 - **v0.12.1** マルチ施設取り込みが途中(約20/46施設)で力尽きる問題を修正。原因は保存ループが施設ごとに `parse_reviews` を呼び**ファイル全体を毎回再解析**（O(n²)、実測46施設で約22秒→Cloudで更に遅くヘルスチェック切れ）。`review_csv.parse_reviews_grouped()`（1回解析で全施設へ振り分け＝実測18.7倍高速）を追加し保存ループを置換。ネストした`st.status`ウィジェットを廃し施設ベースの単一プログレスバーに。`_load_text` を**生bytes対応**（アプリは `uploaded.getvalue()` を渡す）。Turso挿入バッチ 50→100
 - **v0.12.0** 分析資料の最後に **APPENDIX「比較対象施設一覧」スライド**を追加（プレビュー＝`preview.html_appendix`／PPTX＝`report._slide_appendix`、3カラム・ピア施設名・施設数バッジ・上限45で「ほかN施設」）。ピア0件なら非表示
 - **v0.11.1** 取り込み画面のクラッシュ修正: マルチ施設のチェック操作の再実行ごとに `infer_facilities`（数万行フル再解析）が走りOOMで落ちていた → `@st.cache_data` でファイル内容キャッシュ化（返り値は小さいサマリ）。単一施設プレビューの `parse_reviews` も同様にキャッシュ（max_entries=8）。保存ループは1件ずつ処理でメモリ安全なので据え置き

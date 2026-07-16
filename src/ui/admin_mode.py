@@ -213,7 +213,7 @@ def render():
                 st.divider()
 
                 if selected_fac:
-                    col1, col2 = st.columns([1, 2])
+                    col1, col2 = st.columns([1, 1])
                     with col1:
                         ftype_label = st.radio(
                             "種別",
@@ -221,6 +221,14 @@ def render():
                             horizontal=True,
                             key="csv_ftype_multi",
                         )
+                    with col2:
+                        _cap = int(st.number_input(
+                            "1施設あたり最大件数（0=全件）",
+                            min_value=0, value=0, step=100, key="csv_cap_multi",
+                            help="比較施設が多い/口コミが膨大なときに1施設の取り込み件数を"
+                                 "制限します（新しい順）。クラウドで一気に大量投入すると"
+                                 "重くなるため。0 で全件取り込み。",
+                        ))
                     ftype = next(k for k, v in config.FACILITY_TYPES.items() if v == ftype_label)
 
                     if st.button(
@@ -250,6 +258,13 @@ def render():
                                         status.write(f"⏭️ {chosen_fac['name']}: 該当データなし")
                                     else:
                                         _result = _entry[1]
+                                        _revs = _result.reviews
+                                        if _cap and len(_revs) > _cap:
+                                            # 新しい順に上限まで（比較施設はサンプルで十分）
+                                            _revs = sorted(
+                                                _revs, key=lambda r: r.review_date or "",
+                                                reverse=True,
+                                            )[:_cap]
                                         try:
                                             fid = db.upsert_facility(
                                                 conn, chosen_fac["name"], ftype=ftype,
@@ -258,7 +273,7 @@ def render():
                                                 total_reviews=_result.total_reviews,
                                             )
                                             inserted, skipped = db.insert_reviews(
-                                                conn, fid, _result.reviews
+                                                conn, fid, _revs
                                             )
                                             try:
                                                 scoring.compute_and_store(conn, fid)

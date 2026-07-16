@@ -309,12 +309,46 @@ def get_conn(db_path: Optional[Path | str] = None):
     return conn
 
 
+# Bump when adding an ALTER-based migration in _migrate() below.
+_SCHEMA_VERSION = 1
+
+
+def _migrate(conn) -> None:
+    """Apply incremental schema migrations keyed by PRAGMA user_version.
+
+    New TABLES are handled by `CREATE TABLE IF NOT EXISTS` in SCHEMA. This
+    runner exists for ALTER TABLE (new columns) on already-existing databases,
+    which `CREATE ... IF NOT EXISTS` cannot add. Guarded so an unsupported
+    backend is a harmless no-op.
+
+    To add a migration: write the ALTER under `if ver < N:` and set
+    _SCHEMA_VERSION = N. Example:
+        if ver < 2:
+            conn.execute("ALTER TABLE facility ADD COLUMN region TEXT")
+    """
+    try:
+        row = conn.execute("PRAGMA user_version").fetchone()
+        ver = int(row[0]) if row and row[0] is not None else 0
+    except Exception:
+        return  # backend without PRAGMA support → skip silently
+
+    # (no column migrations yet — mechanism in place for future changes)
+
+    if ver < _SCHEMA_VERSION:
+        try:
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            conn.commit()
+        except Exception:
+            pass
+
+
 def init_db(conn) -> None:
     """Create tables / indexes.  Split SCHEMA into individual statements
     so this works with both sqlite3.executescript() and libsql.execute()."""
     for stmt in (s.strip() for s in SCHEMA.split(";") if s.strip()):
         conn.execute(stmt)
     conn.commit()
+    _migrate(conn)
 
 
 # --------------------------------------------------------------------------- #
