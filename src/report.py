@@ -22,7 +22,7 @@ from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
-from . import analysis, text_analysis, topic_score
+from . import analysis, config, text_analysis, topic_score
 from .llm import InsightResult
 from .topics import Topic
 
@@ -500,6 +500,18 @@ def _facility_column(slide, left, top, width, height, names):
     return box
 
 
+def _slide_disclaimer(prs):
+    """免責事項 — レポート冒頭（1枚目）。"""
+    slide = _blank(prs)
+    _title_bar(slide, config.DISCLAIMER_TITLE,
+               "免責事項 — ご覧いただく前にご確認ください")
+    items = [f"{i}. {p}" for i, p in enumerate(config.DISCLAIMER_POINTS, 1)]
+    _bullets(slide, Inches(0.6), Inches(1.5), Inches(12.1), Inches(5.4),
+             items, size=14, marker="", color=NAVY, space_after=12)
+    _textbox(slide, Inches(0.6), Inches(7.0), Inches(12.1), Inches(0.4),
+             "本レポートは参考情報です（VoiceBAUM）", size=11, color=GREY)
+
+
 def _slide_appendix(prs, conn, target_name):
     """APPENDIX: 比較対象（ピア）施設の一覧。ピアが無ければスライドを作らない。"""
     try:
@@ -573,6 +585,7 @@ def build_report(
 
     baseline_label = comp.baseline_label if comp else "（比較データなし）"
 
+    _slide_disclaimer(prs)                       # 冒頭1枚目
     _slide_title(prs, target_name, baseline_label)
     _slide_summary(prs, target_name, insights, comp)
     _slide_profile(prs, conn, target_name, profile_info, photo_bytes)

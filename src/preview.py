@@ -12,7 +12,7 @@ from datetime import date
 from html import escape
 from typing import Optional
 
-from . import analysis, text_analysis, topic_score
+from . import analysis, config, text_analysis, topic_score
 
 # palette (VoiceBAUM)
 ACCENT = "#B0338A"
@@ -247,6 +247,31 @@ def _head(badge: str, title: str, sub: str = "") -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 # Slides
 # ═══════════════════════════════════════════════════════════════════════════
+def html_disclaimer(b: dict) -> str:
+    """免責事項 — 分析アウトプットの冒頭1枚目に表示する。"""
+    rows = ""
+    for i, p in enumerate(config.DISCLAIMER_POINTS, 1):
+        rows += (
+            '<div style="display:flex;gap:1.2cqw;align-items:flex-start;padding:.55cqw 0;">'
+            f'<span style="flex:none;width:2.1cqw;height:2.1cqw;border-radius:50%;background:{ACCENT_SOFT};'
+            f'color:{ACCENT};font-weight:800;font-size:1.05cqw;display:flex;align-items:center;'
+            f'justify-content:center;margin-top:.15cqw;">{i}</span>'
+            f'<span style="flex:1;font-size:1.18cqw;line-height:1.55;color:{INK};">{escape(p)}</span></div>'
+        )
+    card = (
+        f'<div style="flex:1;background:#FBFBF9;border:1px solid {CARD_LINE};border-radius:1.4cqw;'
+        'padding:1.8cqw 2.4cqw;min-height:0;overflow:hidden;display:flex;flex-direction:column;'
+        f'justify-content:center;">{rows}</div>'
+    )
+    foot = (
+        f'<div style="margin-top:1cqw;font-size:1.05cqw;color:{SUB};">'
+        f'データ基準日: {escape(b.get("date", ""))}　／　本レポートは参考情報です（VoiceBAUM）</div>'
+    )
+    inner = _head("免責事項", config.DISCLAIMER_TITLE,
+                  "本レポートをご覧いただく前に、以下をご確認ください") + card + foot
+    return _canvas(inner)
+
+
 def html_overview(b: dict) -> str:
     tiles = [
         ("総合評価", f"{b['avg_rating']}" if b["avg_rating"] is not None else "—", "/ 5.0"),

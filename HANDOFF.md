@@ -5,8 +5,8 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.13.1`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **145 passed**（push/PRでCI自動実行）
+- **現在バージョン**: `0.14.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **147 passed**（push/PRでCI自動実行）
 
 ---
 
@@ -83,6 +83,7 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 
 | スライド | 関数 | 内容 / データ源 |
 |---|---|---|
+| DISCLAIMER | `html_disclaimer` | **免責事項（冒頭1枚目）**。文言は `config.DISCLAIMER_TITLE`/`DISCLAIMER_POINTS`（preview/PPTX共通・1箇所で編集） |
 | OVERVIEW | `html_overview` | 施設名＋KPI4枚（総合評価/比較順位/レビュー件数/ポジティブ率） |
 | PROFILE | `html_profile` | 写真＋基本情報（施設名/業種/住所/アクセス/開業/口コミ） |
 | SLIDE 01 | `html_slide01` | 比較分析による特徴点抽出＋インサイト（**topic_score**、単体時は中立50基準） |
@@ -221,6 +222,8 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 ---
 
 ## 11. 変更履歴（要約）
+
+- **v0.14.0** 分析アウトプットの**冒頭1枚目に免責事項スライド**を追加（プレビュー＝`preview.html_disclaimer`／PPTX＝`report._slide_disclaimer`）。文言は `config.DISCLAIMER_*` に集約し1箇所で編集可
 
 - **v0.13.1** KAIZODE連携で**APIキーに日本語（非ASCII）が入るとページがクラッシュ**（`x-api-key`ヘッダの latin-1 エンコードで `UnicodeEncodeError`）→ `KaizodeClient.__init__` でキーを検証し分かりやすい `KaizodeError` に、UI側もclient生成を try/except で保護。プレースホルダ文字列の貼り付けミスを親切に検出。CIに `pip-audit`（依存の脆弱性スキャン）も追加
 - **v0.13.0** 抜本アップデート（A/B/E）: ①**依存バージョン固定**＋**テストCI**（push/PRでpytest）＋**アップロード上限50MB**（安定化）。②**`app.py` を `src/ui/` へ分割**（2451→約360行、theme/data/components/analysis_mode/admin_mode）。③非推奨 **`use_container_width`→`width="stretch"`** 全50箇所移行、解析エラーの見える化＋ログ。④取り込みに**「1施設あたり最大件数」上限**（大量取込の現実化）＋**PRAGMA user_version マイグレーション土台**。分割中に潜在バグ（関数内 `import os` による UnboundLocalError）も修正

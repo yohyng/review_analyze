@@ -384,6 +384,7 @@ def render():
                     f"data:{_photo_mime};base64," + base64.b64encode(_photo_bytes).decode()
                 )
 
+            st.markdown(preview.html_disclaimer(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_overview(_bundle), unsafe_allow_html=True)
 
             # ── PROFILE：この場でインライン編集（写真アップ＋各項目の手入力）──── #
