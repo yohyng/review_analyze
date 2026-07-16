@@ -281,6 +281,12 @@ CREATE TABLE IF NOT EXISTS app_user (
     created_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS kaizode_usage (
+    month           TEXT PRIMARY KEY,          -- 'YYYY-MM'
+    downloaded      INTEGER NOT NULL DEFAULT 0, -- 当月KAIZODEから取得したレビュー件数
+    updated_at      TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_review_facility ON review(facility_id);
 CREATE INDEX IF NOT EXISTS idx_subscore_review ON review_subscore(review_db_id);
 CREATE INDEX IF NOT EXISTS idx_score_facility ON score(facility_id);

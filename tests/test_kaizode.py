@@ -217,3 +217,39 @@ def test_maps_search_url_from_name():
     assert urllib.parse.quote("容器文化ミュージアム") in u
     # 前後空白は除去
     assert maps_search_url("  トヨタ博物館 ") == maps_search_url("トヨタ博物館")
+
+
+def test_monthly_usage_helpers():
+    conn = db.get_conn(":memory:"); db.init_db(conn)
+    assert kaizode.get_monthly_usage(conn) == 0
+    assert kaizode.monthly_remaining(conn) == kaizode.MONTHLY_LIMIT
+    assert kaizode.add_monthly_usage(conn, 100) == 100
+    assert kaizode.add_monthly_usage(conn, 50) == 150
+    assert kaizode.monthly_remaining(conn) == kaizode.MONTHLY_LIMIT - 150
+    assert kaizode.get_monthly_usage(conn, "2000-01") == 0   # 別月は独立
+
+
+def test_sync_returns_early_when_at_limit():
+    c, sess = _client([])
+    conn = db.get_conn(":memory:"); db.init_db(conn)
+    kaizode.add_monthly_usage(conn, kaizode.MONTHLY_LIMIT)
+    res = kaizode.sync_datasets(c, conn)
+    assert res["fetched"] == 0 and res["limit_reached"] is True
+    assert res["inserted"] == 0
+    assert len(sess.calls) == 0          # list_datasets すら呼ばない
+
+
+def test_sync_respects_monthly_cap():
+    datasets = {"data": [{"dataset_id": "d30", "dataset_name": "DS", "status": 30}]}
+    reviews = {"data": [{"review_id": f"k{i}", "review": "x", "review_rating": 5,
+                         "published_at": f"2025-05-1{i} 10:00:00",
+                         "review_target_name": "施設A"} for i in range(5)],
+               "pagination": {"total_items": 5, "limit": 5000, "page": 0}}
+    c, sess = _client([FakeResp(200, datasets), FakeResp(200, reviews)])
+    conn = db.get_conn(":memory:"); db.init_db(conn)
+    kaizode.add_monthly_usage(conn, kaizode.MONTHLY_LIMIT - 3)   # 残枠3
+    res = kaizode.sync_datasets(c, conn)
+    assert res["fetched"] == 3              # 残枠までしか取らない
+    assert res["limit_reached"] is True
+    assert kaizode.get_monthly_usage(conn) == kaizode.MONTHLY_LIMIT
+    assert conn.execute("SELECT COUNT(*) FROM review").fetchone()[0] == 3

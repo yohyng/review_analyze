@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import itertools
 import os
 import time
 import urllib.parse
@@ -25,6 +26,9 @@ from typing import Iterator, Optional
 from .review_csv import ParsedReview
 
 DEFAULT_BASE_URL = "https://kaizode-v2.scorobo.ai/api/v1"
+
+# KAIZODE から取得するレビューの月間上限（コスト/枠の保護）。
+MONTHLY_LIMIT = 20_000
 
 
 def maps_search_url(name: str) -> str:
@@ -214,9 +218,23 @@ def sync_datasets(
 ) -> dict:
     """解析完了(status=30)のデータセットからレビューを差分取得し、DBへ取り込む。
 
-    Returns {"inserted", "skipped_dup", "datasets_synced", "datasets_skipped"}.
+    月間取得上限(MONTHLY_LIMIT)を超えないよう、当月の残枠までで打ち切る。上限で
+    途中停止したデータセットは last_sync を進めない（枠回復後に続きから取得）。
+
+    Returns {"inserted","skipped_dup","datasets_synced","datasets_skipped",
+             "fetched","limit_reached","monthly_used","monthly_limit"}.
     """
     from . import db as _db
+
+    month = current_month()
+    remaining = monthly_remaining(conn, month)
+    if remaining <= 0:
+        used = get_monthly_usage(conn, month)
+        log(f"⚠️ 今月のKAIZODE取得上限（{MONTHLY_LIMIT:,}件）に達しています。"
+            f"翌月まで新規取得はできません（今月 {used:,} 件）。")
+        return {"inserted": 0, "skipped_dup": 0, "datasets_synced": 0,
+                "datasets_skipped": 0, "fetched": 0, "limit_reached": True,
+                "monthly_used": used, "monthly_limit": MONTHLY_LIMIT}
 
     datasets = client.list_datasets()
     if dataset_id:
@@ -225,6 +243,8 @@ def sync_datasets(
             raise KaizodeError(f"データセットが見つかりません: {dataset_id}")
 
     total_ins = total_skip = synced = skipped = 0
+    fetched = 0
+    limit_reached = False
     for ds in datasets:
         dsid = ds.get("dataset_id")
         name = ds.get("dataset_name", "")
@@ -234,9 +254,20 @@ def sync_datasets(
             skipped += 1
             continue
 
+        budget = remaining - fetched
+        if budget <= 0:
+            log(f"⚠️ 今月の上限（{MONTHLY_LIMIT:,}件）に達したため、以降をスキップしました。")
+            limit_reached = True
+            break
+
         since = None if full else get_last_sync(conn, dsid)
         log(f"⬇️ {name}: {'全件' if since is None else f'差分（{since} 以降）'}を取得中…")
-        reviews = list(client.iter_reviews(dsid, published_since=since, limit=limit))
+        # 残枠までしか取らない（islice でページ取得も途中で止まる＝枠を消費しすぎない）
+        reviews = list(itertools.islice(
+            client.iter_reviews(dsid, published_since=since, limit=limit), budget))
+        fetched += len(reviews)
+        truncated = len(reviews) >= budget      # 上限で途中打ち切りの可能性
+
         if not reviews:
             log("　　新着なし")
             set_last_sync(conn, dsid, name, since)
@@ -256,12 +287,25 @@ def sync_datasets(
             total_skip += skip
             log(f"　　{fac_name}: {len(revs)}件 (新規{ins}/重複{skip})")
 
+        if truncated:
+            # 上限で途中まで取得 → last_sync は進めない（次回同じ since から続きを取得）
+            log("　　⚠️ 今月の上限に達したため途中で停止（続きは翌月/枠回復後に取得）")
+            add_monthly_usage(conn, fetched, month)
+            return {"inserted": total_ins, "skipped_dup": total_skip,
+                    "datasets_synced": synced, "datasets_skipped": skipped,
+                    "fetched": fetched, "limit_reached": True,
+                    "monthly_used": get_monthly_usage(conn, month),
+                    "monthly_limit": MONTHLY_LIMIT}
+
         last_pub = max((r.get("published_at") or "") for r in reviews)[:19] or since
         set_last_sync(conn, dsid, name, last_pub)
         synced += 1
 
+    used = add_monthly_usage(conn, fetched, month)
     return {"inserted": total_ins, "skipped_dup": total_skip,
-            "datasets_synced": synced, "datasets_skipped": skipped}
+            "datasets_synced": synced, "datasets_skipped": skipped,
+            "fetched": fetched, "limit_reached": limit_reached,
+            "monthly_used": used, "monthly_limit": MONTHLY_LIMIT}
 
 
 # ---------------------------------------------------------------------- #
@@ -284,3 +328,41 @@ def set_last_sync(conn, dataset_id: str, dataset_name: str, last_published_at: O
         (dataset_id, dataset_name, last_published_at, ts),
     )
     conn.commit()
+
+
+# --------------------------------------------------------------------------- #
+# 月間取得上限（kaizode_usage テーブル）
+# --------------------------------------------------------------------------- #
+def current_month(now: Optional[datetime] = None) -> str:
+    """当月キー 'YYYY-MM'（UTC基準）。"""
+    return (now or datetime.now(timezone.utc)).strftime("%Y-%m")
+
+
+def get_monthly_usage(conn, month: Optional[str] = None) -> int:
+    """当月にKAIZODEから取得したレビュー件数。"""
+    month = month or current_month()
+    row = conn.execute(
+        "SELECT downloaded FROM kaizode_usage WHERE month = ?", (month,)
+    ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def add_monthly_usage(conn, n: int, month: Optional[str] = None) -> int:
+    """当月の取得件数に n を加算し、加算後の合計を返す。"""
+    if n <= 0:
+        return get_monthly_usage(conn, month)
+    month = month or current_month()
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO kaizode_usage(month, downloaded, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(month) DO UPDATE SET downloaded = downloaded + excluded.downloaded, "
+        "updated_at = excluded.updated_at",
+        (month, int(n), ts),
+    )
+    conn.commit()
+    return get_monthly_usage(conn, month)
+
+
+def monthly_remaining(conn, month: Optional[str] = None, limit: int = MONTHLY_LIMIT) -> int:
+    """当月の残枠（0未満にはならない）。"""
+    return max(0, limit - get_monthly_usage(conn, month))

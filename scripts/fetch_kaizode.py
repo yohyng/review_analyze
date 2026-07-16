@@ -88,6 +88,11 @@ def cmd_sync(client: kaizode.KaizodeClient, args) -> None:
 
     print(f"\n✅ 同期完了: 新規 {res['inserted']:,} 件 / 重複スキップ {res['skipped_dup']:,} 件"
           f"（{res['datasets_synced']} データセット / スキップ {res['datasets_skipped']}）")
+    _used = res.get("monthly_used")
+    if _used is not None:
+        print(f"   今月のKAIZODE取得: {_used:,} / {res.get('monthly_limit', 0):,} 件")
+    if res.get("limit_reached"):
+        print("   ⚠️ 今月の取得上限に達したため途中停止しました（続きは翌月/枠回復後）。")
     if res["inserted"]:
         print("   アプリを開くと新データで分析できます（トピック行列は自動で再計算）。")
 

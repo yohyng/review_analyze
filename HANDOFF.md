@@ -6,7 +6,7 @@
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
 - **現在バージョン**: `0.14.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **148 passed**（push/PRでCI自動実行）
+- **テスト**: `python -m pytest tests/ -q` → **151 passed**（push/PRでCI自動実行）
 
 ---
 
@@ -130,7 +130,7 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 ## 6. データ層とデモデータ
 
 ### DBスキーマ（`src/db.py` の `SCHEMA`）
-`facility`（施設マスタ: name/type/category/general_rating/total_reviews） / `review`（口コミ本文） / `review_subscore`（Google観点別） / `score`（Excel定量指標） / **`facility_photo`（写真BLOB）** / `kaizode_sync`（KAIZODE差分同期状態） / **`app_user`（管理ログイン用: email PK / password_hash / salt / role / created_at）**。
+`facility`（施設マスタ: name/type/category/general_rating/total_reviews） / `review`（口コミ本文） / `review_subscore`（Google観点別） / `score`（Excel定量指標） / **`facility_photo`（写真BLOB）** / `kaizode_sync`（KAIZODE差分同期状態）/ `kaizode_usage`（月間取得件数・上限管理） / **`app_user`（管理ログイン用: email PK / password_hash / salt / role / created_at）**。
 `get_conn()` は Turso（`_secret("TURSO_URL")`+`_secret("TURSO_TOKEN")`）優先、無ければローカルSQLite。行は `_Row`（sqlite3.Row互換・**dict非継承**なので pandas に位置で渡せる）。
 
 ### KAIZODE 連携（口コミ対象施設の自動取得・v0.9.0）
@@ -222,6 +222,8 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 ---
 
 ## 11. 変更履歴（要約）
+
+- **v0.16.0** KAIZODE取得に**月間上限（20,000件）＋月間進捗の可視化**を追加。`kaizode_usage`テーブルに当月取得数を記録し、`sync_datasets`が残枠まで(`islice`)で打ち切り（途中停止時はlast_syncを進めず翌月続き取得）。KAIZODE連携ページ上部に進捗バー（今月X/20,000）。上限は`kaizode.MONTHLY_LIMIT`
 
 - **v0.15.0** KAIZODE「収集を発注」で**施設名だけでも発注可能**に（URL未指定の行は `kaizode.maps_search_url()` でGoogleマップ検索URLを自動生成）。KAIZODEは名前検索APIを持たないための対応。取り込みタブに利用上限の注意書きも追加
 

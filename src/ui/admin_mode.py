@@ -984,6 +984,21 @@ def render():
         except kaizode.KaizodeError as _e:
             st.error(str(_e))
             st.stop()
+
+        # ── 月間取得の進捗（上限の可視化）───────────────────────────── #
+        _kz_used = kaizode.get_monthly_usage(conn)
+        _kz_lim = kaizode.MONTHLY_LIMIT
+        _kz_rem = max(0, _kz_lim - _kz_used)
+        st.progress(
+            min(1.0, _kz_used / _kz_lim) if _kz_lim else 0.0,
+            text=f"📅 今月のKAIZODE取得: {_kz_used:,} / {_kz_lim:,} 件（残り {_kz_rem:,}）",
+        )
+        if _kz_rem == 0:
+            st.error("⚠️ 今月の取得上限に達しています。取り込みは翌月まで停止します。")
+        elif _kz_lim and _kz_used / _kz_lim >= 0.8:
+            st.warning(f"今月の残り取得枠は {_kz_rem:,} 件です。大量取得にご注意ください。")
+        st.caption(f"対象月: {kaizode.current_month()}（毎月リセット・UTC基準）")
+
         tab_kst, tab_knew, tab_ksync = st.tabs(
             ["📋 収集状況", "🛒 収集を発注", "⬇️ DBへ取り込み"]
         )
@@ -1102,8 +1117,14 @@ def render():
                     st.success(
                         f"✅ 完了: 新規 {_res['inserted']:,} 件 / "
                         f"重複 {_res['skipped_dup']:,} 件 / "
+                        f"取得 {_res.get('fetched', 0):,} 件 / "
                         f"{_res['datasets_synced']} データセット"
                     )
+                    if _res.get("limit_reached"):
+                        st.warning(
+                            f"⚠️ 今月の取得上限（{_res.get('monthly_limit', kaizode.MONTHLY_LIMIT):,}件）"
+                            "に達したため途中で停止しました。続きは翌月/枠回復後に取得されます。"
+                        )
                     _topic_matrix_cached.clear()
                 except kaizode.KaizodeError as _e:
                     st.error(str(_e))
