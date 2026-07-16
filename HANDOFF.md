@@ -6,7 +6,7 @@
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
 - **現在バージョン**: `0.14.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **149 passed**（push/PRでCI自動実行）
+- **テスト**: `python -m pytest tests/ -q` → **148 passed**（push/PRでCI自動実行）
 
 ---
 
