@@ -28,3 +28,10 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          pip install pip-audit
+          # Scope to the app's declared closure (not the runner's base tools).
+          # Fails the build if a CVE lands in a dependency we ship.
+          pip-audit -r requirements.txt --progress-spinner off
