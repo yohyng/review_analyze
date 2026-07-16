@@ -1,24 +1,33 @@
-# --- ingestion layer (steps 1-4) ---
-streamlit>=1.30
-pandas>=2.0
-openpyxl>=3.1        # .xlsx reading
-pytest>=8.0          # tests
+# VoiceBAUM — runtime + test dependencies.
+#
+# Versions are PINNED to the exact set the test suite (142 tests) passes on, so
+# a Streamlit Cloud rebuild installs the same versions every time instead of
+# silently resolving newer, possibly-incompatible releases. (Unbounded ">="
+# used to let a major upgrade break the deploy — e.g. Python 3.14 / a new
+# pandas.) Python 3.12 is the target runtime (Streamlit Cloud → Settings →
+# General). To upgrade a package, bump it here deliberately and re-run
+# `python -m pytest -q`.
 
-# --- analysis layer (steps 5-6) ---
-plotly>=5.18
+# --- app framework / data ---
+streamlit==1.58.0
+pandas==3.0.3
+numpy==2.4.6            # 感情・トピック統合スコアモデル
 
-# --- text analysis + LLM (steps 7-8) ---
-janome>=0.4
-scikit-learn>=1.4
-numpy>=1.24          # 感情・トピック統合スコアモデル
-requests>=2.31       # Turso HTTP / KAIZODE API / OSM・Wikidata
+# --- ingestion ---
+openpyxl==3.1.5         # .xlsx reading
+
+# --- analysis ---
+plotly==6.8.0
+janome==0.5.0
+scikit-learn==1.9.0
+
+# --- integrations (Turso HTTP / KAIZODE API / OSM・Wikidata) ---
+requests==2.33.1
 # Gemini API is called via requests (no extra SDK needed)
 
-# --- report export (step 9) ---
-python-pptx>=1.0
-Pillow>=10.0         # 施設写真の自動リサイズ（PROFILE）
-# scikit-learn>=1.4  # step 7: TF-IDF
-# sudachipy>=0.6     # step 7: Japanese tokenizer
-# sudachidict-core
-# python-pptx>=0.6   # step 9: PowerPoint export
-# anthropic>=0.39    # step 8: LLM insights
+# --- report export ---
+python-pptx==1.0.2
+Pillow==12.3.0          # 施設写真の自動リサイズ（PROFILE）
+
+# --- tests / CI ---
+pytest==9.1.1

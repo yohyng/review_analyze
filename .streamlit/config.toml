@@ -1,6 +1,13 @@
 # VoiceBAUM is a light-themed app (warm neutral background + white cards).
 # Pin the light theme so Streamlit widgets stay readable even when the
 # viewer's OS/browser is in dark mode.
+
+[server]
+# Cap uploads so a huge CSV can't OOM the ~1GB Streamlit Cloud container.
+# The review importers stream/parse a file once; 50MB is ample for the
+# museum dataset (~4MB gzipped, ~32k rows).
+maxUploadSize = 50
+
 [theme]
 base = "light"
 primaryColor = "#B0338A"
