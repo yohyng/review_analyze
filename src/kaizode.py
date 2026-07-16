@@ -52,10 +52,21 @@ class KaizodeClient:
         min_interval: float = 3.2,   # ~18req/分
         max_retries: int = 3,
     ):
-        self.api_key = api_key or os.environ.get("KAIZODE_API_KEY", "")
+        self.api_key = (api_key or os.environ.get("KAIZODE_API_KEY", "")).strip()
         if not self.api_key:
             raise KaizodeError(
                 "KAIZODE_API_KEY が未設定です（環境変数 or KaizodeClient(api_key=...)）"
+            )
+        # HTTPヘッダ(x-api-key)は latin-1 のみ。日本語などが混じると requests が
+        # UnicodeEncodeError で落ちる → ここで分かりやすいエラーにする（プレースホルダ
+        # 文字列を貼ってしまった等をここで検出）。
+        try:
+            self.api_key.encode("latin-1")
+        except UnicodeEncodeError:
+            raise KaizodeError(
+                "APIキーに使えない文字（日本語など）が含まれています。"
+                "KAIZODEの正しいAPIキー（半角英数字）を設定してください"
+                "（プレースホルダ文字列が残っていないか確認）。"
             )
         self.base_url = base_url.rstrip("/")
         if session is None:

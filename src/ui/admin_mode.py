@@ -979,7 +979,11 @@ def render():
                     st.session_state.pop("kz_session_key", None)
                     st.rerun()
 
-        _kz_client = kaizode.KaizodeClient(api_key=_kz_key)
+        try:
+            _kz_client = kaizode.KaizodeClient(api_key=_kz_key)
+        except kaizode.KaizodeError as _e:
+            st.error(str(_e))
+            st.stop()
         tab_kst, tab_knew, tab_ksync = st.tabs(
             ["📋 収集状況", "🛒 収集を発注", "⬇️ DBへ取り込み"]
         )
@@ -994,6 +998,10 @@ def render():
                         st.session_state["kz_datasets"] = _kz_client.list_datasets()
                     except kaizode.KaizodeError as _e:
                         st.error(str(_e))
+                        st.stop()
+                    except Exception as _e:
+                        logger.exception("KAIZODE list_datasets failed")
+                        st.error(f"KAIZODEへの問い合わせに失敗しました: {_e}")
                         st.stop()
             _kz_dss = st.session_state.get("kz_datasets") or []
             if not _kz_dss:

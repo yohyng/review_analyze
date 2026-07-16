@@ -196,3 +196,14 @@ def test_end_to_end_sync_into_db():
     # 再取り込みは全て重複スキップ（review_id がそのまま使えている）
     ins2, skip2 = db.insert_reviews(conn, fid, [to_parsed_review(r) for r in got])
     assert (ins2, skip2) == (0, 2)
+
+
+def test_rejects_non_latin1_api_key():
+    """日本語などlatin-1化できないキーは、UnicodeEncodeErrorでなくKaizodeErrorに。"""
+    with pytest.raises(KaizodeError, match="使えない文字"):
+        KaizodeClient(api_key="ダミーAPIキー", session=FakeSession([]))
+
+
+def test_strips_api_key_whitespace():
+    c = KaizodeClient(api_key="  abc123\n", session=FakeSession([]))
+    assert c.api_key == "abc123"
