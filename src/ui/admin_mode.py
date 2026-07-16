@@ -9,6 +9,7 @@ lives in app.py and runs before this.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import tempfile
 import time
@@ -26,6 +27,8 @@ from src import (
 )
 from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
+
+logger = logging.getLogger("voicebaum")
 
 
 def render():
@@ -81,13 +84,13 @@ def render():
                 margin=dict(t=10, b=10, l=0, r=0),
                 xaxis=dict(tickangle=-30),
             )
-            st.plotly_chart(_fig, use_container_width=True)
+            st.plotly_chart(_fig, width="stretch")
 
             st.divider()
             st.subheader("施設一覧")
             st.dataframe(
                 pd.DataFrame(overview).drop(columns=["id"]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         else:
@@ -111,7 +114,7 @@ def render():
         else:
             st.dataframe(
                 pd.DataFrame(overview).drop(columns=["id"]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -172,8 +175,10 @@ def render():
                 # ファイル内容でキャッシュ（チェック操作の再実行ごとに再解析しない）
                 try:
                     inferred = _infer_facilities_cached(uploaded.getvalue())
-                except Exception:
+                except Exception as _e:
                     inferred = []
+                    logger.exception("infer_facilities failed")
+                    st.error(f"ファイルの解析に失敗しました: {_e}")
 
             if len(inferred) > 1:
                 sel_key = "csv_facilities_checked"
@@ -184,12 +189,12 @@ def render():
                 st.markdown(f"**{len(inferred)} 施設が見つかりました。取り込む施設を選んでください。**")
                 c1, c2, _ = st.columns([1, 1, 3])
                 with c1:
-                    if st.button("✅ すべて選択", use_container_width=True):
+                    if st.button("✅ すべて選択", width="stretch"):
                         for k in st.session_state[sel_key]:
                             st.session_state[sel_key][k] = True
                         st.rerun()
                 with c2:
-                    if st.button("☐ すべて解除", use_container_width=True):
+                    if st.button("☐ すべて解除", width="stretch"):
                         for k in st.session_state[sel_key]:
                             st.session_state[sel_key][k] = False
                         st.rerun()
@@ -220,7 +225,7 @@ def render():
 
                     if st.button(
                         f"💾 {len(selected_fac)} 施設を保存する",
-                        type="primary", use_container_width=True, key="csv_save_multi",
+                        type="primary", width="stretch", key="csv_save_multi",
                     ):
                         _total_fac = len(selected_fac)
                         with st.status(
@@ -258,7 +263,11 @@ def render():
                                             try:
                                                 scoring.compute_and_store(conn, fid)
                                             except Exception:
-                                                pass  # スコア算出は任意（失敗しても取り込みは成功）
+                                                # スコア算出は任意（失敗しても取り込みは成功）
+                                                logger.warning(
+                                                    "score compute failed for %s",
+                                                    chosen_fac["name"],
+                                                )
                                             _n_ok += 1
                                             _n_rev += inserted
                                             _n_dup += skipped
@@ -346,7 +355,7 @@ def render():
                         }
                         for r in result.reviews[:20]
                     ])
-                    st.dataframe(preview, use_container_width=True, hide_index=True)
+                    st.dataframe(preview, width="stretch", hide_index=True)
 
                     if st.button("💾 DBに保存", type="primary", key="csv_save"):
                         fid = db.upsert_facility(
@@ -400,7 +409,7 @@ def render():
                         }
                         for r in result.reviews[:20]
                     ])
-                    st.dataframe(preview, use_container_width=True, hide_index=True)
+                    st.dataframe(preview, width="stretch", hide_index=True)
 
                     if st.button("💾 DBに保存", type="primary", key="csv_save_manual"):
                         fid = db.upsert_facility(
@@ -431,7 +440,7 @@ def render():
                     st.stop()
 
                 st.subheader("プレビュー")
-                st.dataframe(df.head(20), use_container_width=True)
+                st.dataframe(df.head(20), width="stretch")
 
                 guess = score_excel.guess_columns(df)
                 if guess.layout == "long":
@@ -469,7 +478,7 @@ def render():
                     st.subheader("保存される内容")
                     st.dataframe(
                         pd.DataFrame(scores).T.rename_axis("施設名").reset_index(),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                     )
                     if st.button("💾 スコアをDBに保存", type="primary", key="xl_save"):
                         total = 0
@@ -529,7 +538,7 @@ def render():
                     _tnames, [_tsent[t] for t in _tnames],
                     overall_value=_tres.weighted_sentiment_100,
                 ),
-                use_container_width=True, key="adm_ts_bar",
+                width="stretch", key="adm_ts_bar",
             )
 
             _cl, _cr = st.columns([3, 2])
@@ -545,11 +554,11 @@ def render():
                     }
                     for t in _tres.sorted_by_sentiment()
                 ])
-                st.dataframe(_df, use_container_width=True, hide_index=True)
+                st.dataframe(_df, width="stretch", hide_index=True)
             with _cr:
                 st.markdown("**言及度（話題の量）**")
                 st.plotly_chart(
-                    charts.topic_salience_bar(_tres), use_container_width=True, key="adm_ts_sal"
+                    charts.topic_salience_bar(_tres), width="stretch", key="adm_ts_sal"
                 )
 
             st.caption(
@@ -594,7 +603,7 @@ def render():
         st.session_state["analysis_target"] = target_name
 
         with st.expander("全施設スコア一覧（ヒートマップ）", expanded=False):
-            st.plotly_chart(charts.score_heatmap(mat), use_container_width=True)
+            st.plotly_chart(charts.score_heatmap(mat), width="stretch")
 
         st.divider()
         tab_a, tab_b, tab_c = st.tabs(
@@ -612,25 +621,25 @@ def render():
                 st.plotly_chart(
                     charts.radar(result.target, result.baseline,
                                  result.target_label, result.baseline_label),
-                    use_container_width=True, key=f"radar_{key}",
+                    width="stretch", key=f"radar_{key}",
                 )
             with col_r:
                 st.subheader("差分バーチャート")
                 st.plotly_chart(
                     charts.diff_bar(result.diff, result.target_label, result.baseline_label),
-                    use_container_width=True, key=f"bar_{key}",
+                    width="stretch", key=f"bar_{key}",
                 )
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**💪 強み TOP5**")
                 if not strengths.empty:
-                    st.dataframe(strengths, use_container_width=True, hide_index=True)
+                    st.dataframe(strengths, width="stretch", hide_index=True)
                 else:
                     st.caption("なし")
             with c2:
                 st.markdown("**⚠️ 弱み TOP5**")
                 if not weaknesses.empty:
-                    st.dataframe(weaknesses, use_container_width=True, hide_index=True)
+                    st.dataframe(weaknesses, width="stretch", hide_index=True)
                 else:
                     st.caption("なし")
             with st.expander("数値詳細", expanded=False):
@@ -640,7 +649,7 @@ def render():
                     "差": result.diff.round(1),
                 })
                 detail.index.name = "指標"
-                st.dataframe(detail, use_container_width=True)
+                st.dataframe(detail, width="stretch")
 
         with tab_a:
             st.caption("対象施設 vs 比較施設（「比較施設」として登録した施設）の平均")
@@ -708,7 +717,7 @@ def render():
                         plot_bgcolor="#F7F7F4",
                         paper_bgcolor="#F7F7F4",
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
             with col2:
                 st.markdown("**頻出フレーズ（バイグラム）**")
                 if not profile.bigrams.empty:
@@ -725,13 +734,13 @@ def render():
                         plot_bgcolor="#F7F7F4",
                         paper_bgcolor="#F7F7F4",
                     )
-                    st.plotly_chart(fig2, use_container_width=True)
+                    st.plotly_chart(fig2, width="stretch")
                 else:
                     st.info("フレーズ抽出には口コミ件数がもう少し必要です。")
 
             with st.expander("トライグラム TOP20", expanded=False):
                 if not profile.trigrams.empty:
-                    st.dataframe(profile.trigrams, use_container_width=True, hide_index=True)
+                    st.dataframe(profile.trigrams, width="stretch", hide_index=True)
                 else:
                     st.info("なし")
 
@@ -880,7 +889,7 @@ def render():
             st.success(f"読み込み完了: **{len(_pf_df)} 行 × {len(_pf_df.columns)} 列**")
 
             with st.expander("データプレビュー（先頭20行）", expanded=False):
-                st.dataframe(_pf_df.head(20), use_container_width=True)
+                st.dataframe(_pf_df.head(20), width="stretch")
 
             _pf_question = st.text_area(
                 "Claudeへの質問（省略可）",
@@ -951,7 +960,7 @@ def render():
             st.caption(f"🔑 APIキー: 設定済み（{_key_src}・末尾 …{_kz_key[-4:]}）")
         with _kc2:
             if _key_src == "セッション入力":
-                if st.button("🔒 キーを破棄", key="kz_key_clear", use_container_width=True):
+                if st.button("🔒 キーを破棄", key="kz_key_clear", width="stretch"):
                     st.session_state.pop("kz_session_key", None)
                     st.rerun()
 
@@ -986,7 +995,7 @@ def render():
                         }
                         for d in _kz_dss
                     ]),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                 )
                 st.caption("収集はKAIZODE側で非同期に進みます。「解析完了」になったら取り込めます。")
 
@@ -1232,7 +1241,7 @@ GEMINI_API_KEY = "AIza..."
                     with _uc3:
                         _is_self = (auth.normalize_email(str(_me)) == _u["email"])
                         if st.button("削除", key=f"deluser_{_u['email']}",
-                                     use_container_width=True, disabled=_is_self,
+                                     width="stretch", disabled=_is_self,
                                      help="ログイン中の自分は削除できません" if _is_self else None):
                             auth.delete_user(conn, _u["email"])
                             st.toast(f"{_u['email']} を削除しました。", icon="🗑️")

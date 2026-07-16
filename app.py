@@ -120,13 +120,13 @@ if _is_an:
         with _hc2:
             _tt1, _tt2, _tt3 = st.columns([1, 1, 0.7])
             with _tt1:
-                st.button("分析", type="primary", use_container_width=True, key="hdr_an")
+                st.button("分析", type="primary", width="stretch", key="hdr_an")
             with _tt2:
-                if st.button("管理", type="secondary", use_container_width=True, key="hdr_adm"):
+                if st.button("管理", type="secondary", width="stretch", key="hdr_adm"):
                     st.session_state["app_mode"] = "admin"
                     st.rerun()
             with _tt3:
-                if st.button("EN", type="secondary", use_container_width=True, key="hdr_en"):
+                if st.button("EN", type="secondary", width="stretch", key="hdr_en"):
                     st.toast("英語表示は今後対応予定です。", icon="🌐")
         st.markdown("<hr style='margin:6px 0 4px;'>", unsafe_allow_html=True)
 
@@ -181,7 +181,7 @@ else:
                         _em_in = st.text_input("メールアドレス", key="adm_login_email")
                         _pw_in = st.text_input("パスワード", type="password", key="adm_login_pw")
                         _login = st.form_submit_button(
-                            "🔐 ログイン", type="primary", use_container_width=True
+                            "🔐 ログイン", type="primary", width="stretch"
                         )
                     if _login:
                         _user = None
@@ -221,7 +221,7 @@ else:
                                                   key="adm_reg_code",
                                                   help="管理者から共有された合言葉を入力")
                             _reg = st.form_submit_button(
-                                "✳️ アカウント作成", type="primary", use_container_width=True
+                                "✳️ アカウント作成", type="primary", width="stretch"
                             )
                         if _reg:
                             if not auth.check_signup_code(_code):
@@ -240,7 +240,7 @@ else:
                                 except Exception as _e:
                                     st.error(f"登録に失敗しました: {_e}")
 
-            if st.button("← 分析モードに戻る", use_container_width=True, key="adm_back"):
+            if st.button("← 分析モードに戻る", width="stretch", key="adm_back"):
                 st.session_state["app_mode"] = "analysis"
                 st.rerun()
         st.stop()
@@ -260,11 +260,11 @@ else:
 
         _c1, _c2 = st.columns(2)
         with _c1:
-            if st.button("📊 分析", use_container_width=True, type="secondary", key="mode_an"):
+            if st.button("📊 分析", width="stretch", type="secondary", key="mode_an"):
                 st.session_state["app_mode"] = "analysis"
                 st.rerun()
         with _c2:
-            st.button("⚙️ 管理", use_container_width=True, type="primary", key="mode_adm")
+            st.button("⚙️ 管理", width="stretch", type="primary", key="mode_adm")
 
         st.markdown("<hr>", unsafe_allow_html=True)
 
@@ -294,7 +294,7 @@ else:
             else:
                 _lbl, _key = _item
                 if st.button(
-                    _lbl, key=f"nav_{_key}", use_container_width=True,
+                    _lbl, key=f"nav_{_key}", width="stretch",
                     type="primary" if _page == _key else "secondary",
                 ):
                     st.session_state["admin_page"] = _key
@@ -308,7 +308,7 @@ else:
                 f"ログイン中: <b style='color:#16202B;'>{escape(str(_who))}</b></div>",
                 unsafe_allow_html=True,
             )
-        if st.button("🔓 ログアウト", key="adm_logout", use_container_width=True):
+        if st.button("🔓 ログアウト", key="adm_logout", width="stretch"):
             st.session_state["admin_authed"] = False
             st.session_state["admin_email"] = None
             st.session_state["app_mode"] = "analysis"

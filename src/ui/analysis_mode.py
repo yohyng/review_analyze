@@ -116,7 +116,7 @@ def render():
                             _sub = _meta.get(_n, "")
                             if st.button(
                                 f"{_n}　·　{_sub}", key=f"an_sug_{_n}",
-                                use_container_width=True,
+                                width="stretch",
                             ):
                                 st.session_state["an_target"] = _n
                                 st.rerun()
@@ -142,12 +142,12 @@ def render():
                 with _rc2:
                     if _stats_ok:
                         if st.button("この内容で分析する", type="primary",
-                                     use_container_width=True, key="an_run"):
+                                     width="stretch", key="an_run"):
                             st.session_state["an_screen"] = "running"
                             st.rerun()
                     else:
                         st.warning("この施設には口コミデータがありません。")
-                    if st.button("← 施設を選び直す", use_container_width=True, key="an_reselect"):
+                    if st.button("← 施設を選び直す", width="stretch", key="an_reselect"):
                         st.session_state["an_target"] = None
                         st.session_state.pop("an_search", None)
                         st.rerun()
@@ -321,7 +321,7 @@ def render():
         # ── Top bar: back (left) + download (right) ─────────────────────── #
         _hc1, _hc2 = st.columns([1, 1])
         with _hc1:
-            if st.button("← 設定に戻る", key="an_back_top", use_container_width=True):
+            if st.button("← 設定に戻る", key="an_back_top", width="stretch"):
                 st.session_state["an_screen"] = "setup"
                 st.rerun()
         with _hc2:
@@ -336,7 +336,7 @@ def render():
                             ".presentationml.presentation"
                         ),
                         type="primary",
-                        use_container_width=True,
+                        width="stretch",
                         key="an_dl",
                     )
             else:
@@ -420,7 +420,7 @@ def render():
                             _prof["mime"] = _mime
                             _photo_bytes, _photo_mime = _rz, _mime
                         if _photo_bytes:
-                            st.image(_photo_bytes, use_container_width=True)
+                            st.image(_photo_bytes, width="stretch")
                         else:
                             st.markdown(
                                 '<div style="aspect-ratio:1;border-radius:12px;background:#F1F0EA;'
@@ -430,14 +430,14 @@ def render():
                         _b1, _b2 = st.columns(2)
                         with _b1:
                             if st.button("💾 保存", key=f"prof_save_{_target}",
-                                         disabled=not (_photo_bytes and _fid), use_container_width=True):
+                                         disabled=not (_photo_bytes and _fid), width="stretch"):
                                 db.save_photo(conn, _fid, _photo_bytes, _photo_mime)
                                 _photo_from_db.clear()
                                 st.success("DBに保存しました。")
                                 st.rerun()
                         with _b2:
                             if st.button("🗑️ 削除", key=f"prof_del_{_target}",
-                                         disabled=not _has_db_photo, use_container_width=True):
+                                         disabled=not _has_db_photo, width="stretch"):
                                 db.delete_photo(conn, _fid)
                                 _prof.pop("photo_bytes", None)
                                 _photo_from_db.clear()
@@ -451,7 +451,7 @@ def render():
                         _prof["access"] = st.text_input("アクセス", key=_kacc, placeholder="例: 〇〇駅 徒歩約5分")
                         _prof["open_year"] = st.text_input("開業", key=_kopen, placeholder="例: 2015年")
                         if st.button("🗺️ 自動取得（OSM／Wikidata）", key=f"prof_geo_{_target}",
-                                     use_container_width=True,
+                                     width="stretch",
                                      help="住所・アクセス・業種=OpenStreetMap、開業=Wikidata（生成AI不使用）"):
                             with st.spinner("OpenStreetMap / Overpass / Wikidata で検索中…"):
                                 _en = geocode.enrich(_target)
@@ -473,7 +473,7 @@ def render():
                     _a1, _a2 = st.columns(2)
                     with _a1:
                         if st.button("📄 この内容でPPTXを更新", type="primary",
-                                     use_container_width=True, key=f"prof_regen_{_target}"):
+                                     width="stretch", key=f"prof_regen_{_target}"):
                             _info = {"address": _prof.get("address"), "access": _prof.get("access"),
                                      "open_year": _prof.get("open_year"),
                                      "category": _prof.get("category") or _bundle.get("category")}
@@ -492,7 +492,7 @@ def render():
                             st.success("レポートを更新しました。上部のダウンロードから取得してください。")
                             st.rerun()
                     with _a2:
-                        if st.button("✓ 編集を終える（プレビューに戻る）", use_container_width=True,
+                        if st.button("✓ 編集を終える（プレビューに戻る）", width="stretch",
                                      key=f"prof_done_{_target}"):
                             st.session_state[_ekey] = False
                             st.rerun()
@@ -500,7 +500,7 @@ def render():
                 st.markdown(preview.html_profile(_bundle), unsafe_allow_html=True)
                 _pe1, _pe2, _pe3 = st.columns([1, 1.4, 1])
                 with _pe2:
-                    if st.button("✏️ PROFILEを編集（写真・住所など）", use_container_width=True,
+                    if st.button("✏️ PROFILEを編集（写真・住所など）", width="stretch",
                                  key=f"prof_edit_btn_{_target}"):
                         st.session_state[_ekey] = True
                         st.rerun()
@@ -528,9 +528,9 @@ def render():
                     }
                     for t in _ts.sorted_by_sentiment()
                 ])
-                st.dataframe(_df, use_container_width=True, hide_index=True)
+                st.dataframe(_df, width="stretch", hide_index=True)
                 st.plotly_chart(
-                    charts.topic_salience_bar(_ts), use_container_width=True, key="an_ts_sal"
+                    charts.topic_salience_bar(_ts), width="stretch", key="an_ts_sal"
                 )
                 st.caption(f"モデル全体スコア Σ(avg×重み) = {_ts.overall_100} / 100")
 
