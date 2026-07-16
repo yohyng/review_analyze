@@ -6,7 +6,7 @@
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
 - **現在バージョン**: `0.14.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **147 passed**（push/PRでCI自動実行）
+- **テスト**: `python -m pytest tests/ -q` → **149 passed**（push/PRでCI自動実行）
 
 ---
 
@@ -222,6 +222,8 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 ---
 
 ## 11. 変更履歴（要約）
+
+- **v0.15.0** KAIZODE「収集を発注」で**施設名だけでも発注可能**に（URL未指定の行は `kaizode.maps_search_url()` でGoogleマップ検索URLを自動生成）。KAIZODEは名前検索APIを持たないための対応。取り込みタブに利用上限の注意書きも追加
 
 - **v0.14.0** 分析アウトプットの**冒頭1枚目に免責事項スライド**を追加（プレビュー＝`preview.html_disclaimer`／PPTX＝`report._slide_disclaimer`）。文言は `config.DISCLAIMER_*` に集約し1箇所で編集可
 

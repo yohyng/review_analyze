@@ -207,3 +207,13 @@ def test_rejects_non_latin1_api_key():
 def test_strips_api_key_whitespace():
     c = KaizodeClient(api_key="  abc123\n", session=FakeSession([]))
     assert c.api_key == "abc123"
+
+
+def test_maps_search_url_from_name():
+    import urllib.parse
+    from src.kaizode import maps_search_url
+    u = maps_search_url("容器文化ミュージアム")
+    assert u.startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert urllib.parse.quote("容器文化ミュージアム") in u
+    # 前後空白は除去
+    assert maps_search_url("  トヨタ博物館 ") == maps_search_url("トヨタ博物館")

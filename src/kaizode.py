@@ -18,12 +18,24 @@ from __future__ import annotations
 
 import os
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
 from .review_csv import ParsedReview
 
 DEFAULT_BASE_URL = "https://kaizode-v2.scorobo.ai/api/v1"
+
+
+def maps_search_url(name: str) -> str:
+    """施設名から Googleマップ検索URLを生成する。
+
+    KAIZODE はURL指定で収集を発注する仕様のため、施設名だけで発注したいときに
+    名前を検索クエリに変換して渡す。検索ベースなので同名施設があると取り違える
+    可能性がある点に注意（正確に指定したいときは実際の場所URLを使う）。
+    """
+    q = urllib.parse.quote((name or "").strip())
+    return f"https://www.google.com/maps/search/?api=1&query={q}"
 
 STATUS_LABELS = {
     10: "レビュー抽出中",

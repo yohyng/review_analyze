@@ -1024,25 +1024,38 @@ def render():
 
         # ── 収集を発注 ──────────────────────────────────────────────── #
         with tab_knew:
-            st.caption("1行1施設で「施設名,レビューURL[,取得開始日]」を入力してください。")
+            st.caption(
+                "1行1施設。**施設名だけでもOK**（Googleマップ検索URLを自動生成して発注します）。"
+                "URLまで指定したいときは「施設名,レビューURL[,取得開始日]」の形式で。"
+            )
             _kz_name = st.text_input("データセット名", value="口コミ対象", key="kz_ds_name")
             _kz_lines = st.text_area(
-                "施設リスト", height=170, key="kz_lines",
-                placeholder="容器文化ミュージアム,https://www.google.com/maps/...,2024-01-01\nトヨタ博物館,https://www.google.com/maps/...",
+                "施設リスト（1行1施設）", height=170, key="kz_lines",
+                placeholder="容器文化ミュージアム\nトヨタ博物館\n"
+                            "カップヌードルミュージアム 大阪池田,https://www.google.com/maps/...,2024-01-01",
+            )
+            st.caption(
+                "※ 施設名だけの発注は検索ベースのため、同名施設があると取り違える可能性が"
+                "あります。正確に指定したいときは Googleマップの場所URLを併記してください。"
             )
             if st.button("🛒 収集を発注する", type="primary", key="kz_create"):
                 _urls = []
                 for _ln in _kz_lines.splitlines():
                     _parts = [p.strip() for p in _ln.split(",")]
-                    if len(_parts) >= 2 and _parts[1]:
-                        _item = {"url": _parts[1],
-                                 "review_target_name": _parts[0] or None}
-                        if len(_parts) >= 3 and _parts[2]:
-                            _item["since"] = _parts[2]
-                        _urls.append(_item)
+                    _nm = _parts[0] if _parts else ""
+                    if not _nm:
+                        continue
+                    # URLが無ければ施設名からGoogleマップ検索URLを自動生成
+                    _url = (_parts[1] if len(_parts) >= 2 and _parts[1]
+                            else kaizode.maps_search_url(_nm))
+                    _item = {"url": _url, "review_target_name": _nm}
+                    if len(_parts) >= 3 and _parts[2]:
+                        _item["since"] = _parts[2]
+                    _urls.append(_item)
                 if not _urls:
-                    st.warning("1件も読み取れませんでした。「施設名,URL」の形式で入力してください。")
+                    st.warning("施設名が1件も読み取れませんでした。1行に1施設名を入力してください。")
                 else:
+                    _n_auto = sum(1 for u in _urls if "/maps/search/" in u["url"])
                     try:
                         with st.spinner("データセットを作成中…"):
                             _ds = _kz_client.create_dataset(
@@ -1050,7 +1063,9 @@ def render():
                             )
                         st.success(
                             f"✅ {len(_urls)} 施設で発注しました"
-                            f"（dataset_id: {_ds.get('dataset_id')}）。"
+                            + (f"（うち {_n_auto} 件は施設名から検索URLを自動生成）"
+                               if _n_auto else "")
+                            + f"（dataset_id: {_ds.get('dataset_id')}）。"
                             "収集完了後に「⬇️ DBへ取り込み」を実行してください。"
                         )
                         st.session_state.pop("kz_datasets", None)
