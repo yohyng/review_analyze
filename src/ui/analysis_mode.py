@@ -25,6 +25,86 @@ from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
 
 
+def _resolve_kaizode_key() -> str:
+    key = os.environ.get("KAIZODE_API_KEY", "")
+    if not key:
+        try:
+            key = st.secrets.get("KAIZODE_API_KEY", "") or ""
+        except Exception:
+            key = ""
+    return key or ""
+
+
+def _kz_collect_section(conn, query: str) -> None:
+    """検索で口コミが見つからないとき、KAIZODE収集の導線を出す。
+
+    発注・取り込みは **ログイン（管理者）必須**（KAIZODEの費用/枠を消費するため）。
+    取り込みは月間上限（sync_datasets 側で担保）の範囲でのみ行われる。
+    """
+    query = (query or "").strip()
+    if not query:
+        return
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    if not st.session_state.get("admin_authed"):
+        st.info(f"「{query}」の口コミはまだありません。収集するにはログイン（管理者）が必要です。")
+        if st.button("🔐 ログインして収集する", key="an_kz_login", width="stretch"):
+            st.session_state["app_mode"] = "admin"
+            st.rerun()
+        return
+
+    key = _resolve_kaizode_key()
+    if not key:
+        st.warning("KAIZODE APIキーが未設定です（管理 → 📡 KAIZODE連携 で設定してください）。")
+        return
+
+    _rem = kaizode.monthly_remaining(conn)
+    st.caption(f"「{query}」の口コミはまだありません。"
+               f"／ 今月のKAIZODE残枠: {_rem:,} / {kaizode.MONTHLY_LIMIT:,} 件")
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        _order = st.button("📡 KAIZODEで収集を依頼", key="an_kz_order",
+                           type="primary", width="stretch")
+    with _c2:
+        _pull = st.button("⬇️ 完了分を取り込む", key="an_kz_pull", width="stretch")
+
+    if _order:
+        try:
+            client = kaizode.KaizodeClient(api_key=key)
+            ds = client.create_dataset(
+                "VoiceBAUM検索",
+                [{"url": kaizode.maps_search_url(query), "review_target_name": query}],
+            )
+            st.success(
+                f"✅ 「{query}」の収集を開始しました（dataset_id: {ds.get('dataset_id')}）。"
+                "KAIZODE側の収集に時間がかかります（数分〜）。完了後に「⬇️ 完了分を取り込む」"
+                "または再検索で分析できるようになります。"
+            )
+        except kaizode.KaizodeError as _e:
+            st.error(str(_e))
+
+    if _pull:
+        try:
+            client = kaizode.KaizodeClient(api_key=key)
+            with st.spinner("KAIZODEから完了分を取り込み中…"):
+                res = kaizode.sync_datasets(client, conn, log=lambda *_a: None)
+            data.topic_matrix_cached.clear()
+            _stats = db.facility_stats(conn, query)
+            if _stats and _stats["n_reviews"] > 0:
+                st.success(f"✅ 「{query}」の口コミを取り込みました。分析できます。")
+                st.session_state["an_target"] = query
+                st.rerun()
+            else:
+                st.info(
+                    f"取り込みを実行しました（新規 {res['inserted']:,} 件）が、"
+                    f"「{query}」の口コミはまだありません（収集が未完了、または施設名が不一致の可能性）。"
+                )
+            if res.get("limit_reached"):
+                st.warning("今月の取得上限に達したため途中で停止しました。")
+        except kaizode.KaizodeError as _e:
+            st.error(str(_e))
+
+
 def render():
     conn = data.get_conn()
     _all_facility_names = data.all_facility_names
@@ -120,8 +200,14 @@ def render():
                             ):
                                 st.session_state["an_target"] = _n
                                 st.rerun()
-                    else:
-                        st.caption("一致する施設が見つかりません。")
+                    # 完全一致がDBに無ければ、候補があってもKAIZODE収集の導線を出す
+                    if not any(_qs == _n for _n in _names):
+                        if _cands:
+                            with st.expander("🔍 候補に無い？ KAIZODEで新しく収集する",
+                                             expanded=False):
+                                _kz_collect_section(conn, _qs)
+                        else:
+                            _kz_collect_section(conn, _qs)
 
                 st.markdown(
                     '<div style="max-width:440px;margin:24px auto 0;text-align:center;'
@@ -147,6 +233,7 @@ def render():
                             st.rerun()
                     else:
                         st.warning("この施設には口コミデータがありません。")
+                        _kz_collect_section(conn, _target)
                     if st.button("← 施設を選び直す", width="stretch", key="an_reselect"):
                         st.session_state["an_target"] = None
                         st.session_state.pop("an_search", None)
