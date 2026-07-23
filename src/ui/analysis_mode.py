@@ -35,28 +35,32 @@ def _resolve_kaizode_key() -> str:
     return key or ""
 
 
-def _kz_order(conn, key: str, url: str, name: str) -> None:
-    """KAIZODEに1施設の収集を発注する。
+def _status_to_progress(status: int) -> tuple[int, str]:
+    """KAIZODE status → (進捗率%, ステータスラベル)"""
+    labels = {
+        10: "レビュー抽出中",
+        20: "解析実行中",
+        30: "完了",
+        40: "失敗",
+    }
+    progress_map = {10: 33, 20: 66, 30: 100, 40: 0}
+    return progress_map.get(status, 0), labels.get(status, "不明")
 
-    データセット名を施設名にしておくと、KAIZODEには施設名検索APIが無いため、
-    後で "この施設の収集は既にあるか" をデータセット名の一致でプレビューできる
-    （kaizode.match_datasets）。
-    """
+
+def _kz_order(conn, key: str, url: str, name: str) -> str:
+    """KAIZODEに1施設の収集を発注する。dataset_id を返す。"""
     try:
         client = kaizode.KaizodeClient(api_key=key)
         ds = client.create_dataset(
             name, [{"url": url, "review_target_name": name}])
-        st.success(
-            f"✅ 「{name}」の収集を開始しました（dataset_id: {ds.get('dataset_id')}）。"
-            "KAIZODE側の収集に時間がかかります（数分〜）。完了後に「⬇️ 完了分を取り込む」"
-            "または再検索で分析できるようになります。"
-        )
+        return ds.get("dataset_id") or ""
     except kaizode.KaizodeError as _e:
         st.error(str(_e))
+        return ""
 
 
-def _kz_pull(conn, key: str, query: str) -> None:
-    """完了分をKAIZODEから取り込み、対象施設が入れば分析対象にセット。"""
+def _kz_pull(conn, key: str, query: str) -> bool:
+    """完了分をKAIZODEから取り込み、対象施設が入れば分析対象にセット。成功時 True。"""
     try:
         client = kaizode.KaizodeClient(api_key=key)
         with st.spinner("KAIZODEから完了分を取り込み中…"):
@@ -67,6 +71,7 @@ def _kz_pull(conn, key: str, query: str) -> None:
             st.success(f"✅ 「{query}」の口コミを取り込みました。分析できます。")
             st.session_state["an_target"] = query
             st.rerun()
+            return True
         else:
             st.info(
                 f"取り込みを実行しました（新規 {res['inserted']:,} 件）が、"
@@ -76,17 +81,60 @@ def _kz_pull(conn, key: str, query: str) -> None:
             st.warning("今月の取得上限に達したため途中で停止しました。")
     except kaizode.KaizodeError as _e:
         st.error(str(_e))
+    return False
+
+
+def _kz_progress_tracker(conn, key: str, dataset_id: str, facility_name: str, query: str) -> None:
+    """進捗トラッキング画面。自動で status をチェックして進捗を表示。"""
+    try:
+        client = kaizode.KaizodeClient(api_key=key)
+        ds = client.get_dataset(dataset_id)
+    except kaizode.KaizodeError:
+        st.error("データセットの状態が取得できません。")
+        return
+
+    status = ds.get("status", 0)
+    progress, status_label = _status_to_progress(status)
+
+    # ── プログレスバー表示 ─────────────────────── #
+    with st.container(border=True):
+        st.markdown(f"🔄 **「{facility_name}」の口コミを集めています**")
+        st.progress(progress / 100, text=f"{progress}%")
+        st.caption(f"⏳ {status_label}")
+
+    # ── 完了チェック ─────────────────────────── #
+    if status == kaizode.STATUS_DONE:
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        if _kz_pull(conn, key, query):
+            return
+        # 取り込み失敗時は再試行ボタンを出す
+        if st.button("⬇️ 取り込みを再度試す", key="an_kz_retry_import", width="stretch"):
+            _kz_pull(conn, key, query)
+            return
+
+    elif status == 40:
+        st.error("❌ 収集に失敗しました。別の施設名を試すか、管理者に連絡してください。")
+        return
+
+    # ── 自動更新トリガー ────────────────────── #
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+    if st.button("🔄 今すぐ確認", key="an_kz_check_now", width="stretch"):
+        st.rerun()
+
+    # 3秒後に自動 rerun
+    import time
+    time.sleep(3)
+    st.rerun()
 
 
 
 
 def _kz_collect_section(conn, query: str) -> None:
-    """KAIZODE 収集の簡潔な導線。
+    """KAIZODE 収集フロー（シンプル UI）。
 
-    URL または施設名を手入力 → プレビュー + 発注。
+    STEP 1: URL/施設名入力 → STEP 2: 進捗中 → STEP 3: 自動インポート
 
     発注・取り込みは **ログイン（管理者）必須**（KAIZODEの費用/枠を消費するため）。
-    取り込みは月間上限（sync_datasets 側で担保）の範囲でのみ行われる。
     """
     query = (query or "").strip()
     if not query:
@@ -106,10 +154,16 @@ def _kz_collect_section(conn, query: str) -> None:
         return
 
     _rem = kaizode.monthly_remaining(conn)
-    st.caption(f"「{query}」の口コミはまだありません。"
-               f"／ 今月のKAIZODE残枠: {_rem:,} / {kaizode.MONTHLY_LIMIT:,} 件")
+    st.caption(f"今月のKAIZODE残枠: {_rem:,} / {kaizode.MONTHLY_LIMIT:,} 件")
 
-    # ── 発注前プレビュー：KAIZODE側にこの施設の収集が既にあるか ──────── #
+    # ── 進行中の収集があれば、そちらを優先表示 ────────────────── #
+    _ongoing_key = f"an_kz_ongoing::{query}"
+    _ongoing = st.session_state.get(_ongoing_key)
+    if _ongoing:
+        _kz_progress_tracker(conn, key, _ongoing["dataset_id"], _ongoing["facility_name"], query)
+        return
+
+    # ── KAIZODE側にこの施設の収集が既にあるか ──────────────────── #
     _mkey = f"an_kz_match::{query}"
     if _mkey not in st.session_state:
         try:
@@ -120,35 +174,25 @@ def _kz_collect_section(conn, query: str) -> None:
             st.session_state[_mkey] = []
     _matches = st.session_state.get(_mkey) or []
     if _matches:
-        st.markdown("**KAIZODE側の状況（この施設に近い収集）:**")
+        st.markdown("**既存の収集:**")
         for _m in _matches:
             _lbl = _m.get("status_label", "")
             _done = _m.get("status") == kaizode.STATUS_DONE
             _icon = "✅" if _done else "⏳"
-            st.caption(f"{_icon} 「{_m.get('dataset_name')}」— {_lbl}"
-                       + ("（取り込み可）" if _done else "（完了までお待ちください）"))
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            st.caption(f"{_icon} 「{_m.get('dataset_name')}」— {_lbl}")
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    # ── URL/施設名手入力 ─────────────────────────────────────────── #
+    # ── STEP 1: URL/施設名入力 ────────────────────────────────── #
     _ikey = f"an_kz_input::{query}"
     _inp = st.text_input(
         "Google MapsのURL または 施設名を入力",
         key="an_kz_url_input",
         placeholder="例: https://www.google.com/maps/search/... または 施設名",
-        value=st.session_state.get(_ikey, ""),
     )
-    if _inp and _inp != st.session_state.get(_ikey):
-        st.session_state[_ikey] = _inp
-
-    _inp = (_inp or "").strip()
     if not _inp:
-        _b1, _b2 = st.columns(2)
-        with _b1:
-            if st.button("⬇️ 完了分を取り込む", key="an_kz_pull_only", width="stretch"):
-                _kz_pull(conn, key, query)
         return
 
-    # ── 自動抽出 + プレビュー ────────────────────────────────────────── #
+    # ── 自動抽出 + プレビュー ──────────────────────────────────── #
     _parsed_name = geocode.parse_maps_url(_inp)
     _facility_name = (_parsed_name or _inp).strip()
 
@@ -159,23 +203,22 @@ def _kz_collect_section(conn, query: str) -> None:
         st.session_state[_pkey] = _profile or {}
 
     _profile = st.session_state.get(_pkey) or {}
-    if _profile:
-        _addr = (_profile.get("address") or "")[:60]
-        st.success(f"✅ {_facility_name}  ·  {_addr}")
-    else:
-        st.warning(f"施設情報は見つかりませんでした（{_facility_name}）")
-        st.caption("OSMに未収録の可能性があります。Google MapsのURLを貼るか、別の名前を試してください。")
+    _addr = (_profile.get("address") or "")[:60] if _profile else "(情報なし)"
 
-    # ── 発注ボタン ──────────────────────────────────────────────────── #
-    _b1, _b2 = st.columns(2)
-    with _b1:
-        if st.button("📡 収集を依頼", key="an_kz_order", type="primary", width="stretch"):
+    # 見た目を整える
+    _pc1, _pc2 = st.columns([3, 1])
+    with _pc1:
+        st.caption(f"🏢 {_facility_name}  ·  {_addr}")
+    with _pc2:
+        if st.button("📡 今すぐ集める", key="an_kz_order", type="primary", width="stretch"):
             _maps_url = _parsed_name and _inp or kaizode.maps_search_url(_facility_name)
-            _kz_order(conn, key, _maps_url, _facility_name)
-            st.session_state.pop(_ikey, None)
-    with _b2:
-        if st.button("⬇️ 完了分を取り込む", key="an_kz_pull", width="stretch"):
-            _kz_pull(conn, key, query)
+            _dsid = _kz_order(conn, key, _maps_url, _facility_name)
+            if _dsid:
+                st.session_state[_ongoing_key] = {
+                    "dataset_id": _dsid,
+                    "facility_name": _facility_name,
+                }
+                st.rerun()
 
 
 def render():
