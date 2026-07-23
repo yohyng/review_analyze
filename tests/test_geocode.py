@@ -110,3 +110,62 @@ def test_search_candidates_network_fail(monkeypatch):
     from src import geocode
     assert geocode.search_candidates("x") == []
     assert geocode.search_candidates("") == []
+
+
+def test_ql_escape():
+    from src.geocode import _ql_escape
+    assert _ql_escape('a"b\\c') == 'a\\"b\\\\c'
+    assert _ql_escape("") == ""
+
+
+def test_discover_by_keyword_parses(monkeypatch):
+    class R:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"elements": [
+                {"type": "node", "lat": 36.1, "lon": 139.2,
+                 "tags": {"name": "小川和紙のふるさと資料館", "tourism": "museum",
+                          "addr:prefecture": "埼玉県", "addr:city": "小川町"}},
+                {"type": "way", "center": {"lat": 35.5, "lon": 136.9},
+                 "tags": {"name": "美濃和紙の里会館", "craft": "paper"}},
+                {"type": "node", "tags": {}},          # 名前なし → 除外
+                {"type": "node", "lat": 1, "lon": 1,
+                 "tags": {"name": "小川和紙のふるさと資料館"}},  # 同名重複 → 除外
+            ]}
+    monkeypatch.setattr("requests.post", lambda *a, **k: R())
+    from src import geocode
+    cands = geocode.discover_by_keyword("和紙")
+    assert len(cands) == 2
+    assert cands[0]["name"] == "小川和紙のふるさと資料館"
+    assert "埼玉県" in cands[0]["address"]
+    assert cands[0]["category"] == "美術館・博物館"
+    assert cands[1]["name"] == "美濃和紙の里会館"
+    assert cands[1]["maps_url"].startswith("https://www.google.com/maps/search/?api=1&query=")
+
+
+def test_discover_by_keyword_sends_area_and_query(monkeypatch):
+    captured = {}
+    class R:
+        def raise_for_status(self): pass
+        def json(self): return {"elements": []}
+    def fake_post(url, data=None, headers=None, timeout=None):
+        captured["ql"] = data["data"]
+        return R()
+    monkeypatch.setattr("requests.post", fake_post)
+    from src import geocode
+    geocode.discover_by_keyword("和紙", area="岐阜県")
+    assert "和紙" in captured["ql"]
+    assert "岐阜県" in captured["ql"]
+    assert "ISO3166-1" not in captured["ql"]     # area指定時は全国検索を使わない
+
+    geocode.discover_by_keyword("和紙")           # area未指定 → 全国
+    assert "ISO3166-1" in captured["ql"]
+
+
+def test_discover_by_keyword_network_fail_and_empty(monkeypatch):
+    def boom(*a, **k):
+        raise Exception("no net")
+    monkeypatch.setattr("requests.post", boom)
+    from src import geocode
+    assert geocode.discover_by_keyword("和紙") == []
+    assert geocode.discover_by_keyword("") == []

@@ -126,6 +126,79 @@ def search_candidates(name: str, limit: int = 5) -> list[dict]:
     return out
 
 
+def _ql_escape(s: str) -> str:
+    """Overpass QL の二重引用符内で安全に使えるようにエスケープする。"""
+    return (s or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def discover_by_keyword(keyword: str, area: str = "", limit: int = 15) -> list[dict]:
+    """テーマ・キーワードから関連施設を発掘する（Overpass の name 正規表現検索）。
+
+    search_candidates（Nominatim）は「その名前ズバリの場所」を探す仕組みで、
+    「和紙」のようなテーマ語（施設の固有名ではない語）では基本ヒットしない。
+    こちらは OSM の name タグに keyword を含む地物を Overpass で正規表現検索
+    するため、テーマからの施設発掘に向く（生成AIは使わず構造化データへの
+    問い合わせのみ）。
+
+    area（都道府県・市区町村名）を指定すると検索範囲をその地域に限定する
+    （速く・精度も上がるため推奨）。未指定だと日本全国が対象になり、公開
+    Overpass サーバでは数秒〜数十秒かかる/失敗しやすい点に注意。
+    """
+    import urllib.parse
+
+    import requests
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return []
+    kw = _ql_escape(keyword)
+    if area.strip():
+        area_clause = f'area["name"="{_ql_escape(area.strip())}"]->.a;'
+    else:
+        area_clause = 'area["ISO3166-1"="JP"][admin_level=2]->.a;'
+    limit = max(1, min(limit, 20))
+    ql = (
+        f'[out:json][timeout:25];'
+        f'{area_clause}'
+        f'(node["name"~"{kw}",i](area.a);way["name"~"{kw}",i](area.a);'
+        f'relation["name"~"{kw}",i](area.a););'
+        f'out center {limit};'
+    )
+    try:
+        resp = requests.post(OVERPASS, data={"data": ql},
+                             headers={"User-Agent": _UA}, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for el in (data.get("elements") or [])[:limit]:
+        tags = el.get("tags") or {}
+        name = (tags.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        lat = el.get("lat") or (el.get("center") or {}).get("lat")
+        lon = el.get("lon") or (el.get("center") or {}).get("lon")
+        addr = "".join(
+            tags.get(k, "") for k in
+            ("addr:prefecture", "addr:city", "addr:suburb", "addr:street", "addr:housenumber")
+        )
+        otype = (tags.get("tourism") or tags.get("craft") or tags.get("shop")
+                 or tags.get("amenity") or tags.get("leisure") or "")
+        q = urllib.parse.quote(f"{name} {addr or area}".strip())
+        out.append({
+            "name": name,
+            "address": addr,
+            "lat": str(lat) if lat is not None else None,
+            "lon": str(lon) if lon is not None else None,
+            "category": _CATEGORY_MAP.get(otype),
+            "maps_url": f"https://www.google.com/maps/search/?api=1&query={q}",
+        })
+    return out
+
+
 @lru_cache(maxsize=512)
 def _geocode(name: str, hint: str = "") -> Optional[dict]:
     if not name or not name.strip():

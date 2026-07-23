@@ -78,6 +78,27 @@ def _kz_pull(conn, key: str, query: str) -> None:
         st.error(str(_e))
 
 
+def _kz_candidate_picker(conn, key: str, cands: list[dict], prefix: str, clear_key: str) -> None:
+    """候補一覧（名前・住所・🗺️地図リンク・発注ボタン）を描画する共通部品。"""
+    for _i, _c in enumerate(cands):
+        _rc1, _rc2 = st.columns([5, 1])
+        with _rc1:
+            _addr = (_c.get("address") or "")[:52]
+            if st.button(f"📡 {_c['name']} — {_addr}", key=f"{prefix}_{_i}",
+                         width="stretch"):
+                _kz_order(conn, key,
+                          _c.get("maps_url") or kaizode.maps_search_url(_c["name"]),
+                          _c["name"])
+                st.session_state.pop(clear_key, None)
+        with _rc2:
+            if _c.get("maps_url"):
+                st.markdown(
+                    f"<div style='padding-top:12px;text-align:center;'>"
+                    f"<a href='{_c['maps_url']}' target='_blank'>🗺️</a></div>",
+                    unsafe_allow_html=True,
+                )
+
+
 def _kz_collect_section(conn, query: str) -> None:
     """検索で口コミが無いとき、OSMで実在確認→候補選択→KAIZODE収集の導線。
 
@@ -142,29 +163,42 @@ def _kz_collect_section(conn, query: str) -> None:
     if _cands is None:
         return
     if not _cands:
-        st.info("該当する施設が見つかりませんでした（OSM未収録の可能性）。名前のまま発注もできます。")
+        st.info(
+            "「施設名ズバリ」の候補は見つかりませんでした"
+            "（OSM未収録、または「和紙」のようなテーマ語で施設の固有名ではないため）。"
+        )
+
+        # ── テーマ・キーワードから探す（Overpass 名前検索）───────────── #
+        _dkey = f"an_kz_disc::{query}"
+        _da1, _da2 = st.columns([2, 1])
+        with _da1:
+            _area = st.text_input(
+                "地域で絞る（任意・例: 岐阜県）", key="an_kz_area",
+                placeholder="未入力なら全国対象（時間がかかることがあります）",
+            )
+        with _da2:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button("🔎 テーマで探す", key="an_kz_discover", width="stretch"):
+                with st.spinner(
+                    "テーマに関連する施設を探しています…（全国対象だと時間がかかります）"
+                ):
+                    st.session_state[_dkey] = geocode.discover_by_keyword(query, area=_area)
+
+        _disc = st.session_state.get(_dkey)
+        if _disc is not None:
+            if not _disc:
+                st.caption("テーマに一致する施設も見つかりませんでした。")
+            else:
+                st.caption(f"「{query}」に関連しそうな施設（必ず地図で確認してから発注してください）:")
+                _kz_candidate_picker(conn, key, _disc, "an_kz_dpick", _dkey)
+
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
         if st.button("📡 名前のまま収集を依頼", key="an_kz_order_raw", width="stretch"):
             _kz_order(conn, key, kaizode.maps_search_url(query), query)
         return
 
     st.caption("該当施設を選んでください（🗺️で場所を確認・クリックで収集を依頼）:")
-    for _i, _c in enumerate(_cands):
-        _rc1, _rc2 = st.columns([5, 1])
-        with _rc1:
-            _addr = (_c.get("address") or "")[:52]
-            if st.button(f"📡 {_c['name']} — {_addr}", key=f"an_kz_pick_{_i}",
-                         width="stretch"):
-                _kz_order(conn, key,
-                          _c.get("maps_url") or kaizode.maps_search_url(_c["name"]),
-                          _c["name"])
-                st.session_state.pop(_ckey, None)
-        with _rc2:
-            if _c.get("maps_url"):
-                st.markdown(
-                    f"<div style='padding-top:12px;text-align:center;'>"
-                    f"<a href='{_c['maps_url']}' target='_blank'>🗺️</a></div>",
-                    unsafe_allow_html=True,
-                )
+    _kz_candidate_picker(conn, key, _cands, "an_kz_pick", _ckey)
 
 
 def render():
