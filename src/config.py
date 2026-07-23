@@ -5,7 +5,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "reviews.db"
 
-APP_VERSION = "0.20.0"
+APP_VERSION = "0.21.0"
 
 # Facility roles (step 1 / step 2)
 FACILITY_TYPES = {
