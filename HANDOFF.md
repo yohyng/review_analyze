@@ -5,8 +5,8 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.17.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **151 passed**（push/PRでCI自動実行）
+- **現在バージョン**: `0.18.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **153 passed**（push/PRでCI自動実行）
 
 ---
 
@@ -222,6 +222,8 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 ---
 
 ## 11. 変更履歴（要約）
+
+- **v0.18.0** ヒーロー検索のKAIZODE収集を**「OSMで実在確認→候補選択→その施設で発注」**に強化（`geocode.search_candidates`）。施設名→OSM/Nominatim候補（名前+住所+🗺️地図リンク）→クリックで**その正確な場所のGoogleマップURL**をKAIZODEに渡す（同名取り違えを低減）。候補が無ければ名前のまま発注のフォールバックも。※精度が要れば将来 Google Places API に差し替え可（UIそのまま・データ源交換）
 
 - **v0.17.0** 最初の検索画面に**KAIZODE収集導線を統合**。施設名を検索→DBに口コミが無ければ「KAIZODEで収集を依頼／完了分を取り込む」を表示（**発注・取り込みはログイン必須**＝費用/枠保護、月間上限の範囲内）。候補があっても完全一致がDBに無ければエクスパンダで収集導線を出す。取り込み後にその施設の口コミが入れば自動で分析対象に。※DBが完全に空のときは「データ登録」ガードが優先（既存データがある状態で機能）
 

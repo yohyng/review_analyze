@@ -81,6 +81,51 @@ def _nominatim_one(query: str) -> Optional[dict]:
     }
 
 
+def search_candidates(name: str, limit: int = 5) -> list[dict]:
+    """施設名で OSM/Nominatim を検索し、候補一覧を返す（実在確認＋選択用）。
+
+    各候補 dict:
+      name          … 施設名（OSMの name、無ければ入力名）
+      address       … 住所（display_name）
+      lat, lon      … 緯度経度（文字列）
+      category      … 業種ラベル（分かれば）
+      maps_url      … Googleマップ検索リンク（名前＋住所）。KAIZODEにもこれを渡す
+    通信不可・該当なしのときは空リスト（呼び出し側でフォールバック）。
+    """
+    import urllib.parse
+
+    import requests
+    name = (name or "").strip()
+    if not name:
+        return []
+    try:
+        resp = requests.get(
+            NOMINATIM,
+            params={"q": name, "format": "jsonv2", "limit": max(1, min(limit, 10)),
+                    "accept-language": "ja", "addressdetails": 1, "extratags": 1},
+            headers={"User-Agent": _UA}, timeout=6,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+    out: list[dict] = []
+    for r in data or []:
+        addr = r.get("display_name") or ""
+        disp = (r.get("name") or "").strip() or name
+        otype = r.get("type") or ""
+        _q = urllib.parse.quote(f"{disp} {addr}".strip())
+        out.append({
+            "name": disp,
+            "address": addr,
+            "lat": r.get("lat"),
+            "lon": r.get("lon"),
+            "category": _CATEGORY_MAP.get(otype) or _CATEGORY_MAP.get(r.get("category") or ""),
+            "maps_url": f"https://www.google.com/maps/search/?api=1&query={_q}",
+        })
+    return out
+
+
 @lru_cache(maxsize=512)
 def _geocode(name: str, hint: str = "") -> Optional[dict]:
     if not name or not name.strip():

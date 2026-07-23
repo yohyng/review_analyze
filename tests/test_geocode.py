@@ -80,3 +80,33 @@ def test_geocode_falls_back_to_simplified(monkeypatch):
     r = geocode._geocode("高浜市やきものの里かわら美術館・図書館")
     assert r and r["address"].startswith("愛知県高浜市")
     assert tried == ["高浜市やきものの里かわら美術館・図書館", "高浜市やきものの里かわら美術館"]
+
+
+def test_search_candidates_parses(monkeypatch):
+    class R:
+        def raise_for_status(self): pass
+        def json(self):
+            return [
+                {"name": "容器文化ミュージアム",
+                 "display_name": "容器文化ミュージアム, 大山崎町, 乙訓郡, 京都府, 日本",
+                 "lat": "34.9", "lon": "135.6", "type": "museum"},
+                {"name": "別の施設", "display_name": "別の施設, 東京都, 日本",
+                 "lat": "35.6", "lon": "139.7", "type": "attraction"},
+            ]
+    monkeypatch.setattr("requests.get", lambda *a, **k: R())
+    from src import geocode
+    cands = geocode.search_candidates("容器文化ミュージアム")
+    assert len(cands) == 2
+    assert cands[0]["name"] == "容器文化ミュージアム"
+    assert "大山崎町" in cands[0]["address"]
+    assert cands[0]["maps_url"].startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert cands[0]["category"] == "美術館・博物館"
+
+
+def test_search_candidates_network_fail(monkeypatch):
+    def boom(*a, **k):
+        raise Exception("no net")
+    monkeypatch.setattr("requests.get", boom)
+    from src import geocode
+    assert geocode.search_candidates("x") == []
+    assert geocode.search_candidates("") == []

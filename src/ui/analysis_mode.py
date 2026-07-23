@@ -35,8 +35,46 @@ def _resolve_kaizode_key() -> str:
     return key or ""
 
 
+def _kz_order(conn, key: str, url: str, name: str) -> None:
+    """KAIZODEに1施設の収集を発注する。"""
+    try:
+        client = kaizode.KaizodeClient(api_key=key)
+        ds = client.create_dataset(
+            "VoiceBAUM検索", [{"url": url, "review_target_name": name}])
+        st.success(
+            f"✅ 「{name}」の収集を開始しました（dataset_id: {ds.get('dataset_id')}）。"
+            "KAIZODE側の収集に時間がかかります（数分〜）。完了後に「⬇️ 完了分を取り込む」"
+            "または再検索で分析できるようになります。"
+        )
+    except kaizode.KaizodeError as _e:
+        st.error(str(_e))
+
+
+def _kz_pull(conn, key: str, query: str) -> None:
+    """完了分をKAIZODEから取り込み、対象施設が入れば分析対象にセット。"""
+    try:
+        client = kaizode.KaizodeClient(api_key=key)
+        with st.spinner("KAIZODEから完了分を取り込み中…"):
+            res = kaizode.sync_datasets(client, conn, log=lambda *_a: None)
+        data.topic_matrix_cached.clear()
+        _stats = db.facility_stats(conn, query)
+        if _stats and _stats["n_reviews"] > 0:
+            st.success(f"✅ 「{query}」の口コミを取り込みました。分析できます。")
+            st.session_state["an_target"] = query
+            st.rerun()
+        else:
+            st.info(
+                f"取り込みを実行しました（新規 {res['inserted']:,} 件）が、"
+                f"「{query}」の口コミはまだありません（収集が未完了、または名前が不一致の可能性）。"
+            )
+        if res.get("limit_reached"):
+            st.warning("今月の取得上限に達したため途中で停止しました。")
+    except kaizode.KaizodeError as _e:
+        st.error(str(_e))
+
+
 def _kz_collect_section(conn, query: str) -> None:
-    """検索で口コミが見つからないとき、KAIZODE収集の導線を出す。
+    """検索で口コミが無いとき、OSMで実在確認→候補選択→KAIZODE収集の導線。
 
     発注・取り込みは **ログイン（管理者）必須**（KAIZODEの費用/枠を消費するため）。
     取り込みは月間上限（sync_datasets 側で担保）の範囲でのみ行われる。
@@ -61,48 +99,45 @@ def _kz_collect_section(conn, query: str) -> None:
     _rem = kaizode.monthly_remaining(conn)
     st.caption(f"「{query}」の口コミはまだありません。"
                f"／ 今月のKAIZODE残枠: {_rem:,} / {kaizode.MONTHLY_LIMIT:,} 件")
-    _c1, _c2 = st.columns(2)
-    with _c1:
-        _order = st.button("📡 KAIZODEで収集を依頼", key="an_kz_order",
-                           type="primary", width="stretch")
-    with _c2:
-        _pull = st.button("⬇️ 完了分を取り込む", key="an_kz_pull", width="stretch")
 
-    if _order:
-        try:
-            client = kaizode.KaizodeClient(api_key=key)
-            ds = client.create_dataset(
-                "VoiceBAUM検索",
-                [{"url": kaizode.maps_search_url(query), "review_target_name": query}],
-            )
-            st.success(
-                f"✅ 「{query}」の収集を開始しました（dataset_id: {ds.get('dataset_id')}）。"
-                "KAIZODE側の収集に時間がかかります（数分〜）。完了後に「⬇️ 完了分を取り込む」"
-                "または再検索で分析できるようになります。"
-            )
-        except kaizode.KaizodeError as _e:
-            st.error(str(_e))
+    _ckey = f"an_kz_cands::{query}"
+    _b1, _b2 = st.columns(2)
+    with _b1:
+        if st.button("🔍 施設を探す（Googleマップ/OSM）", key="an_kz_find",
+                     type="primary", width="stretch"):
+            with st.spinner("施設を検索中…"):
+                st.session_state[_ckey] = geocode.search_candidates(query)
+    with _b2:
+        if st.button("⬇️ 完了分を取り込む", key="an_kz_pull", width="stretch"):
+            _kz_pull(conn, key, query)
 
-    if _pull:
-        try:
-            client = kaizode.KaizodeClient(api_key=key)
-            with st.spinner("KAIZODEから完了分を取り込み中…"):
-                res = kaizode.sync_datasets(client, conn, log=lambda *_a: None)
-            data.topic_matrix_cached.clear()
-            _stats = db.facility_stats(conn, query)
-            if _stats and _stats["n_reviews"] > 0:
-                st.success(f"✅ 「{query}」の口コミを取り込みました。分析できます。")
-                st.session_state["an_target"] = query
-                st.rerun()
-            else:
-                st.info(
-                    f"取り込みを実行しました（新規 {res['inserted']:,} 件）が、"
-                    f"「{query}」の口コミはまだありません（収集が未完了、または施設名が不一致の可能性）。"
+    _cands = st.session_state.get(_ckey)
+    if _cands is None:
+        return
+    if not _cands:
+        st.info("該当する施設が見つかりませんでした（OSM未収録の可能性）。名前のまま発注もできます。")
+        if st.button("📡 名前のまま収集を依頼", key="an_kz_order_raw", width="stretch"):
+            _kz_order(conn, key, kaizode.maps_search_url(query), query)
+        return
+
+    st.caption("該当施設を選んでください（🗺️で場所を確認・クリックで収集を依頼）:")
+    for _i, _c in enumerate(_cands):
+        _rc1, _rc2 = st.columns([5, 1])
+        with _rc1:
+            _addr = (_c.get("address") or "")[:52]
+            if st.button(f"📡 {_c['name']} — {_addr}", key=f"an_kz_pick_{_i}",
+                         width="stretch"):
+                _kz_order(conn, key,
+                          _c.get("maps_url") or kaizode.maps_search_url(_c["name"]),
+                          _c["name"])
+                st.session_state.pop(_ckey, None)
+        with _rc2:
+            if _c.get("maps_url"):
+                st.markdown(
+                    f"<div style='padding-top:12px;text-align:center;'>"
+                    f"<a href='{_c['maps_url']}' target='_blank'>🗺️</a></div>",
+                    unsafe_allow_html=True,
                 )
-            if res.get("limit_reached"):
-                st.warning("今月の取得上限に達したため途中で停止しました。")
-        except kaizode.KaizodeError as _e:
-            st.error(str(_e))
 
 
 def render():
