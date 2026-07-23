@@ -5,8 +5,8 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.18.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **153 passed**（push/PRでCI自動実行）
+- **現在バージョン**: `0.19.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **155 passed**（push/PRでCI自動実行）
 
 ---
 
@@ -222,6 +222,8 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 ---
 
 ## 11. 変更履歴（要約）
+
+- **v0.19.0** ヒーロー収集導線に**発注前プレビュー**を追加：検索した施設名でKAIZODE側の**既存データセット**（データセット名の部分一致、`kaizode.match_datasets`）を自動チェックし、状態（解析完了✅=取り込み可／収集中⏳）を表示。「見えない状態で発注」を防ぐ。これに伴い、ヒーロー発注のデータセット名を固定文字列から**施設名そのもの**に変更（施設名でのマッチングを可能にするため）
 
 - **v0.18.0** ヒーロー検索のKAIZODE収集を**「OSMで実在確認→候補選択→その施設で発注」**に強化（`geocode.search_candidates`）。施設名→OSM/Nominatim候補（名前+住所+🗺️地図リンク）→クリックで**その正確な場所のGoogleマップURL**をKAIZODEに渡す（同名取り違えを低減）。候補が無ければ名前のまま発注のフォールバックも。※精度が要れば将来 Google Places API に差し替え可（UIそのまま・データ源交換）
 

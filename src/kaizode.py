@@ -202,6 +202,26 @@ def facility_name_of(r: dict, fallback: str = "不明") -> str:
     return (r.get("review_target_name") or r.get("dataset_name") or fallback).strip()
 
 
+def match_datasets(datasets: list[dict], query: str) -> list[dict]:
+    """データセット名に query が部分一致するものを返す（発注前のプレビュー用）。
+
+    KAIZODE には施設名検索APIが無く、データセットの中身（対象施設）はURL単位で
+    しか分からないため、**データセット名**での緩いマッチに留まる（KAIZODE発注時に
+    施設名をデータセット名として渡す運用を前提）。各要素に status_label を付与。
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    out = []
+    for ds in datasets:
+        name = (ds.get("dataset_name") or "")
+        if q in name.lower():
+            item = dict(ds)
+            item["status_label"] = STATUS_LABELS.get(ds.get("status"), str(ds.get("status")))
+            out.append(item)
+    return out
+
+
 # ---------------------------------------------------------------------- #
 # 同期の本体（CLI と 管理画面の両方から使う）
 # ---------------------------------------------------------------------- #

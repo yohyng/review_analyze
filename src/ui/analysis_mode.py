@@ -36,11 +36,16 @@ def _resolve_kaizode_key() -> str:
 
 
 def _kz_order(conn, key: str, url: str, name: str) -> None:
-    """KAIZODEに1施設の収集を発注する。"""
+    """KAIZODEに1施設の収集を発注する。
+
+    データセット名を施設名にしておくと、KAIZODEには施設名検索APIが無いため、
+    後で "この施設の収集は既にあるか" をデータセット名の一致でプレビューできる
+    （kaizode.match_datasets）。
+    """
     try:
         client = kaizode.KaizodeClient(api_key=key)
         ds = client.create_dataset(
-            "VoiceBAUM検索", [{"url": url, "review_target_name": name}])
+            name, [{"url": url, "review_target_name": name}])
         st.success(
             f"✅ 「{name}」の収集を開始しました（dataset_id: {ds.get('dataset_id')}）。"
             "KAIZODE側の収集に時間がかかります（数分〜）。完了後に「⬇️ 完了分を取り込む」"
@@ -99,6 +104,28 @@ def _kz_collect_section(conn, query: str) -> None:
     _rem = kaizode.monthly_remaining(conn)
     st.caption(f"「{query}」の口コミはまだありません。"
                f"／ 今月のKAIZODE残枠: {_rem:,} / {kaizode.MONTHLY_LIMIT:,} 件")
+
+    # ── 発注前プレビュー：KAIZODE側にこの施設の収集が既にあるか ──────── #
+    #   KAIZODEには施設名検索APIが無いため、データセット名の一致で見る
+    #   （発注時にデータセット名＝施設名にしているので効く）。
+    _mkey = f"an_kz_match::{query}"
+    if _mkey not in st.session_state:
+        try:
+            client = kaizode.KaizodeClient(api_key=key)
+            st.session_state[_mkey] = kaizode.match_datasets(
+                client.list_datasets(), query)
+        except kaizode.KaizodeError:
+            st.session_state[_mkey] = []
+    _matches = st.session_state.get(_mkey) or []
+    if _matches:
+        st.markdown("**KAIZODE側の状況（この施設に近い収集）:**")
+        for _m in _matches:
+            _lbl = _m.get("status_label", "")
+            _done = _m.get("status") == kaizode.STATUS_DONE
+            _icon = "✅" if _done else "⏳"
+            st.caption(f"{_icon} 「{_m.get('dataset_name')}」— {_lbl}"
+                       + ("（取り込み可）" if _done else "（完了までお待ちください）"))
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
     _ckey = f"an_kz_cands::{query}"
     _b1, _b2 = st.columns(2)

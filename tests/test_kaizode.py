@@ -253,3 +253,22 @@ def test_sync_respects_monthly_cap():
     assert res["limit_reached"] is True
     assert kaizode.get_monthly_usage(conn) == kaizode.MONTHLY_LIMIT
     assert conn.execute("SELECT COUNT(*) FROM review").fetchone()[0] == 3
+
+
+def test_match_datasets_partial_name():
+    datasets = [
+        {"dataset_id": "d1", "dataset_name": "容器文化ミュージアム", "status": 30},
+        {"dataset_id": "d2", "dataset_name": "トヨタ博物館", "status": 10},
+        {"dataset_id": "d3", "dataset_name": "容器文化ミュージアム別収集", "status": 20},
+    ]
+    m = kaizode.match_datasets(datasets, "容器文化")
+    assert {x["dataset_id"] for x in m} == {"d1", "d3"}
+    assert all("status_label" in x for x in m)
+    d1 = next(x for x in m if x["dataset_id"] == "d1")
+    assert d1["status_label"] == kaizode.STATUS_LABELS[30]
+
+
+def test_match_datasets_empty_query_or_no_hit():
+    datasets = [{"dataset_id": "d1", "dataset_name": "何か", "status": 30}]
+    assert kaizode.match_datasets(datasets, "") == []
+    assert kaizode.match_datasets(datasets, "存在しない名前") == []
