@@ -290,6 +290,27 @@ def _wikidata_facts(name: str) -> dict:
     return {}
 
 
+def parse_maps_url(url: str) -> Optional[str]:
+    """Google Maps URLから施設名を抽出（search?query=... 形式）。
+
+    失敗時は None を返す（呼び出し側は手入力名を使う）。
+    """
+    if not url or not url.strip():
+        return None
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if "google.com" not in (parsed.netloc or "") or "/maps" not in (parsed.path or ""):
+            return None
+        params = urllib.parse.parse_qs(parsed.query)
+        queries = params.get("query", [])
+        if queries:
+            return queries[0].strip() or None
+    except Exception:
+        pass
+    return None
+
+
 def lookup(name: str, hint: str = "") -> Optional[dict]:
     """住所のみの軽量取得（プレビュー初期表示用）。"""
     g = _geocode(name, hint)

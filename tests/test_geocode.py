@@ -169,3 +169,25 @@ def test_discover_by_keyword_network_fail_and_empty(monkeypatch):
     from src import geocode
     assert geocode.discover_by_keyword("和紙") == []
     assert geocode.discover_by_keyword("") == []
+
+
+def test_parse_maps_url_search_query():
+    """Google Maps search URL からクエリを抽出"""
+    url = "https://www.google.com/maps/search/?api=1&query=%E7%9F%A5%E6%81%A9%E5%B0%8F%E5%B7%9D"
+    result = geocode.parse_maps_url(url)
+    assert result == "知恩小川"
+
+    # 複数の query パラム (最初のものを取得)
+    url2 = "https://www.google.com/maps/search/?query=cafe&query=museum"
+    assert geocode.parse_maps_url(url2) == "cafe"
+
+
+def test_parse_maps_url_fails_gracefully():
+    """URLでなければ None を返す"""
+    assert geocode.parse_maps_url("単なる施設名") is None
+    assert geocode.parse_maps_url("") is None
+    assert geocode.parse_maps_url("https://example.com") is None
+    assert geocode.parse_maps_url(None) is None
+
+    # 不正なURL形式
+    assert geocode.parse_maps_url("https://maps.google.com/invalid") is None
