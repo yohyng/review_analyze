@@ -182,6 +182,19 @@ def test_parse_maps_url_search_query():
     assert geocode.parse_maps_url(url2) == "cafe"
 
 
+def test_parse_maps_url_place_direct_link():
+    """Google Maps place 直リンクから施設名を抽出"""
+    # 日本語施設名
+    url = "https://www.google.co.jp/maps/place/%E8%B6%8A%E5%89%8D%E5%92%8C%E7%B4%99%E3%81%AE%E9%87%8C/@35.9109839,136.1685379"
+    result = geocode.parse_maps_url(url)
+    assert result == "越前和紙の里"
+
+    # google.com (co.jp ではなく)
+    url2 = "https://www.google.com/maps/place/%E5%B1%B1%E7%94%B0%E5%AF%BA/@39.6,141.2"
+    result2 = geocode.parse_maps_url(url2)
+    assert result2 == "山田寺"
+
+
 def test_parse_maps_url_fails_gracefully():
     """URLでなければ None を返す"""
     assert geocode.parse_maps_url("単なる施設名") is None

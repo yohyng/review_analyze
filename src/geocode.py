@@ -291,7 +291,11 @@ def _wikidata_facts(name: str) -> dict:
 
 
 def parse_maps_url(url: str) -> Optional[str]:
-    """Google Maps URLから施設名を抽出（search?query=... 形式）。
+    """Google Maps URLから施設名を抽出。
+
+    対応形式:
+    - Search: https://www.google.com/maps/search/?api=1&query=施設名
+    - Place:  https://www.google.com/maps/place/施設名/@lat,lon,...
 
     失敗時は None を返す（呼び出し側は手入力名を使う）。
     """
@@ -300,12 +304,28 @@ def parse_maps_url(url: str) -> Optional[str]:
     import urllib.parse
     try:
         parsed = urllib.parse.urlparse(url)
-        if "google.com" not in (parsed.netloc or "") or "/maps" not in (parsed.path or ""):
+        netloc = parsed.netloc or ""
+        path = parsed.path or ""
+        # google.* (google.com, google.co.jp など)
+        if not netloc.startswith(("www.google.", "google.")) or "/maps" not in path:
             return None
+
+        # Search URL: ?query=...
         params = urllib.parse.parse_qs(parsed.query)
         queries = params.get("query", [])
         if queries:
             return queries[0].strip() or None
+
+        # Place URL: /maps/place/[name]/@...
+        path_parts = path.split("/")
+        if "place" in path_parts:
+            idx = path_parts.index("place")
+            if idx + 1 < len(path_parts):
+                name = path_parts[idx + 1].strip()
+                if name and name != "@":
+                    # URL decode
+                    name = urllib.parse.unquote(name)
+                    return name or None
     except Exception:
         pass
     return None
