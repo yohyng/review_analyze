@@ -255,6 +255,25 @@ def test_sync_respects_monthly_cap():
     assert conn.execute("SELECT COUNT(*) FROM review").fetchone()[0] == 3
 
 
+def test_sync_not_falsely_truncated_when_exact_match():
+    """残枠とレビュー数がちょうど一致するとき、誤って『打ち切り』と判定しないことを
+    確認する回帰テスト（境界値バグ: len(reviews) >= budget だと budget件ちょうど＝
+    それ以上データが無いケースでも truncated=True になっていた）。"""
+    datasets = {"data": [{"dataset_id": "d30", "dataset_name": "DS", "status": 30}]}
+    reviews = {"data": [{"review_id": f"k{i}", "review": "x", "review_rating": 5,
+                         "published_at": f"2025-05-1{i} 10:00:00",
+                         "review_target_name": "施設A"} for i in range(5)],
+               "pagination": {"total_items": 5, "limit": 5000, "page": 0}}
+    c, sess = _client([FakeResp(200, datasets), FakeResp(200, reviews)])
+    conn = db.get_conn(":memory:"); db.init_db(conn)
+    kaizode.add_monthly_usage(conn, kaizode.MONTHLY_LIMIT - 5)   # 残枠ちょうど5（レビュー数と一致）
+    res = kaizode.sync_datasets(c, conn)
+    assert res["fetched"] == 5                # 5件全部取得できている
+    assert res["limit_reached"] is False       # 本当は打ち切られていない
+    assert res["datasets_synced"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM review").fetchone()[0] == 5
+
+
 def test_match_datasets_partial_name():
     datasets = [
         {"dataset_id": "d1", "dataset_name": "容器文化ミュージアム", "status": 30},

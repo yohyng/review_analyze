@@ -282,11 +282,14 @@ def sync_datasets(
 
         since = None if full else get_last_sync(conn, dsid)
         log(f"⬇️ {name}: {'全件' if since is None else f'差分（{since} 以降）'}を取得中…")
-        # 残枠までしか取らない（islice でページ取得も途中で止まる＝枠を消費しすぎない）
-        reviews = list(itertools.islice(
-            client.iter_reviews(dsid, published_since=since, limit=limit), budget))
+        # 残枠までしか取らない（islice でページ取得も途中で止まる＝枠を消費しすぎない）。
+        # budget+1件目まで覗くことで「ちょうど残枠と同数だった（＝実際は全件取得できた）」
+        # ケースを「打ち切られた」と誤判定しないようにする（境界値バグ対策）。
+        _batch = list(itertools.islice(
+            client.iter_reviews(dsid, published_since=since, limit=limit), budget + 1))
+        truncated = len(_batch) > budget        # budget+1件目が実在＝本当に打ち切られた
+        reviews = _batch[:budget]
         fetched += len(reviews)
-        truncated = len(reviews) >= budget      # 上限で途中打ち切りの可能性
 
         if not reviews:
             log("　　新着なし")
