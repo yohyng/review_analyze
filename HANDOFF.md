@@ -5,8 +5,9 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.20.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **159 passed**（push/PRでCI自動実行）
+- **現在バージョン**: `0.21.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **163 passed**（push/PRでCI自動実行）
+- **このドキュメントについて**: ツール非依存の引継ぎ資産。Claude Code / Codex など**複数の開発ツールを都度切り替えて作業する運用**を想定しているため、チャット履歴に頼らずここだけ読めば継続できるよう、機能追加・設計変更のたびに更新すること（§11 変更履歴に1行追記が最低限）。
 
 ---
 
@@ -114,6 +115,8 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 | 開業（OSMに無い場合の補完） | Wikidata 設立(P571) | `_wikidata_facts` |
 
 - 統合API `enrich(name)` → 取れた項目のみのdict。全て構造化データ（**嘘=ハルシネーションは出ない**）。失敗時は空（手入力フォールバック）。全て `lru_cache` + 短タイムアウト + try/except。
+- **`parse_maps_url(url)`**（v0.21.0）: Google Maps の **search URL**（`.../maps/search/?query=...`）と **place直リン**（`.../maps/place/施設名/@lat,lon,...`）の両方から施設名を抽出。`google.*`（`.com`/`.co.jp`等）ドメイン限定、失敗時は `None`（呼び出し側は手入力名にフォールバック）。ヒーロー画面のKAIZODE発注導線で使用（§6）。
+- **`search_candidates` / `discover_by_keyword`（Overpassテーマ検索）は関数・テストとも残存しているが、v0.21.0時点でUIからは呼ばれていない**（§6・§11参照。OSM/Nominatimのカバレッジ不足でUIから撤去したが、コードは削除せず残置）。
 
 ---
 
@@ -144,6 +147,17 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 - **`.github/workflows/kaizode-sync.yml`**: 毎日 JST 3:00 に `--sync` を実行（`workflow_dispatch` で手動も可）。必要 Secrets: `KAIZODE_API_KEY` / `TURSO_URL` / `TURSO_TOKEN`。
 - **管理画面「📡 KAIZODE連携」ページ（v0.10.0）**: ログイン後のみ到達。3タブ＝収集状況（一覧）/収集を発注（施設名,URL,since を行入力）/DBへ取り込み（差分同期・category指定可）。同期の実体は CLI と共通の `kaizode.sync_datasets()`。**APIキーは secrets/環境変数を優先し、無ければ「セッション限り」のパスワード入力**（DB・ファイルに保存しない、末尾4桁のみ表示、破棄ボタンあり）。
 - サンプル: `data/kaizode/facilities.sample.csv`。テスト: `tests/test_kaizode.py`（モックセッションで13本）。
+
+#### ヒーロー画面（一般ユーザー向け）の収集導線（`src/ui/analysis_mode.py` `_kz_collect_section` 系・v0.21.0で刷新）
+検索した施設の口コミがDBに無いとき、ログイン中の管理者にその場で発注させる導線。**v0.17〜v0.20 では「Nominatim名前検索→候補選択」「Overpassテーマ検索」を用意していたが、OSMのカバレッジ不足（地方施設や「和紙」のようなテーマ語が拾えない）で実用に耐えず、v0.21.0で撤去し以下のシンプルなフローに置き換えた**:
+
+1. **STEP1 入力**: 「Google MapsのURL または 施設名」を1つのテキスト欄に入力するだけ。URLなら `geocode.parse_maps_url()` で施設名を自動抽出（search URL / place直リン 両対応）。抽出できなければ入力文字列をそのまま施設名として使う。
+2. **プレビュー**: 抽出した施設名で `geocode.lookup()`（Nominatim軽量版）を引き、住所が取れれば表示（取れなくても発注は可能）。あわせて `kaizode.match_datasets()` でKAIZODE側の**既存収集**をデータセット名の部分一致で表示（二重発注防止）。
+3. **発注**: 「📡 今すぐ集める」→ `_kz_order()` が `create_dataset()` を呼び、返ってきた `dataset_id` を `st.session_state["an_kz_ongoing::{query}"]` に保存。
+4. **STEP2 進捗表示**: `dataset_id` がセッションにある間、`_kz_progress_tracker()` が代わりに描画される。**`@st.fragment(run_every="3s")` で実装**（プログレスバー: status 10=33%/20=66%/30=100%）。fragmentなので**この部分だけ**が3秒ごとに再実行され、ページ全体はリロードされない（以前の `time.sleep()+st.rerun()` はページ全体がガクつく問題があった）。「🔄 今すぐ確認」ボタンは通常の `st.rerun()`（fragment自動更新中でない限り `scope="fragment"` は例外になるため）。
+5. **STEP3 自動取り込み**: status=30（完了）を検知すると自動で `_kz_pull()` を呼び、DBに取り込んだ上で `an_target` にセットして分析画面へ。status=40（失敗）はエラー表示のみ。
+
+- ⚠️ `geocode.search_candidates` / `discover_by_keyword`（Overpassテーマ検索）は**関数本体・テストは削除せず残置**（§4末尾）。将来また使う可能性がある場合の再利用のため。呼び出し元（UI）から外しただけ。
 - ⚠️ **実APIとの疎通はこのサンドボックスでは未検証**（外部通信遮断のため）。モックで検証済み。初回はローカルで `--status` から確認を。
 
 ### 企業ミュージアム デモデータ
@@ -175,21 +189,19 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 - **22観点は軽量backendで平坦**になりがち（§2）。
 - **PPTXは16:9固定**（プレビューは16:10）。合わせたい場合は座標再調整が必要。
 - Nominatim は User-Agent の実在連絡先が必要（現在プレースホルダ）。本番投入時は正規のUAに。
+- **KAIZODEの月間上限（`MONTHLY_LIMIT=20,000`）はこのアプリ独自のローカル安全装置**（`kaizode_usage`テーブルで自前カウント）。**KAIZODE本体には対応する概念が無い**ので、KAIZODE側の管理画面等を見ても一致する「上限」表示は出ない。問い合わせが来たらまずここを疑う（§11 v0.21.0の境界値バグのような誤検知もあり得る）。
+- `geocode.search_candidates` / `discover_by_keyword` はUIから外れた未使用コード（§6末尾）。今後完全に使わないと決まったら削除候補。
 
 ---
 
 ## 9. 次の一手
 
-**かわら美術館でPROFILEが空だった件は v0.8.4 で対応済み**:
-- ✅ **業種(category)を配線**: `enrich` の category を bundle 注入＋エディタ「業種」欄に反映（優先度: 手入力 > DB > OSM）。
-- ✅ **自動取得を自動化**: プレビュー初回描画で `geocode.enrich` を1回だけ実行（`_prof["_enriched"]` フラグ＋spinner）。住所/アクセス/開業/業種が**ボタン無しで**入る。
-- ✅ **長い施設名のフォールバック**: `_geocode` がフル名称→`_simplify`（括弧除去・`・`前半）の順で試行。
-- ✅ **フィードバック**: ボタン押下時に取得できた項目を明示（例「取得しました: 住所・アクセス」）。
-
-**その他の候補**:
+**候補**:
+- `geocode.search_candidates` / `discover_by_keyword`（§6・§8）: 使わないと決まれば削除、または別の入口（管理画面側の一括登録等）に転用するか判断する。
 - SBERTバックエンドの本番採用（requirements追加＋デプロイ要件確認）。
 - 業種のWikidata(P31)マッピング（現状はOSMタイプのみ）。
 - 画像をオブジェクトストレージ（R2/S3）に移す（大量運用時）。
+- KAIZODE収集の進捗ポーリング（§6 `_kz_progress_tracker`）は現状ブラウザタブを開いている間のみ動く。閉じても継続収集自体はKAIZODE側で進むので実害は無いが、「離脱後に完了を知る」手段（通知等）が欲しくなったら要検討。
 
 ---
 
@@ -222,6 +234,13 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 ---
 
 ## 11. 変更履歴（要約）
+
+- **v0.21.0** ヒーロー収集導線を全面刷新（詳細は§6）:
+  - v0.17〜v0.20で作った「Nominatim名前検索→候補選択」「Overpassテーマ検索」をUIから撤去し、**「URL/施設名を1つ入力→自動抽出→プレビュー→発注」の1本道**に簡素化（OSMのカバレッジ不足で実用に耐えないと判断）。関数自体（`search_candidates`/`discover_by_keyword`）は削除せず残置。
+  - `geocode.parse_maps_url()` 新設。Google Maps **search URL**と**place直リン**（`.../maps/place/施設名/@lat,lon`）の両方から施設名を抽出（`google.com`/`google.co.jp`等の`google.*`ドメインに対応）。
+  - 発注後の収集状況を**プログレスバーでリアルタイム表示**（`_kz_progress_tracker`、status 10/20/30→33%/66%/100%）。**`@st.fragment(run_every="3s")`** で実装し、進捗カードだけが3秒毎に更新される（旧 `time.sleep()+st.rerun()` はページ全体が毎回作り直されガクついていた）。完了(30)検知で自動DB取り込み→分析画面へ、失敗(40)はエラー表示。
+  - **月間上限判定の境界値バグを修正**: `sync_datasets()` の `truncated = len(reviews) >= budget` は、`islice`で既にbudget件に切り詰め済みの`reviews`に対して使うと実質 `len(reviews) == budget` としか判定できず、「ちょうど残枠と同数のレビューしかない（＝本当は全件取得できていた）」ケースを誤って「打ち切り」と判定していた。budget+1件を先読みし、実在するかで真の打ち切りを判定するよう修正（回帰テスト追加）。
+  - テスト 159→163。
 
 - **v0.20.0** ヒーロー収集に**テーマ・キーワード探索**を追加（`geocode.discover_by_keyword`）。「和紙」のような**施設の固有名でない語**は Nominatim（名前ズバリ検索）では基本ヒットしない仕様のため、OSMの `name` タグを **Overpass の正規表現検索**で見る別ルートを用意。地域（都道府県等）を指定すると高速・高精度、未指定だと全国対象（公開Overpassサーバのため数秒〜数十秒/失敗しやすい旨を明記）。候補描画は`_kz_candidate_picker` に共通化
 
