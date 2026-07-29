@@ -8,7 +8,6 @@ from __future__ import annotations
 import base64
 import os
 import tempfile
-import time
 from html import escape
 from pathlib import Path
 
@@ -84,8 +83,13 @@ def _kz_pull(conn, key: str, query: str) -> bool:
     return False
 
 
+@st.fragment(run_every="3s")
 def _kz_progress_tracker(conn, key: str, dataset_id: str, facility_name: str, query: str) -> None:
-    """進捗トラッキング画面。自動で status をチェックして進捗を表示。"""
+    """進捗トラッキング（fragment）。3秒ごとにこの部分だけを自動更新する。
+
+    st.fragment のおかげでページ全体は再実行されないため、sleep+rerun のような
+    もたつき・ちらつきが起きない（更新されるのはこのカードの中身だけ）。
+    """
     try:
         client = kaizode.KaizodeClient(api_key=key)
         ds = client.get_dataset(dataset_id)
@@ -105,26 +109,24 @@ def _kz_progress_tracker(conn, key: str, dataset_id: str, facility_name: str, qu
     # ── 完了チェック ─────────────────────────── #
     if status == kaizode.STATUS_DONE:
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        # 完了時は分析画面へ切り替えるため、ここだけはページ全体を rerun する
         if _kz_pull(conn, key, query):
             return
-        # 取り込み失敗時は再試行ボタンを出す
         if st.button("⬇️ 取り込みを再度試す", key="an_kz_retry_import", width="stretch"):
             _kz_pull(conn, key, query)
-            return
+        return
 
-    elif status == 40:
+    if status == 40:
         st.error("❌ 収集に失敗しました。別の施設名を試すか、管理者に連絡してください。")
         return
 
-    # ── 自動更新トリガー ────────────────────── #
+    # ── 手動更新 ────────────────────────────────────────────── #
+    # scope="fragment" は「fragment の自動rerun中」でないと呼べない制約があり、
+    # 初回描画直後にクリックされると例外になるため、素直に通常rerunにする
+    # （自動更新（3秒毎）は run_every 側が fragment scope で滑らかに処理する）。
     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
     if st.button("🔄 今すぐ確認", key="an_kz_check_now", width="stretch"):
         st.rerun()
-
-    # 3秒後に自動 rerun
-    import time
-    time.sleep(3)
-    st.rerun()
 
 
 
