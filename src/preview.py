@@ -7,12 +7,13 @@ fixed 16:10 (PowerPoint-shaped) canvas using `container-type:inline-size` +
 """
 from __future__ import annotations
 
+import base64
 import sqlite3
 from datetime import date
 from html import escape
 from typing import Optional
 
-from . import analysis, config, text_analysis, topic_score
+from . import analysis, config, db, text_analysis, topic_score
 
 # palette (VoiceBAUM)
 ACCENT = "#B0338A"
@@ -50,11 +51,12 @@ def build_bundle(
     insights,                 # llm.InsightResult | None
 ) -> dict:
     frow = conn.execute(
-        "SELECT id, category, general_rating FROM facility WHERE name = ?", (target,)
+        "SELECT id, category, general_rating, floor_area FROM facility WHERE name = ?", (target,)
     ).fetchone()
     fid = frow["id"] if frow else None
     category = (frow["category"] if frow and frow["category"] else "—")
     general_rating = frow["general_rating"] if frow else None
+    floor_area = frow["floor_area"] if frow else None
 
     n_reviews = conn.execute(
         "SELECT COUNT(*) FROM review WHERE facility_id = ?", (fid,)
@@ -112,6 +114,37 @@ def build_bundle(
     peer_valid = [p for p in peers if p in valid and p != target]
     peer_mean = (sum(fac_overall[p] for p in peer_valid) / len(peer_valid)) if peer_valid else None
     d_peer = (overall_score - peer_mean) if (peer_mean is not None and overall_score is not None) else None
+
+    # ── 比較対象施設カード（同カテゴリ優先で最大5件・写真つき）────────── #
+    PEER_DISPLAY_CAP = 5
+    peer_info: dict[str, dict] = {}
+    if peer_valid:
+        ph = ",".join("?" * len(peer_valid))
+        for r in conn.execute(
+            f"SELECT id, name, category FROM facility WHERE name IN ({ph})", peer_valid
+        ).fetchall():
+            peer_info[r["name"]] = {"id": r["id"], "category": r["category"]}
+    same_cat = [p for p in sorted(peer_valid) if category != "—" and peer_info.get(p, {}).get("category") == category]
+    other_cat = [p for p in sorted(peer_valid) if p not in same_cat]
+    peer_display_names = (same_cat + other_cat)[:PEER_DISPLAY_CAP]
+
+    peer_display = []
+    for name in peer_display_names:
+        pid = peer_info.get(name, {}).get("id")
+        photo_uri = None
+        if pid:
+            p = db.get_photo(conn, pid)
+            if p:
+                photo_uri = f"data:{p['mime']};base64," + base64.b64encode(p["image"]).decode()
+        peer_display.append({"name": name, "photo_data_uri": photo_uri})
+
+    # ── 口コミ数の推移（月次・累積）─────────────────────────────────── #
+    review_trend = []
+    if fid:
+        cum = 0
+        for ym, cnt in db.monthly_review_counts(conn, fid):
+            cum += cnt
+            review_trend.append((ym, cum))
 
     def _topic_diff_label(entry):
         return f"{entry[0]}（{entry[3]:+.1f}pt）" if entry else "—"
@@ -205,10 +238,16 @@ def build_bundle(
         # APPENDIX — 比較対象（ピア）施設の一覧
         "peer_names": sorted(peer_valid),
         "peer_count": len(peer_valid),
+        # SLIDE 1（施設・基本情報）— 比較対象カード（同カテゴリ優先・写真つき最大5件）
+        "peer_display": peer_display,
+        "peer_display_same_category": bool(same_cat),
+        # SLIDE 1 — 口コミ数の推移（月次・累積）: [(YYYY-MM, 累積件数), ...]
+        "review_trend": review_trend,
         # PROFILE（プレビューで写真アップ / 住所自動取得 / 手入力を上書き）
         "address": None,
         "access": None,
         "open_year": None,
+        "floor_area": floor_area,
         "photo_data_uri": None,
     }
 
@@ -270,6 +309,262 @@ def html_disclaimer(b: dict) -> str:
     inner = _head("免責事項", config.DISCLAIMER_TITLE,
                   "本レポートをご覧いただく前に、以下をご確認ください") + card + foot
     return _canvas(inner)
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+# SLIDE 1「施設・基本情報」— 新配色（濃紺＋ピンク）。このスライド限定のテーマで、
+# 他スライドの VoiceBAUM 基調（ACCENT=マゼンタ）には影響しない。
+# OVERVIEW / PROFILE / APPENDIX を1枚に統合したレイアウト。
+# ─────────────────────────────────────────────────────────────────────────── #
+S1_NAVY = "#101A38"
+S1_PINK = "#EB1E4E"
+S1_PINK_SOFT = "rgba(235,30,78,0.09)"
+S1_LINE = "#E7E7EA"
+
+
+def _canvas_s1(header_html: str, body_html: str) -> str:
+    """全幅ヘッダー帯 + パディング付きボディ、の16:10キャンバス（通常の _canvas とは別枠）。"""
+    return (
+        f'<div style="width:100%;aspect-ratio:16/10;background:#fff;border:1px solid {CARD_LINE};'
+        'border-radius:14px;box-shadow:0 1px 2px rgba(20,30,40,.04),0 14px 36px rgba(20,30,40,.05);'
+        'overflow:hidden;container-type:inline-size;position:relative;margin-bottom:16px;">'
+        '<div style="position:absolute;inset:0;display:flex;flex-direction:column;">'
+        f'{header_html}'
+        '<div style="flex:1;padding:1.5cqw 2.2cqw 1.2cqw;display:flex;flex-direction:column;min-height:0;">'
+        f'{body_html}</div></div></div>'
+    )
+
+
+def _s1_header(title: str, period: str) -> str:
+    period_html = (
+        f'<div style="margin-left:auto;font-size:1.02cqw;color:#C7CCDA;background:rgba(255,255,255,.09);'
+        f'padding:.5cqw 1.1cqw;border-radius:.5cqw;white-space:nowrap;">{escape(period)}</div>'
+        if period else ""
+    )
+    return (
+        f'<div style="flex:none;background:{S1_NAVY};padding:1.1cqw 2.2cqw;'
+        'display:flex;align-items:center;gap:1.1cqw;">'
+        f'<div style="flex:none;width:2.5cqw;height:2.5cqw;background:{S1_PINK};border-radius:.5cqw;'
+        'display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.6cqw;font-weight:800;">1</div>'
+        f'<div style="font-size:1.8cqw;font-weight:800;color:#fff;letter-spacing:.02em;">{escape(title)}</div>'
+        f'{period_html}</div>'
+    )
+
+
+def _s1_card_open(icon: str, title: str, flex) -> str:
+    return (
+        f'<div style="flex:{flex};min-width:0;min-height:0;display:flex;flex-direction:column;'
+        f'border:1px solid {S1_LINE};border-radius:.8cqw;overflow:hidden;background:#fff;">'
+        f'<div style="flex:none;background:{S1_NAVY};color:#fff;padding:.6cqw 1cqw;'
+        'display:flex;align-items:center;gap:.55cqw;font-size:1.05cqw;font-weight:700;">'
+        f'<span>{icon}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(title)}</span></div>'
+        '<div style="flex:1;min-height:0;padding:1cqw 1.1cqw;display:flex;flex-direction:column;">'
+    )
+
+
+_S1_CARD_CLOSE = '</div></div>'
+
+
+def _s1_profile_body(b: dict) -> str:
+    uri = b.get("photo_data_uri")
+    if uri:
+        photo = (
+            '<div style="width:100%;flex:1;min-height:0;border-radius:.6cqw;overflow:hidden;'
+            f'background:#F1F0EA url(\'{uri}\') center/cover no-repeat;margin-bottom:.6cqw;"></div>'
+        )
+    else:
+        photo = (
+            '<div style="width:100%;flex:1;min-height:0;border-radius:.6cqw;'
+            'background:linear-gradient(160deg,#EEF0F5,#E4E7EC);display:flex;align-items:center;'
+            f'justify-content:center;color:#A7ABB0;font-size:1cqw;margin-bottom:.6cqw;">施設写真</div>'
+        )
+    rows = [
+        ("📍", "住所", b.get("address") or "—"),
+        ("📅", "開業", b.get("open_year") or "—"),
+        ("🏢", "延床", b.get("floor_area") or "—"),
+        ("🏷️", "カテゴリ", b.get("category") or "—"),
+    ]
+    items = ""
+    for icon, label, val in rows:
+        items += (
+            '<div style="display:flex;align-items:center;gap:.55cqw;padding:.3cqw 0;border-top:1px solid #F0F0F2;flex:none;">'
+            f'<span style="flex:none;font-size:.9cqw;">{icon}</span>'
+            f'<span style="flex:none;width:5.2cqw;font-size:.85cqw;color:{SUB};">{escape(label)}</span>'
+            f'<span style="flex:1;min-width:0;font-size:.95cqw;font-weight:700;color:{INK};'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(str(val))}</span></div>'
+        )
+    return photo + f'<div style="flex:none;">{items}</div>'
+
+
+def _s1_summary_body(b: dict) -> str:
+    n_reviews = b.get("n_reviews", 0)
+    avg = b.get("avg_rating")
+    stars = ""
+    if avg is not None:
+        filled = round(avg)
+        for i in range(5):
+            col = "#F0A93E" if i < filled else "#DDDDE2"
+            stars += f'<span style="color:{col};font-size:1.5cqw;line-height:1;">★</span>'
+    return (
+        '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:space-evenly;">'
+        '<div style="text-align:center;">'
+        f'<div style="font-size:.95cqw;color:{SUB};font-weight:600;margin-bottom:.4cqw;">総口コミ数</div>'
+        f'<div style="font-size:2.5cqw;font-weight:800;color:{S1_PINK};line-height:1;">{n_reviews:,}'
+        f'<span style="font-size:1.05cqw;color:{SUB};font-weight:600;"> 件</span></div></div>'
+        '<div style="text-align:center;">'
+        f'<div style="font-size:.95cqw;color:{SUB};font-weight:600;margin-bottom:.4cqw;">総合評価</div>'
+        f'<div style="font-size:2.5cqw;font-weight:800;color:{INK};line-height:1;">'
+        f'{avg if avg is not None else "—"}<span style="font-size:1.05cqw;color:{SUB};font-weight:600;"> / 5</span></div>'
+        f'<div style="margin-top:.35cqw;">{stars}</div></div></div>'
+    )
+
+
+def _trend_trend_note(trend: list) -> str:
+    """直近3ヶ月 vs その前3ヶ月の新規件数（累積の差分）で増減傾向を簡易判定。"""
+    if len(trend) < 4:
+        return ""
+    diffs = [trend[i][1] - trend[i - 1][1] for i in range(1, len(trend))]
+    if len(diffs) >= 6:
+        recent, prev = diffs[-3:], diffs[-6:-3]
+    else:
+        half = len(diffs) // 2
+        recent, prev = diffs[half:], diffs[:half]
+    if not prev or not recent:
+        return ""
+    r_avg, p_avg = sum(recent) / len(recent), sum(prev) / len(prev)
+    if p_avg <= 0:
+        return "継続的に増加傾向" if r_avg > 0 else ""
+    if r_avg > p_avg * 1.1:
+        return "継続的に増加傾向"
+    if r_avg < p_avg * 0.9:
+        return "減少傾向"
+    return "横ばい傾向"
+
+
+def _s1_trend_body(trend: list) -> str:
+    if len(trend) < 2:
+        return (f'<div style="flex:1;display:flex;align-items:center;justify-content:center;'
+                f'color:{SUB};font-size:1cqw;">推移を描画するにはデータが不足しています</div>')
+
+    values = [v for _, v in trend]
+    max_v = max(values) or 1
+    n = len(trend)
+    pts = [((i / (n - 1)) * 100 if n > 1 else 0, 100 - (v / max_v) * 90) for i, (_, v) in enumerate(trend)]
+    poly = " ".join(f"{x:.2f},{y:.2f}" for x, y in pts)
+    area = f"0,100 {poly} 100,100"
+    dots = "".join(
+        f'<circle cx="{x:.2f}" cy="{y:.2f}" r="1.6" fill="{S1_PINK}" vector-effect="non-scaling-stroke" />'
+        for x, y in pts
+    )
+
+    step = max(1, (n - 1) // 6) if n > 1 else 1
+    xlabs = "".join(
+        f'<span style="position:absolute;left:{pts[i][0]:.1f}%;top:0;transform:translateX(-50%);'
+        f'font-size:.68cqw;color:#A7ABB0;white-space:nowrap;">{escape(trend[i][0])}</span>'
+        for i in range(0, n, step)
+    )
+    if (n - 1) % step != 0:
+        xlabs += (
+            f'<span style="position:absolute;left:{pts[-1][0]:.1f}%;top:0;transform:translateX(-50%);'
+            f'font-size:.68cqw;color:#A7ABB0;white-space:nowrap;">{escape(trend[-1][0])}</span>'
+        )
+
+    ylabs = "".join(
+        f'<div style="position:absolute;top:{100 - frac * 90:.1f}%;right:0;transform:translateY(-50%);'
+        f'font-size:.72cqw;color:#A7ABB0;">{int(max_v * frac):,}</div>'
+        for frac in (0, 0.5, 1.0)
+    )
+
+    note = _trend_trend_note(trend)
+    note_html = ""
+    if note:
+        note_html = (
+            f'<div style="position:absolute;top:.3cqw;right:2.8cqw;background:{S1_PINK_SOFT};color:{S1_PINK};'
+            f'font-size:.8cqw;font-weight:700;padding:.35cqw .75cqw;border-radius:99px;white-space:nowrap;">'
+            f'{escape(note)}</div>'
+        )
+
+    return (
+        '<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
+        '<div style="flex:1;position:relative;min-height:0;">'
+        f'{note_html}'
+        f'<div style="position:absolute;top:0;bottom:1.3cqw;left:0;right:2.6cqw;'
+        f'border-bottom:1px solid {S1_LINE};">'
+        f'<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="width:100%;height:100%;overflow:visible;">'
+        f'<polygon points="{area}" fill="{S1_PINK_SOFT}" stroke="none" />'
+        f'<polyline points="{poly}" fill="none" stroke="{S1_PINK}" stroke-width="1.6" '
+        'stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />'
+        f'{dots}</svg></div>'
+        f'<div style="position:absolute;top:0;bottom:1.3cqw;right:0;width:2.6cqw;">{ylabs}</div>'
+        f'<div style="position:absolute;bottom:0;left:0;right:2.6cqw;height:1.3cqw;">{xlabs}</div>'
+        '</div></div>'
+    )
+
+
+def _s1_peers_body(b: dict) -> str:
+    peers = b.get("peer_display") or []
+    if not peers:
+        return (f'<div style="flex:1;display:flex;align-items:center;justify-content:center;'
+                f'color:{SUB};font-size:1.1cqw;">比較対象施設がありません</div>')
+    items = ""
+    for p in peers:
+        uri = p.get("photo_data_uri")
+        if uri:
+            img = (
+                '<div style="width:100%;aspect-ratio:4/3;border-radius:.6cqw;overflow:hidden;'
+                f'background:#F1F0EA url(\'{uri}\') center/cover no-repeat;"></div>'
+            )
+        else:
+            img = (
+                '<div style="width:100%;aspect-ratio:4/3;border-radius:.6cqw;'
+                'background:linear-gradient(160deg,#EEF0F5,#E4E7EC);display:flex;align-items:center;'
+                f'justify-content:center;color:#A7ABB0;font-size:1.5cqw;">🏢</div>'
+            )
+        items += (
+            '<div style="flex:1;min-width:0;">' + img +
+            f'<div style="margin-top:.5cqw;text-align:center;background:{S1_PINK_SOFT};color:{INK};'
+            'font-size:.92cqw;font-weight:700;padding:.4cqw .3cqw;border-radius:.4cqw;'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(p["name"])}</div></div>'
+        )
+    return f'<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;">{items}</div>'
+
+
+def html_facility_info(b: dict) -> str:
+    """SLIDE 1「施設・基本情報」— OVERVIEW / PROFILE / APPENDIX を1枚に統合。
+
+    施設プロフィール（写真・住所・開業・延床・カテゴリ）／口コミサマリー（件数・評価）／
+    口コミ数の推移（月次累積の折れ線）／比較対象施設（同カテゴリ優先・写真つき最大5件）。
+    """
+    trend = b.get("review_trend") or []
+    period = f"分析期間：{trend[0][0]}〜{trend[-1][0]}（累積推移）" if len(trend) >= 2 else ""
+    header = _s1_header("施設・基本情報", period)
+
+    peer_count = len(b.get("peer_display") or [])
+    peer_note = (
+        f"※{'同カテゴリの' if b.get('peer_display_same_category') else ''}{peer_count}施設を比較対象として設定"
+        if peer_count else ""
+    )
+
+    top_row = (
+        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;margin-bottom:1.1cqw;">'
+        + _s1_card_open("🏢", "施設プロフィール", 3) + _s1_profile_body(b) + _S1_CARD_CLOSE
+        + _s1_card_open("💬", "口コミサマリー", 2) + _s1_summary_body(b) + _S1_CARD_CLOSE
+        + _s1_card_open("📈", "口コミ数の推移", 4) + _s1_trend_body(trend) + _S1_CARD_CLOSE
+        + '</div>'
+    )
+
+    peers_head = (
+        f'<div style="flex:1;display:flex;flex-direction:column;border:1px solid {S1_LINE};'
+        f'border-radius:.8cqw;overflow:hidden;background:#fff;min-height:0;">'
+        f'<div style="flex:none;background:{S1_NAVY};color:#fff;padding:.6cqw 1cqw;'
+        'display:flex;align-items:center;gap:.55cqw;font-size:1.05cqw;font-weight:700;">'
+        '<span>👥</span><span>比較対象施設（同カテゴリの類似施設）</span>'
+        f'<span style="margin-left:auto;font-size:.85cqw;font-weight:600;color:#C7CCDA;">{escape(peer_note)}</span></div>'
+        f'<div style="flex:1;min-height:0;padding:.9cqw 1.1cqw;display:flex;">{_s1_peers_body(b)}</div></div>'
+    )
+
+    inner = top_row + peers_head
+    return _canvas_s1(header, inner)
 
 
 def html_overview(b: dict) -> str:

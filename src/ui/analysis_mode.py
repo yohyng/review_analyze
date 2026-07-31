@@ -564,6 +564,13 @@ def render():
                         _prof[_ek] = _en[_ek]
                 if _en.get("category"):
                     _prof["category_auto"] = _en["category"]
+                # 延床はOSM等に無い純粋な手入力項目 → DB保存値（facility.floor_area）を初期値に
+                if not _prof.get("floor_area") and _fid:
+                    _fa_row = conn.execute(
+                        "SELECT floor_area FROM facility WHERE id = ?", (_fid,)
+                    ).fetchone()
+                    if _fa_row and _fa_row["floor_area"]:
+                        _prof["floor_area"] = _fa_row["floor_area"]
                 _prof["_enriched"] = True
             if _prof.get("address"):
                 _bundle["address"] = _prof["address"]
@@ -571,6 +578,8 @@ def render():
                 _bundle["access"] = _prof["access"]
             if _prof.get("open_year"):
                 _bundle["open_year"] = _prof["open_year"]
+            if _prof.get("floor_area"):
+                _bundle["floor_area"] = _prof["floor_area"]
             # 業種: 手入力 > DB > OSM。DBが空のときだけ OSM で補完
             if _prof.get("category"):
                 _bundle["category"] = _prof["category"]
@@ -590,19 +599,19 @@ def render():
                 )
 
             st.markdown(preview.html_disclaimer(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_overview(_bundle), unsafe_allow_html=True)
 
             # ── PROFILE：この場でインライン編集（写真アップ＋各項目の手入力）──── #
             _ekey = f"prof_editing_{_target}"
-            _ka, _kacc, _kopen, _kcat = (f"prof_addr_{_target}", f"prof_acc_{_target}",
-                                         f"prof_open_{_target}", f"prof_cat_{_target}")
+            _ka, _kacc, _kopen, _kcat, _kfa = (f"prof_addr_{_target}", f"prof_acc_{_target}",
+                                               f"prof_open_{_target}", f"prof_cat_{_target}",
+                                               f"prof_floor_{_target}")
             if _kcat not in st.session_state:
                 _init_cat = _bundle.get("category")
                 if not _init_cat or _init_cat == "—":
                     _init_cat = _prof.get("category_auto") or ""
                 st.session_state[_kcat] = "" if (not _init_cat or _init_cat == "—") else _init_cat
             for _k, _v in ((_ka, _prof.get("address")), (_kacc, _prof.get("access")),
-                           (_kopen, _prof.get("open_year"))):
+                           (_kopen, _prof.get("open_year")), (_kfa, _prof.get("floor_area"))):
                 if _k not in st.session_state and _v:
                     st.session_state[_k] = _v
 
@@ -636,9 +645,13 @@ def render():
                         _b1, _b2 = st.columns(2)
                         with _b1:
                             if st.button("💾 保存", key=f"prof_save_{_target}",
-                                         disabled=not (_photo_bytes and _fid), width="stretch"):
-                                db.save_photo(conn, _fid, _photo_bytes, _photo_mime)
-                                _photo_from_db.clear()
+                                         disabled=not _fid, width="stretch",
+                                         help="写真と延床をDB/Turso に永続化します"):
+                                if _photo_bytes:
+                                    db.save_photo(conn, _fid, _photo_bytes, _photo_mime)
+                                    _photo_from_db.clear()
+                                if _prof.get("floor_area"):
+                                    db.upsert_facility(conn, _target, floor_area=_prof["floor_area"])
                                 st.success("DBに保存しました。")
                                 st.rerun()
                         with _b2:
@@ -656,6 +669,8 @@ def render():
                         _prof["address"] = st.text_input("住所", key=_ka)
                         _prof["access"] = st.text_input("アクセス", key=_kacc, placeholder="例: 〇〇駅 徒歩約5分")
                         _prof["open_year"] = st.text_input("開業", key=_kopen, placeholder="例: 2015年")
+                        _prof["floor_area"] = st.text_input("延床", key=_kfa, placeholder="例: 28,500㎡",
+                                                            help="外部データ源が無いため手入力のみ（💾保存でDBに永続化）")
                         if st.button("🗺️ 自動取得（OSM／Wikidata）", key=f"prof_geo_{_target}",
                                      width="stretch",
                                      help="住所・アクセス・業種=OpenStreetMap、開業=Wikidata（生成AI不使用）"):
@@ -682,7 +697,8 @@ def render():
                                      width="stretch", key=f"prof_regen_{_target}"):
                             _info = {"address": _prof.get("address"), "access": _prof.get("access"),
                                      "open_year": _prof.get("open_year"),
-                                     "category": _prof.get("category") or _bundle.get("category")}
+                                     "category": _prof.get("category") or _bundle.get("category"),
+                                     "floor_area": _prof.get("floor_area")}
                             with st.spinner("PPTXを再生成中…"):
                                 _tmp2 = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{_target}.pptx"
                                 report.build_report(
@@ -703,7 +719,7 @@ def render():
                             st.session_state[_ekey] = False
                             st.rerun()
             else:
-                st.markdown(preview.html_profile(_bundle), unsafe_allow_html=True)
+                st.markdown(preview.html_facility_info(_bundle), unsafe_allow_html=True)
                 _pe1, _pe2, _pe3 = st.columns([1, 1.4, 1])
                 with _pe2:
                     if st.button("✏️ PROFILEを編集（写真・住所など）", width="stretch",
@@ -715,9 +731,6 @@ def render():
             st.markdown(preview.html_slide02(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide03(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide04(_bundle), unsafe_allow_html=True)
-            _appendix_html = preview.html_appendix(_bundle)
-            if _appendix_html:
-                st.markdown(_appendix_html, unsafe_allow_html=True)
         else:
             st.warning("分析結果がありません。設定に戻って再実行してください。")
 

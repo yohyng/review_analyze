@@ -456,6 +456,7 @@ def _slide_profile(prs, conn, target_name, info, photo_bytes):
         ["住所", info.get("address") or "—"],
         ["アクセス", info.get("access") or "—"],
         ["開業", info.get("open_year") or "—"],
+        ["延床", info.get("floor_area") or "—"],
         ["口コミ", review_line],
     ]
     _table(slide, Inches(6.2), Inches(1.5), Inches(6.6), Inches(0.75 * len(rows)),

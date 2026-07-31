@@ -5,8 +5,8 @@
 
 - **リポジトリ**: `yohyng/review_analyze`
 - **開発ブランチ**: `claude/serene-babbage-nxvus`
-- **現在バージョン**: `0.21.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
-- **テスト**: `python -m pytest tests/ -q` → **163 passed**（push/PRでCI自動実行）
+- **現在バージョン**: `0.22.0`（`src/config.py` の `APP_VERSION`。変更のたびに上げる運用）
+- **テスト**: `python -m pytest tests/ -q` → **181 passed**（push/PRでCI自動実行）
 - **このドキュメントについて**: ツール非依存の引継ぎ資産。Claude Code / Codex など**複数の開発ツールを都度切り替えて作業する運用**を想定しているため、チャット履歴に頼らずここだけ読めば継続できるよう、機能追加・設計変更のたびに更新すること（§11 変更履歴に1行追記が最低限）。
 
 ---
@@ -85,16 +85,23 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 | スライド | 関数 | 内容 / データ源 |
 |---|---|---|
 | DISCLAIMER | `html_disclaimer` | **免責事項（冒頭1枚目）**。文言は `config.DISCLAIMER_TITLE`/`DISCLAIMER_POINTS`（preview/PPTX共通・1箇所で編集） |
-| OVERVIEW | `html_overview` | 施設名＋KPI4枚（総合評価/比較順位/レビュー件数/ポジティブ率） |
-| PROFILE | `html_profile` | 写真＋基本情報（施設名/業種/住所/アクセス/開業/口コミ） |
+| SLIDE 1「施設・基本情報」 | `html_facility_info` | **v0.22.0で新設**。旧OVERVIEW+PROFILE+APPENDIXを1枚に統合（詳細は直下） |
 | SLIDE 01 | `html_slide01` | 比較分析による特徴点抽出＋インサイト（**topic_score**、単体時は中立50基準） |
 | SLIDE 02 | `html_slide02` | 感情評価・トピック分類（**23観点の静的縦棒**・0-120軸・50中立破線） |
 | SLIDE 03 | `html_slide03` | 数値による比較評価（強み/弱みTOP5・対象 vs 全体平均） |
 | SLIDE 04 | `html_slide04` | **象徴的な口コミ ランキング**（TF-IDF総合＝`text_analysis.symbolic_ranking`） |
-| APPENDIX | `html_appendix` | **比較対象施設一覧**（3カラム・ピア施設名。`bundle["peer_names"]`＝口コミのある比較施設。ピア0件なら空文字を返し非表示） |
 
 - SLIDE 02 は以前 plotly（可変/ツールバー付き）だったが、**他スライドと揃えて静的HTML**に変更（ユーザー要望）。
 - `bundle` は分析時に1回作って `st.session_state["an_preview"]` にキャッシュ（プレビュー再描画を高速化）。
+- `html_overview` / `html_profile` / `html_appendix`（旧OVERVIEW/PROFILE/APPENDIX）は**関数・テストとも削除せず残置**（呼び出し元だけ `html_facility_info` に統一）。
+
+### SLIDE 1「施設・基本情報」（`html_facility_info`・v0.22.0で新設）
+ユーザー提供のモック画像に忠実化した統合スライド。**このスライド限定の新配色**（濃紺 `S1_NAVY` + ピンク `S1_PINK`。他スライドの `ACCENT`=マゼンタ基調には影響しない）。
+- **施設プロフィールカード**: 写真＋住所／開業／**延床**／カテゴリの4行。
+- **口コミサマリーカード**: 総口コミ数／総合評価（★表示）。
+- **口コミ数の推移カード**: `db.monthly_review_counts()` を月次**累積**にした折れ線（SVG polyline、`preserveAspectRatio="none"` + `vector-effect="non-scaling-stroke"` で線幅を保つ）。直近3ヶ月 vs その前3ヶ月の新規件数比較で「継続的に増加傾向／減少傾向／横ばい傾向」を自動判定（`_trend_trend_note`）。データ2点未満は「データが不足しています」。
+- **比較対象施設カード**: `type=comparison` かつ**同カテゴリを優先**して最大5件、`facility_photo` があれば写真表示（無ければプレースホルダー）。同カテゴリ施設が5件に満たなければ他カテゴリで補充（`peer_display_same_category` で注記文言を出し分け）。
+- **延床（floor_area）**: OSM等の外部データ源が存在しない完全手入力項目。`facility.floor_area` カラム（v0.22.0で追加・`_SCHEMA_VERSION=2`）に**永続化**（住所/アクセス/開業とは異なり、既存の「💾 保存」ボタンでDB保存される。他は現状セッションのみ＝§8参照）。PROFILE編集フォーム（`analysis_mode.py`）に入力欄あり。PPTX側 `report._slide_profile` にも延床行を追加済み。
 
 ---
 
@@ -191,6 +198,7 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 - Nominatim は User-Agent の実在連絡先が必要（現在プレースホルダ）。本番投入時は正規のUAに。
 - **KAIZODEの月間上限（`MONTHLY_LIMIT=20,000`）はこのアプリ独自のローカル安全装置**（`kaizode_usage`テーブルで自前カウント）。**KAIZODE本体には対応する概念が無い**ので、KAIZODE側の管理画面等を見ても一致する「上限」表示は出ない。問い合わせが来たらまずここを疑う（§11 v0.21.0の境界値バグのような誤検知もあり得る）。
 - `geocode.search_candidates` / `discover_by_keyword` はUIから外れた未使用コード（§6末尾）。今後完全に使わないと決まったら削除候補。
+- **PROFILE項目の永続化は不揃い**: 住所／アクセス／開業／業種は `st.session_state` のみ（DB非永続・ページ再訪でOSM再取得 or 空）に対し、**延床（floor_area）だけ `facility` テーブルに永続化**（§3・§4）。「延床は保存されるのに住所は保存されない」という一貫性の無さは意図的な差（延床はOSM等の自動補完手段が無い純粋な手入力項目のため）だが、初見だと不整合に見えるので注意。
 
 ---
 
@@ -234,6 +242,14 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
 ---
 
 ## 11. 変更履歴（要約）
+
+- **v0.22.0** 分析結果の1枚目を「施設・基本情報」統合スライドに刷新（詳細は§3末尾）:
+  - ユーザー提供のモック画像に合わせ、旧 **OVERVIEW（KPI4枚）+ PROFILE（写真+基本情報）+ APPENDIX（比較施設一覧）を `html_facility_info()` 1枚に統合**。呼び出し元（`analysis_mode.py`）を新関数に一本化（旧3関数は削除せず残置）。
+  - **このスライド限定の新配色**（濃紺+ピンク）を導入。他スライドの VoiceBAUM 基調（マゼンタ `ACCENT`）とは独立。
+  - **延床（floor_area）を新規追加**: `facility` テーブルに `ALTER TABLE` で新規カラム（`_SCHEMA_VERSION` 1→2）。外部データ源が無い完全手入力項目のため、PROFILE編集フォームの「💾 保存」でDB永続化（住所/アクセス/開業は従来通りセッションのみ・§8に非対称性の注記あり）。PPTX (`report._slide_profile`) にも延床行を追加。
+  - **口コミ数の推移**を新規追加: `db.monthly_review_counts()`（月次件数、`strftime('%Y-%m', review_date)` グルーピング）→ preview側で累積化し、SVG折れ線で描画。直近3ヶ月 vs その前3ヶ月の比較で増減傾向を自動ラベリング。
+  - **比較対象施設に写真を追加**: `type=comparison` から**同カテゴリを優先**して最大5件選び、`facility_photo` があれば表示（無ければプレースホルダー）。
+  - テスト 163→181（`tests/test_facility_info.py` 新設・`tests/test_db.py` に4件追加）。
 
 - **v0.21.0** ヒーロー収集導線を全面刷新（詳細は§6）:
   - v0.17〜v0.20で作った「Nominatim名前検索→候補選択」「Overpassテーマ検索」をUIから撤去し、**「URL/施設名を1つ入力→自動抽出→プレビュー→発注」の1本道**に簡素化（OSMのカバレッジ不足で実用に耐えないと判断）。関数自体（`search_candidates`/`discover_by_keyword`）は削除せず残置。

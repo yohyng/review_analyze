@@ -67,3 +67,68 @@ def test_migration_sets_user_version():
     assert v == db._SCHEMA_VERSION
     db.init_db(conn)                       # idempotent
     assert conn.execute("PRAGMA user_version").fetchone()[0] == db._SCHEMA_VERSION
+
+
+def test_migration_adds_floor_area_to_old_db(tmp_path):
+    """floor_area カラムが無い旧スキーマのDBでも init_db 実行で ALTER 追加される。"""
+    import sqlite3
+    p = tmp_path / "old.db"
+    raw = sqlite3.connect(str(p))
+    raw.execute("""CREATE TABLE facility (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+        type TEXT, category TEXT, general_rating REAL, total_reviews INTEGER,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
+    raw.execute("INSERT INTO facility(name) VALUES ('旧施設')")
+    raw.execute("PRAGMA user_version = 1")
+    raw.commit()
+    raw.close()
+
+    conn = db.get_conn(p)
+    db.init_db(conn)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(facility)").fetchall()]
+    assert "floor_area" in cols
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db._SCHEMA_VERSION
+
+    fid = db.upsert_facility(conn, "旧施設", floor_area="28,500㎡")
+    row = conn.execute("SELECT floor_area FROM facility WHERE id=?", (fid,)).fetchone()
+    assert row["floor_area"] == "28,500㎡"
+
+
+def test_upsert_facility_floor_area_coalesce(tmp_path):
+    """floor_area も他メタデータ同様 COALESCE 更新（None を渡しても既存値を保持）。"""
+    conn = _fresh(tmp_path)
+    fid = db.upsert_facility(conn, "施設X", floor_area="10,000㎡")
+    row = conn.execute("SELECT floor_area FROM facility WHERE id=?", (fid,)).fetchone()
+    assert row["floor_area"] == "10,000㎡"
+
+    db.upsert_facility(conn, "施設X", category="美術館")   # floor_area 未指定
+    row = conn.execute("SELECT floor_area, category FROM facility WHERE id=?", (fid,)).fetchone()
+    assert row["floor_area"] == "10,000㎡"          # 保持される
+    assert row["category"] == "美術館"
+
+
+def test_monthly_review_counts_groups_and_excludes_invalid(tmp_path):
+    conn = _fresh(tmp_path)
+    fid = db.upsert_facility(conn, "施設Y")
+    revs = [
+        review_csv.ParsedReview(review_id=f"r{i}", rating=5, text="x", review_date=d,
+                                reviewer_name="A", local_guide=False, likes=None,
+                                owner_response="", owner_response_date="", subscores=[])
+        for i, d in enumerate([
+            "2025-01-05T00:00:00Z", "2025-01-20T00:00:00Z",
+            "2025-02-01T00:00:00Z",
+            "2025-03-15T00:00:00Z", "2025-03-16T00:00:00Z", "2025-03-17T00:00:00Z",
+            "", None,
+        ])
+    ]
+    db.insert_reviews(conn, fid, revs)
+    assert db.monthly_review_counts(conn, fid) == [
+        ("2025-01", 2), ("2025-02", 1), ("2025-03", 3),
+    ]
+
+
+def test_monthly_review_counts_empty_facility(tmp_path):
+    conn = _fresh(tmp_path)
+    fid = db.upsert_facility(conn, "口コミ無し施設")
+    assert db.monthly_review_counts(conn, fid) == []

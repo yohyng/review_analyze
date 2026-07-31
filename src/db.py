@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS facility (
     category        TEXT,
     general_rating  REAL,                       -- place_general_rating
     total_reviews   INTEGER,                    -- overall_place_reviews
+    floor_area      TEXT,                       -- 延床（手入力・任意の表記のまま保持）
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
@@ -316,7 +317,7 @@ def get_conn(db_path: Optional[Path | str] = None):
 
 
 # Bump when adding an ALTER-based migration in _migrate() below.
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 def _migrate(conn) -> None:
@@ -338,7 +339,11 @@ def _migrate(conn) -> None:
     except Exception:
         return  # backend without PRAGMA support → skip silently
 
-    # (no column migrations yet — mechanism in place for future changes)
+    if ver < 2:
+        try:
+            conn.execute("ALTER TABLE facility ADD COLUMN floor_area TEXT")
+        except Exception:
+            pass  # 既にカラムがある（CREATE TABLE IF NOT EXISTS 側で新規作成済み）等
 
     if ver < _SCHEMA_VERSION:
         try:
@@ -367,6 +372,7 @@ def upsert_facility(
     category: Optional[str] = None,
     general_rating: Optional[float] = None,
     total_reviews: Optional[int] = None,
+    floor_area: Optional[str] = None,
 ) -> int:
     """Insert facility by name, or update its (non-null) metadata. Returns id."""
     name = name.strip()
@@ -378,15 +384,16 @@ def upsert_facility(
                    type           = COALESCE(?, type),
                    category       = COALESCE(?, category),
                    general_rating = COALESCE(?, general_rating),
-                   total_reviews  = COALESCE(?, total_reviews)
+                   total_reviews  = COALESCE(?, total_reviews),
+                   floor_area     = COALESCE(?, floor_area)
                WHERE id = ?""",
-            (ftype, category, general_rating, total_reviews, fid),
+            (ftype, category, general_rating, total_reviews, floor_area, fid),
         )
     else:
         cur = conn.execute(
-            """INSERT INTO facility(name, type, category, general_rating, total_reviews)
-               VALUES (?, ?, ?, ?, ?)""",
-            (name, ftype, category, general_rating, total_reviews),
+            """INSERT INTO facility(name, type, category, general_rating, total_reviews, floor_area)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (name, ftype, category, general_rating, total_reviews, floor_area),
         )
         fid = cur.lastrowid
     conn.commit()
@@ -626,11 +633,26 @@ def facility_stats(conn: sqlite3.Connection, facility_name: str) -> dict | None:
         "avg_rating": round(rev["avg_r"], 2) if rev["avg_r"] else None,
         "general_rating": row["general_rating"],
         "total_reviews_platform": row["total_reviews"],
+        "floor_area": row["floor_area"],
         "score_axes": score_axes,
         "can_analyze": n >= 1,
         "can_tfidf": can_tfidf,
         "can_score": can_score,
     }
+
+
+def monthly_review_counts(conn: sqlite3.Connection, facility_id: int) -> list[tuple[str, int]]:
+    """施設の口コミを投稿月（'YYYY-MM'）でグルーピングした新規件数（非累積）。
+
+    review_date が無い/パース不能な行は除外。月順（昇順）のリストを返す。
+    """
+    rows = conn.execute(
+        "SELECT strftime('%Y-%m', review_date) as ym, COUNT(*) as cnt "
+        "FROM review WHERE facility_id = ? AND review_date IS NOT NULL AND review_date != '' "
+        "GROUP BY ym ORDER BY ym",
+        (facility_id,),
+    ).fetchall()
+    return [(r["ym"], r["cnt"]) for r in rows if r["ym"]]
 
 
 def facility_overview(conn: sqlite3.Connection) -> list[dict]:
