@@ -655,6 +655,27 @@ def monthly_review_counts(conn: sqlite3.Connection, facility_id: int) -> list[tu
     return [(r["ym"], r["cnt"]) for r in rows if r["ym"]]
 
 
+def monthly_rating_counts(
+    conn: sqlite3.Connection, facility_id: int
+) -> list[tuple[str, int, int, int]]:
+    """月別にポジティブ（rating>=4）・ネガティブ（rating<=2）・合計件数を返す。
+
+    Returns [(YYYY-MM, pos_count, neg_count, total), ...] 昇順。
+    rating が NULL / 日付が無い行は除外。
+    """
+    rows = conn.execute(
+        "SELECT strftime('%Y-%m', review_date) as ym, "
+        "SUM(CASE WHEN rating >= 4 THEN 1 ELSE 0 END) as pos, "
+        "SUM(CASE WHEN rating <= 2 THEN 1 ELSE 0 END) as neg, "
+        "COUNT(*) as total "
+        "FROM review WHERE facility_id = ? AND review_date IS NOT NULL AND review_date != '' "
+        "AND rating IS NOT NULL "
+        "GROUP BY ym ORDER BY ym",
+        (facility_id,),
+    ).fetchall()
+    return [(r["ym"], r["pos"], r["neg"], r["total"]) for r in rows if r["ym"]]
+
+
 def facility_overview(conn: sqlite3.Connection) -> list[dict]:
     """One row per facility with ingestion counts, for the dashboard."""
     out = []

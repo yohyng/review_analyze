@@ -212,6 +212,18 @@ def build_bundle(
     topic_names = [t for t in order if t in target_scores]
     topic_values = [round(target_scores[t], 1) for t in topic_names]
 
+    # 比較施設ごとのトピックスコア（{施設名: {トピック: score}}）
+    peer_topic_scores: dict[str, dict[str, float]] = {}
+    for p in peer_valid:
+        if p in valid:
+            peer_topic_scores[p] = {t: round(v, 1) for t, v in valid[p].sentiment_by_topic().items()}
+
+    # 全施設の総合スコア分布（ヒストグラム用）
+    ranking_dist = sorted(fac_overall.values())
+
+    # 月別ポジ/ネガ件数
+    monthly_pos_neg = db.monthly_rating_counts(conn, fid) if fid else []
+
     return {
         "target": target,
         "category": category,
@@ -238,6 +250,11 @@ def build_bundle(
         # APPENDIX — 比較対象（ピア）施設の一覧
         "peer_names": sorted(peer_valid),
         "peer_count": len(peer_valid),
+        # SLIDE 2-5 追加データ
+        "ranking_dist": ranking_dist,
+        "overall_topic": overall_topic,
+        "peer_topic_scores": peer_topic_scores,
+        "monthly_pos_neg": monthly_pos_neg,
         # SLIDE 1（施設・基本情報）— 比較対象カード（同カテゴリ優先・写真つき最大5件）
         "peer_display": peer_display,
         "peer_display_same_category": bool(same_cat),
@@ -868,3 +885,862 @@ def html_appendix(b: dict) -> str:
         f'{items}</div>{over_html}</div>'
     )
     return _canvas(header + card)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 2「市場内ポジション」— ランキング × 分布 × 強み弱みTOP3
+# ═══════════════════════════════════════════════════════════════════════════
+def _score_5pt(v100: float) -> float:
+    """0-100スケールのスコアを5点満点に変換（小数1桁）。"""
+    return round(v100 / 100 * 5, 1)
+
+
+def _slide_header(num: str, title: str, sub: str = "") -> str:
+    sub_html = (
+        f'<div style="font-size:1.1cqw;color:{SUB};margin:.2cqw 0 1.6cqw;">{escape(sub)}</div>'
+        if sub else '<div style="height:1.4cqw"></div>'
+    )
+    return (
+        '<div style="display:flex;align-items:center;gap:1.1cqw;margin-bottom:.1cqw;">'
+        f'<div style="flex:none;width:2.8cqw;height:2.8cqw;background:{ACCENT};border-radius:.55cqw;'
+        'color:#fff;font-weight:800;font-size:1.3cqw;display:flex;align-items:center;'
+        f'justify-content:center;">{escape(num)}</div>'
+        f'<div style="font-size:2.2cqw;font-weight:800;color:{INK};line-height:1.1;">{escape(title)}</div></div>'
+        + sub_html
+    )
+
+
+def html_market_position(b: dict) -> str:
+    """SLIDE 2「市場内ポジション」— 王冠ランキング＋スコア分布＋強み弱みTOP3。"""
+    rank = b.get("rank")
+    total = b.get("total_fac", 0)
+    avg_rating = b.get("avg_rating")
+    overall_score = b.get("overall_sentiment")
+    strengths = (b.get("strengths") or [])[:3]
+    weaknesses = (b.get("weaknesses") or [])[:3]
+    ranking_dist = list(b.get("ranking_dist") or [])
+    target_score = overall_score or 0.0
+
+    # ── ランキングカード (左) ──────────────────────────────────── #
+    pct = round((1 - rank / total) * 100) if (rank and total > 1) else None
+    pct_html = (
+        f'<div style="font-size:1.15cqw;font-weight:700;color:{ACCENT};'
+        f'background:{ACCENT_SOFT};padding:.4cqw .9cqw;border-radius:99px;'
+        f'white-space:nowrap;margin-top:.5cqw;">上位 {pct}%</div>' if pct is not None else ""
+    )
+    star_row = ""
+    if avg_rating is not None:
+        filled = round(avg_rating)
+        star_row = "".join(
+            f'<span style="color:{"#F0A93E" if i < filled else "#DDDDE2"};font-size:2.2cqw;">★</span>'
+            for i in range(5)
+        )
+
+    rank_html = (
+        f'<div style="font-size:7cqw;line-height:1;text-align:center;">🏆</div>'
+        f'<div style="text-align:center;margin-top:.5cqw;">'
+        f'<span style="font-size:5cqw;font-weight:800;color:{INK};line-height:1;">'
+        f'{rank}</span><span style="font-size:1.4cqw;color:{SUB};"> / {total} 施設</span></div>'
+        f'<div style="display:flex;justify-content:center;margin-top:.4cqw;">{star_row}</div>'
+        f'<div style="display:flex;justify-content:center;margin-top:.6cqw;">{pct_html}</div>'
+        f'<div style="text-align:center;margin-top:.8cqw;font-size:1.1cqw;color:{SUB};">総合スコア</div>'
+        f'<div style="text-align:center;font-size:2.4cqw;font-weight:800;color:{ACCENT};">'
+        f'{overall_score if overall_score is not None else "—"}<span style="font-size:1cqw;color:{SUB};">/100</span></div>'
+    ) if rank else (
+        f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.2cqw;">データ不足</div>'
+    )
+
+    left = (
+        f'<div style="width:22cqw;flex:none;display:flex;flex-direction:column;align-items:center;'
+        f'justify-content:center;border:1px solid {CARD_LINE};border-radius:1.2cqw;'
+        f'background:#FAFAF8;padding:1.5cqw 1cqw;">{rank_html}</div>'
+    )
+
+    # ── スコア分布ヒストグラム ──────────────────────────────────── #
+    if ranking_dist:
+        BINS = [(0, 30), (30, 40), (40, 50), (50, 60), (60, 70), (70, 80), (80, 101)]
+        bin_labels = ["〜30", "30-40", "40-50", "50-60", "60-70", "70-80", "80+"]
+        counts = [sum(1 for v in ranking_dist if lo <= v < hi) for lo, hi in BINS]
+        max_c = max(counts) or 1
+        target_bin = next(
+            (i for i, (lo, hi) in enumerate(BINS) if lo <= target_score < hi),
+            len(BINS) - 1,
+        )
+        hist_bars = "".join(
+            f'<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:.2cqw;">'
+            f'<div style="font-size:.72cqw;color:{ACCENT if i == target_bin else SUB};">{c}</div>'
+            f'<div style="width:80%;height:{c/max_c*100:.0f}%;min-height:.3cqw;border-radius:.3cqw .3cqw 0 0;'
+            f'background:{ACCENT if i == target_bin else "#D8D4CE"};"></div>'
+            f'<div style="font-size:.68cqw;color:{ACCENT if i == target_bin else "#A7ABB0"};white-space:nowrap;">'
+            f'{escape(bin_labels[i])}</div></div>'
+            for i, c in enumerate(counts)
+        )
+        hist_html = (
+            f'<div style="flex:none;margin-bottom:.6cqw;font-size:1cqw;font-weight:700;color:{INK};">スコア分布</div>'
+            f'<div style="flex:1;display:flex;align-items:flex-end;gap:.2cqw;min-height:0;'
+            f'border-bottom:1px solid {LINE};">{hist_bars}</div>'
+        )
+    else:
+        hist_html = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1cqw;">分布データなし</div>'
+
+    hist_card = (
+        f'<div style="flex:1;min-width:0;display:flex;flex-direction:column;border:1px solid {CARD_LINE};'
+        f'border-radius:1.2cqw;padding:1.2cqw 1.4cqw;background:#FAFAF8;min-height:0;">{hist_html}</div>'
+    )
+
+    # ── 強み弱みTOP3 ──────────────────────────────────────────── #
+    def _sw3(title: str, rows, col: str) -> str:
+        items = ""
+        for nm, tv, bv, diff in rows:
+            bar_w = min(100, max(5, int(tv)))
+            items += (
+                f'<div style="padding:.4cqw 0;border-top:1px solid {LINE};">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.2cqw;">'
+                f'<span style="font-size:.95cqw;font-weight:600;color:{INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:12cqw;">{escape(str(nm))}</span>'
+                f'<span style="font-size:.95cqw;font-weight:800;color:{col};white-space:nowrap;">{_score_5pt(tv):.1f}pt</span></div>'
+                f'<div style="height:.45cqw;background:#E4E2DC;border-radius:99px;">'
+                f'<div style="width:{bar_w}%;height:100%;background:{col};border-radius:99px;"></div></div></div>'
+            )
+        return (
+            f'<div style="flex:1;min-width:0;border:1px solid {CARD_LINE};border-radius:1.2cqw;'
+            f'padding:1cqw 1.2cqw;background:#FAFAF8;">'
+            f'<div style="font-size:1cqw;font-weight:800;color:{col};margin-bottom:.4cqw;">{escape(title)}</div>'
+            f'{items}</div>'
+        )
+
+    sw_row = (
+        f'<div style="flex:none;display:flex;gap:1.1cqw;margin-top:1.1cqw;">'
+        + _sw3("強み TOP3", strengths, POS)
+        + _sw3("弱み TOP3", weaknesses, NEG)
+        + '</div>'
+    ) if (strengths or weaknesses) else ""
+
+    right = (
+        f'<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1.1cqw;">'
+        f'<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;">{hist_card}</div>'
+        f'{sw_row}</div>'
+    )
+
+    inner = (
+        _slide_header("2", "市場内ポジション", f"比較対象 {total} 施設中の相対評価（感情・トピック統合スコア）")
+        + f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">{left}{right}</div>'
+    )
+    return _canvas(inner)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 2-detail「市場内ポジション（詳細）」
+# ═══════════════════════════════════════════════════════════════════════════
+def html_market_detail(b: dict) -> str:
+    """SLIDE 2-detail: 22観点 折れ線（当施設 vs 同業平均）＋バブルスキャッタ＋市場傾向。"""
+    order = topic_score.TOPIC_ORDER
+    target_scores = {t: v for t, v in zip(b.get("topic_names") or [], b.get("topic_values") or [])}
+    overall_topic = b.get("overall_topic") or {}
+    basis = b.get("baseline_label", "全体平均")
+
+    # ── 折れ線チャート（当施設 vs 同業平均）────────────────────── #
+    topics_avail = [t for t in order if t in target_scores and t in overall_topic]
+    if topics_avail:
+        n = len(topics_avail)
+        t_vals = [target_scores[t] for t in topics_avail]
+        b_vals = [overall_topic[t] for t in topics_avail]
+        all_vals = t_vals + b_vals
+        mn, mx = min(all_vals) - 5, max(all_vals) + 5
+        rng = mx - mn or 1
+
+        def _pts(vals):
+            return " ".join(
+                f"{(i / (n - 1) * 100 if n > 1 else 50):.2f},{(1 - (v - mn) / rng) * 100:.2f}"
+                for i, v in enumerate(vals)
+            )
+
+        xlabs = "".join(
+            f'<div style="position:absolute;left:{(i/(n-1)*100 if n>1 else 50):.1f}%;bottom:0;'
+            'transform:translateX(-50%) rotate(-45deg);transform-origin:top center;'
+            f'font-size:.62cqw;color:#A7ABB0;white-space:nowrap;">{escape(t)}</div>'
+            for i, t in enumerate(topics_avail)
+        )
+        chart_svg = (
+            f'<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="width:100%;height:100%;overflow:visible;">'
+            f'<polyline points="{_pts(b_vals)}" fill="none" stroke="{NEU}" stroke-width="1.4" '
+            'stroke-dasharray="3 2" vector-effect="non-scaling-stroke" stroke-linejoin="round" />'
+            f'<polyline points="{_pts(t_vals)}" fill="none" stroke="{ACCENT}" stroke-width="1.8" '
+            'vector-effect="non-scaling-stroke" stroke-linejoin="round" />'
+            + "".join(
+                f'<circle cx="{(i/(n-1)*100 if n>1 else 50):.2f}" cy="{(1-(v-mn)/rng)*100:.2f}" '
+                f'r="1.5" fill="{ACCENT}" vector-effect="non-scaling-stroke" />'
+                for i, v in enumerate(t_vals)
+            )
+            + '</svg>'
+        )
+        chart = (
+            '<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
+            f'<div style="flex:1;position:relative;min-height:0;border-bottom:1px solid {LINE};">'
+            f'<div style="position:absolute;inset:0;">{chart_svg}</div></div>'
+            f'<div style="position:relative;height:5.5cqw;">{xlabs}</div>'
+            f'<div style="font-size:.85cqw;color:{SUB};margin-top:.3cqw;">'
+            f'<span style="color:{ACCENT};font-weight:700;">━</span> 当施設　'
+            f'<span style="color:{NEU};font-weight:700;">╌</span> {escape(basis)}</div>'
+            '</div>'
+        )
+    else:
+        chart = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.1cqw;">データ不足</div>'
+
+    left = (
+        f'<div style="flex:1;min-width:0;display:flex;flex-direction:column;border:1px solid {CARD_LINE};'
+        f'border-radius:1.1cqw;padding:1.1cqw 1.3cqw;min-height:0;">'
+        f'<div style="flex:none;font-size:1.05cqw;font-weight:700;color:{INK};margin-bottom:.6cqw;">22観点スコア推移（vs {escape(basis)}）</div>'
+        f'{chart}</div>'
+    )
+
+    # ── バブルスキャッタ（体験満足度 × 推奨意向 × 再訪意向）──── #
+    AXES = ["体験満足度", "推奨意向", "再訪意向"]
+    peer_ts = b.get("peer_topic_scores") or {}
+    target_name = b.get("target", "対象施設")
+
+    def _get_xyz(scores: dict) -> tuple:
+        x = scores.get(AXES[0], 50.0)
+        y = scores.get(AXES[1], 50.0)
+        z = scores.get(AXES[2], 50.0)
+        return x, y, z
+
+    tx, ty, tz = _get_xyz(target_scores)
+    bubble_items = [(target_name, tx, ty, tz, ACCENT, True)]
+    for pnm, psc in peer_ts.items():
+        px, py, pz = _get_xyz(psc)
+        bubble_items.append((pnm, px, py, pz, "#A7ABB0", False))
+
+    all_x = [v[1] for v in bubble_items]
+    all_y = [v[2] for v in bubble_items]
+    xmn, xmx = min(all_x) - 5, max(all_x) + 5
+    ymn, ymx = min(all_y) - 5, max(all_y) + 5
+    xrng, yrng = (xmx - xmn) or 1, (ymx - ymn) or 1
+
+    bubbles = ""
+    for nm, bx, by, bz, col, is_target in bubble_items:
+        cx = (bx - xmn) / xrng * 80 + 10
+        cy = (1 - (by - ymn) / yrng) * 80 + 10
+        r = max(2, min(8, bz / 100 * 8 + 2))
+        bubbles += (
+            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" '
+            f'fill="{col}" fill-opacity="{"0.85" if is_target else "0.4"}" '
+            'vector-effect="non-scaling-stroke" />'
+        )
+        if is_target:
+            bubbles += (
+                f'<text x="{cx:.1f}" y="{max(5, cy-r-1):.1f}" text-anchor="middle" '
+                f'font-size="4" fill="{ACCENT}" font-weight="bold">{escape(_clip(nm, 8))}</text>'
+            )
+
+    scatter = (
+        f'<div style="flex:none;border:1px solid {CARD_LINE};border-radius:1.1cqw;'
+        f'padding:1cqw 1.3cqw;background:#FAFAF8;">'
+        f'<div style="font-size:1cqw;font-weight:700;color:{INK};margin-bottom:.5cqw;">'
+        f'{escape(AXES[0])} × {escape(AXES[1])}（バブル={escape(AXES[2])}）</div>'
+        f'<svg viewBox="0 0 100 100" style="width:100%;aspect-ratio:2/1;">'
+        f'{bubbles}'
+        f'<text x="50" y="99" text-anchor="middle" font-size="4" fill="{SUB}">{escape(AXES[0])}</text>'
+        f'<text x="2" y="50" text-anchor="middle" font-size="4" fill="{SUB}" '
+        f'transform="rotate(-90 2 50)">{escape(AXES[1])}</text>'
+        '</svg></div>'
+    )
+
+    # ── 市場傾向（評価されやすい / 課題 上位5）──────────────────── #
+    all_peer_topics: dict[str, list[float]] = {}
+    for psc in peer_ts.values():
+        for t, v in psc.items():
+            all_peer_topics.setdefault(t, []).append(v)
+    mkt_scores = {t: sum(vs) / len(vs) for t, vs in all_peer_topics.items() if vs}
+    if not mkt_scores and overall_topic:
+        mkt_scores = overall_topic
+    top_mkt = sorted(mkt_scores.items(), key=lambda x: -x[1])[:4]
+    bot_mkt = sorted(mkt_scores.items(), key=lambda x: x[1])[:4]
+
+    def _mkt_rows(items, col: str) -> str:
+        return "".join(
+            f'<div style="display:flex;justify-content:space-between;padding:.3cqw 0;'
+            f'border-bottom:1px solid {LINE};font-size:.9cqw;">'
+            f'<span style="color:{INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:10cqw;">'
+            f'{escape(t)}</span>'
+            f'<span style="color:{col};font-weight:700;white-space:nowrap;">{_score_5pt(v):.1f}pt</span></div>'
+            for t, v in items
+        )
+
+    mkt_card = (
+        f'<div style="flex:none;border:1px solid {CARD_LINE};border-radius:1.1cqw;'
+        f'padding:.9cqw 1.1cqw;background:#FAFAF8;">'
+        f'<div style="font-size:.95cqw;font-weight:700;color:{INK};margin-bottom:.4cqw;">市場の強み傾向（競合平均）</div>'
+        + _mkt_rows(top_mkt, POS)
+        + f'<div style="font-size:.95cqw;font-weight:700;color:{INK};margin:.6cqw 0 .4cqw;">市場の課題傾向</div>'
+        + _mkt_rows(bot_mkt, NEG)
+        + '</div>'
+    )
+
+    right = (
+        f'<div style="width:32cqw;flex:none;display:flex;flex-direction:column;gap:1cqw;">'
+        f'{scatter}{mkt_card}</div>'
+    )
+
+    inner = (
+        _slide_header("2", "市場内ポジション（詳細）", "22観点スコア推移と体験系3軸の市場布置")
+        + f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">{left}{right}</div>'
+    )
+    return _canvas(inner)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 3「指定競合との比較」
+# ═══════════════════════════════════════════════════════════════════════════
+def html_competitor_compare(b: dict) -> str:
+    """SLIDE 3: 22観点の複数施設折れ線＋ヒートマップ表＋強み弱みリスト。"""
+    order = topic_score.TOPIC_ORDER
+    target_name = b.get("target", "対象施設")
+    target_scores = {t: v for t, v in zip(b.get("topic_names") or [], b.get("topic_values") or [])}
+    peer_ts = b.get("peer_topic_scores") or {}
+    basis = b.get("baseline_label", "全体平均")
+
+    all_facilities = {target_name: target_scores, **peer_ts}
+    FAC_COLORS = [ACCENT, "#2D7DD2", "#3BB273", "#E66000", "#8338EC", "#FF6B6B"]
+    fac_list = list(all_facilities.keys())
+
+    topics_avail = [t for t in order if t in target_scores]
+    n = len(topics_avail)
+
+    # ── 多施設折れ線チャート ──────────────────────────────────── #
+    if topics_avail:
+        all_vals = [v for sc in all_facilities.values() for t, v in sc.items() if t in topics_avail]
+        mn, mx = (min(all_vals) - 5) if all_vals else 30, (max(all_vals) + 5) if all_vals else 90
+        rng = mx - mn or 1
+
+        def _line(scores, col, is_target):
+            vals = [scores.get(t, 50.0) for t in topics_avail]
+            pts = " ".join(
+                f"{(i/(n-1)*100 if n>1 else 50):.2f},{(1-(v-mn)/rng)*100:.2f}"
+                for i, v in enumerate(vals)
+            )
+            sw = "2" if is_target else "1.2"
+            da = "" if is_target else 'stroke-dasharray="3 2"'
+            return (
+                f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="{sw}" '
+                f'{da} stroke-linejoin="round" vector-effect="non-scaling-stroke" />'
+            )
+
+        svglines = "".join(
+            _line(sc, FAC_COLORS[min(i, len(FAC_COLORS)-1)], nm == target_name)
+            for i, (nm, sc) in enumerate(all_facilities.items())
+        )
+        xlabs = "".join(
+            f'<div style="position:absolute;left:{(i/(n-1)*100 if n>1 else 50):.1f}%;bottom:0;'
+            'transform:translateX(-50%) rotate(-40deg);transform-origin:top center;'
+            f'font-size:.55cqw;color:#A7ABB0;white-space:nowrap;">{escape(t)}</div>'
+            for i, t in enumerate(topics_avail)
+        )
+        legend = "".join(
+            f'<span style="margin-right:.9cqw;font-size:.8cqw;white-space:nowrap;">'
+            f'<span style="color:{FAC_COLORS[min(i, len(FAC_COLORS)-1)]};font-weight:800;">─</span> '
+            f'{escape(_clip(nm, 10))}</span>'
+            for i, nm in enumerate(fac_list)
+        )
+        chart = (
+            '<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
+            f'<div style="flex:1;position:relative;border-bottom:1px solid {LINE};">'
+            f'<div style="position:absolute;inset:0;">'
+            f'<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="width:100%;height:100%;overflow:visible;">'
+            f'{svglines}</svg></div></div>'
+            f'<div style="position:relative;height:5cqw;">{xlabs}</div>'
+            f'<div style="flex:none;margin-top:.3cqw;">{legend}</div>'
+            '</div>'
+        )
+    else:
+        chart = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.1cqw;">データ不足</div>'
+
+    # ── ヒートマップ表（上位8トピックのみ）──────────────────── #
+    show_topics = topics_avail[:8]
+    all_t_vals = [sc.get(t, 50.0) for sc in all_facilities.values() for t in show_topics]
+    t_min, t_max = (min(all_t_vals), max(all_t_vals)) if all_t_vals else (0, 100)
+    t_rng = t_max - t_min or 1
+
+    def _heat_col(v):
+        ratio = (v - t_min) / t_rng
+        r = int(199 + (79 - 199) * ratio)
+        g = int(193 + (138 - 193) * ratio)
+        b_ = int(182 + (107 - 182) * ratio)
+        return f"rgb({r},{g},{b_})"
+
+    header_row = (
+        f'<div style="display:flex;background:#F0EFE9;font-size:.75cqw;font-weight:700;color:{SUB};">'
+        f'<div style="width:9cqw;flex:none;padding:.4cqw .5cqw;">施設</div>'
+        + "".join(
+            f'<div style="flex:1;padding:.4cqw .2cqw;text-align:center;white-space:nowrap;'
+            f'overflow:hidden;text-overflow:ellipsis;">{escape(t[:5])}</div>'
+            for t in show_topics
+        )
+        + '</div>'
+    )
+    data_rows = ""
+    for i, (nm, sc) in enumerate(all_facilities.items()):
+        col = FAC_COLORS[min(i, len(FAC_COLORS)-1)]
+        data_rows += (
+            f'<div style="display:flex;border-top:1px solid {LINE};">'
+            f'<div style="width:9cqw;flex:none;padding:.35cqw .5cqw;font-size:.75cqw;font-weight:700;'
+            f'color:{col};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(_clip(nm, 8))}</div>'
+            + "".join(
+                f'<div style="flex:1;background:{_heat_col(sc.get(t, 50.0))};text-align:center;'
+                f'padding:.35cqw .1cqw;font-size:.75cqw;font-weight:700;color:{INK};">'
+                f'{_score_5pt(sc.get(t, 50.0)):.1f}</div>'
+                for t in show_topics
+            )
+            + '</div>'
+        )
+    heatmap = (
+        f'<div style="flex:none;border:1px solid {CARD_LINE};border-radius:.8cqw;overflow:hidden;">'
+        f'{header_row}{data_rows}</div>'
+    )
+
+    # ── 自施設だけの強み / 競合に負けている項目 ─────────────────── #
+    def _comp_diff_lists() -> tuple[list, list]:
+        if not peer_ts:
+            return [], []
+        strengths_vs, weaknesses_vs = [], []
+        for t in topics_avail:
+            tv = target_scores.get(t, 50.0)
+            peer_vals = [psc.get(t, 50.0) for psc in peer_ts.values()]
+            if not peer_vals:
+                continue
+            peer_avg = sum(peer_vals) / len(peer_vals)
+            diff = tv - peer_avg
+            if diff > 0:
+                strengths_vs.append((t, tv, peer_avg, diff))
+            else:
+                weaknesses_vs.append((t, tv, peer_avg, diff))
+        strengths_vs.sort(key=lambda x: -x[3])
+        weaknesses_vs.sort(key=lambda x: x[3])
+        return strengths_vs[:4], weaknesses_vs[:4]
+
+    sv, wv = _comp_diff_lists()
+
+    def _diff_list(title, rows, col) -> str:
+        items = "".join(
+            f'<div style="display:flex;justify-content:space-between;padding:.35cqw 0;'
+            f'border-bottom:1px solid {LINE};font-size:.88cqw;">'
+            f'<span style="color:{INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+            f'max-width:11cqw;">{escape(t)}</span>'
+            f'<span style="color:{col};font-weight:700;white-space:nowrap;">{d:+.1f}pt</span></div>'
+            for t, tv, bv, d in rows
+        )
+        return (
+            f'<div style="flex:1;min-width:0;">'
+            f'<div style="font-size:.95cqw;font-weight:800;color:{col};margin-bottom:.3cqw;">{escape(title)}</div>'
+            f'{items}</div>'
+        )
+
+    diff_panel = (
+        f'<div style="flex:none;display:flex;gap:1.1cqw;margin-top:1cqw;">'
+        + _diff_list("自施設だけの強み", sv, POS)
+        + _diff_list("競合に負けている項目", wv, NEG)
+        + '</div>'
+    ) if (sv or wv) else ""
+
+    right = (
+        f'<div style="width:28cqw;flex:none;display:flex;flex-direction:column;gap:.9cqw;">'
+        f'{heatmap}{diff_panel}</div>'
+    )
+
+    inner = (
+        _slide_header("3", "指定競合との比較", "22観点スコアの多施設比較（5点満点換算）")
+        + f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">'
+        f'<div style="flex:1;min-width:0;display:flex;flex-direction:column;">{chart}</div>'
+        f'{right}</div>'
+    )
+    return _canvas(inner)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 3-detail「指定競合との比較（詳細）」
+# ═══════════════════════════════════════════════════════════════════════════
+def html_competitor_detail(b: dict) -> str:
+    """SLIDE 3-detail: バブルスキャッタ（全施設）＋指定競合の傾向リスト。"""
+    order = topic_score.TOPIC_ORDER
+    target_name = b.get("target", "対象施設")
+    target_scores = {t: v for t, v in zip(b.get("topic_names") or [], b.get("topic_values") or [])}
+    peer_ts = b.get("peer_topic_scores") or {}
+    FAC_COLORS = [ACCENT, "#2D7DD2", "#3BB273", "#E66000", "#8338EC", "#FF6B6B"]
+    AXES = ["体験満足度", "推奨意向", "再訪意向"]
+
+    def _get3(scores: dict) -> tuple:
+        return scores.get(AXES[0], 50.0), scores.get(AXES[1], 50.0), scores.get(AXES[2], 50.0)
+
+    all_fac = [(target_name, target_scores, ACCENT, True)] + [
+        (nm, sc, FAC_COLORS[min(i + 1, len(FAC_COLORS) - 1)], False)
+        for i, (nm, sc) in enumerate(peer_ts.items())
+    ]
+    all_x = [_get3(sc)[0] for _, sc, _, _ in all_fac]
+    all_y = [_get3(sc)[1] for _, sc, _, _ in all_fac]
+    xmn, xmx = min(all_x) - 8, max(all_x) + 8
+    ymn, ymx = min(all_y) - 8, max(all_y) + 8
+    xrng, yrng = (xmx - xmn) or 1, (ymx - ymn) or 1
+
+    bubbles = ""
+    for nm, sc, col, is_target in all_fac:
+        bx, by, bz = _get3(sc)
+        cx = (bx - xmn) / xrng * 80 + 10
+        cy = (1 - (by - ymn) / yrng) * 80 + 10
+        r = max(3, min(10, bz / 100 * 10 + 2))
+        op = "0.85" if is_target else "0.45"
+        bubbles += (
+            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" '
+            f'fill="{col}" fill-opacity="{op}" vector-effect="non-scaling-stroke" />'
+            f'<text x="{cx:.1f}" y="{max(4, cy-r-1):.1f}" text-anchor="middle" '
+            f'font-size="{"4.5" if is_target else "3.5"}" fill="{col}" font-weight="bold">{escape(_clip(nm, 8))}</text>'
+        )
+
+    gridlines = (
+        f'<line x1="10" y1="50" x2="90" y2="50" stroke="{NEU}" stroke-width="0.5" stroke-dasharray="2 2" />'
+        f'<line x1="50" y1="10" x2="50" y2="90" stroke="{NEU}" stroke-width="0.5" stroke-dasharray="2 2" />'
+    )
+
+    scatter = (
+        f'<div style="flex:1;border:1px solid {CARD_LINE};border-radius:1.1cqw;padding:1.1cqw;min-height:0;">'
+        f'<div style="font-size:1.05cqw;font-weight:700;color:{INK};margin-bottom:.6cqw;">'
+        f'{escape(AXES[0])} × {escape(AXES[1])}　バブルサイズ={escape(AXES[2])}</div>'
+        f'<svg viewBox="0 0 100 100" style="width:100%;height:calc(100% - 3cqw);">'
+        f'{gridlines}{bubbles}'
+        f'<text x="50" y="99" text-anchor="middle" font-size="3.5" fill="{SUB}">{escape(AXES[0])}</text>'
+        f'<text x="2.5" y="50" text-anchor="middle" font-size="3.5" fill="{SUB}" transform="rotate(-90 2.5 50)">{escape(AXES[1])}</text>'
+        '</svg></div>'
+    )
+
+    # ── 指定競合の傾向（各競合の強み/弱み上位3）────────────────── #
+    trend_panels = ""
+    for i, (pnm, psc) in enumerate(list(peer_ts.items())[:3]):
+        col = FAC_COLORS[min(i + 1, len(FAC_COLORS) - 1)]
+        diffs = sorted(
+            [(t, psc.get(t, 50.0) - target_scores.get(t, 50.0)) for t in order if t in psc and t in target_scores],
+            key=lambda x: -x[1],
+        )
+        top = diffs[:2]
+        bot = diffs[-2:] if len(diffs) >= 2 else []
+        rows = "".join(
+            f'<div style="font-size:.8cqw;padding:.25cqw 0;border-bottom:1px solid {LINE};'
+            'display:flex;justify-content:space-between;">'
+            f'<span style="color:{INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:10cqw;">{escape(t)}</span>'
+            f'<span style="color:{POS if d>0 else NEG};font-weight:700;white-space:nowrap;">{d:+.1f}</span></div>'
+            for t, d in (top + [(t, d) for t, d in bot if (t, d) not in top])[:4]
+        )
+        trend_panels += (
+            f'<div style="flex:1;min-width:0;border:1px solid {CARD_LINE};border-radius:.9cqw;'
+            f'padding:.8cqw 1cqw;background:#FAFAF8;">'
+            f'<div style="font-size:.9cqw;font-weight:800;color:{col};margin-bottom:.4cqw;'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(_clip(pnm, 10))}</div>'
+            f'<div style="font-size:.75cqw;color:{SUB};margin-bottom:.3cqw;">vs 当施設</div>'
+            f'{rows}</div>'
+        )
+
+    right = (
+        f'<div style="width:36cqw;flex:none;display:flex;flex-direction:column;gap:1cqw;">'
+        f'<div style="flex:none;font-size:1.05cqw;font-weight:700;color:{INK};">指定競合の傾向（vs 当施設）</div>'
+        f'<div style="flex:none;display:flex;gap:.9cqw;">{trend_panels}</div>'
+        '</div>'
+    ) if peer_ts else ""
+
+    inner = (
+        _slide_header("3", "指定競合との比較（詳細）", "体験3軸の市場布置と競合別傾向分析")
+        + f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">{scatter}{right}</div>'
+    )
+    return _canvas(inner)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 4「時間軸分析」
+# ═══════════════════════════════════════════════════════════════════════════
+def html_timeline(b: dict) -> str:
+    """SLIDE 4: 月別ポジ/ネガ棒グラフ＋差分折れ線＋変化点カード。"""
+    monthly = list(b.get("monthly_pos_neg") or [])
+    target_name = b.get("target", "対象施設")
+
+    if len(monthly) < 2:
+        body = (
+            f'<div style="flex:1;display:flex;align-items:center;justify-content:center;'
+            f'color:{SUB};font-size:1.3cqw;">月別評価データが不足しています（最低2ヶ月必要）</div>'
+        )
+    else:
+        n = len(monthly)
+        months = [r[0] for r in monthly]
+        pos_counts = [r[1] for r in monthly]
+        neg_counts = [r[2] for r in monthly]
+        totals = [r[3] for r in monthly]
+        pos_rates = [p / t * 100 if t else 0 for p, t in zip(pos_counts, totals)]
+        neg_rates = [n / t * 100 if t else 0 for n, t in zip(neg_counts, totals)]
+        max_rate = max(max(pos_rates), max(neg_rates), 1)
+
+        BAR_W = 60  # SVGパーセント単位での棒幅
+        bars = ""
+        for i, (pr, nr) in enumerate(zip(pos_rates, neg_rates)):
+            x_center = i / (n - 1) * 90 + 5 if n > 1 else 50
+            bw = 90 / n * 0.6
+            ph = pr / max_rate * 45
+            nh = nr / max_rate * 45
+            bars += (
+                f'<rect x="{x_center - bw:.1f}" y="{50 - ph:.1f}" width="{bw:.1f}" height="{ph:.1f}" '
+                f'fill="{POS}" fill-opacity="0.75" rx="0.5" />'
+                f'<rect x="{x_center}" y="50" width="{bw:.1f}" height="{nh:.1f}" '
+                f'fill="{NEG}" fill-opacity="0.75" rx="0.5" />'
+            )
+
+        # 差分折れ線（pos_rate - neg_rate）
+        diffs = [p - n for p, n in zip(pos_rates, neg_rates)]
+        max_abs = max(abs(d) for d in diffs) or 1
+        diff_pts = " ".join(
+            f"{(i/(n-1)*90+5 if n>1 else 50):.1f},{(50 - d/max_abs*40):.1f}"
+            for i, d in enumerate(diffs)
+        )
+
+        step = max(1, (n - 1) // 5) if n > 1 else 1
+        xlabs = "".join(
+            f'<text x="{(i/(n-1)*90+5 if n>1 else 50):.1f}" y="98" text-anchor="middle" '
+            f'font-size="3" fill="{SUB}">{escape(months[i])}</text>'
+            for i in range(0, n, step)
+        )
+
+        chart = (
+            f'<div style="flex:1;position:relative;min-height:0;border-bottom:1px solid {LINE};">'
+            f'<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="width:100%;height:100%;overflow:visible;">'
+            f'<line x1="0" y1="50" x2="100" y2="50" stroke="{LINE}" stroke-width="0.5" />'
+            f'{bars}'
+            f'<polyline points="{diff_pts}" fill="none" stroke="{ACCENT}" stroke-width="1.5" '
+            'stroke-linejoin="round" vector-effect="non-scaling-stroke" />'
+            + "".join(
+                f'<circle cx="{(i/(n-1)*90+5 if n>1 else 50):.1f}" cy="{(50-d/max_abs*40):.1f}" '
+                f'r="1.2" fill="{ACCENT}" vector-effect="non-scaling-stroke" />'
+                for i, d in enumerate(diffs)
+            )
+            + f'{xlabs}'
+            '</svg></div>'
+        )
+
+        legend = (
+            f'<div style="flex:none;margin-top:.5cqw;font-size:.9cqw;color:{SUB};">'
+            f'<span style="color:{POS};font-weight:700;">■</span> ポジティブ率　'
+            f'<span style="color:{NEG};font-weight:700;">■</span> ネガティブ率　'
+            f'<span style="color:{ACCENT};font-weight:700;">─</span> 差分（ポジ－ネガ）</div>'
+        )
+
+        # 変化点カード（差分の変動が大きかった月 TOP3）
+        if len(diffs) >= 2:
+            diff_changes = [(months[i], diffs[i] - diffs[i-1], pos_rates[i], neg_rates[i])
+                            for i in range(1, n)]
+            diff_changes.sort(key=lambda x: -abs(x[1]))
+            top_changes = diff_changes[:3]
+        else:
+            top_changes = []
+
+        change_cards = ""
+        for ym, delta, pr, nr in top_changes:
+            col = POS if delta > 0 else NEG
+            sign = "▲" if delta > 0 else "▼"
+            change_cards += (
+                f'<div style="flex:1;border:1px solid {CARD_LINE};border-radius:1cqw;padding:.8cqw 1cqw;background:#FAFAF8;">'
+                f'<div style="font-size:.85cqw;color:{SUB};margin-bottom:.3cqw;">{escape(ym)}</div>'
+                f'<div style="font-size:1.5cqw;font-weight:800;color:{col};">{sign}{abs(delta):.0f}pt</div>'
+                f'<div style="font-size:.75cqw;color:{SUB};margin-top:.2cqw;">ポジ {pr:.0f}% / ネガ {nr:.0f}%</div>'
+                '</div>'
+            )
+        cards_row = (
+            f'<div style="flex:none;display:flex;gap:.9cqw;margin-top:.9cqw;">{change_cards}</div>'
+        ) if change_cards else ""
+
+        body = (
+            f'<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
+            f'{chart}{legend}{cards_row}</div>'
+        )
+
+    inner = (
+        _slide_header("4", "時間軸分析", "月別ポジティブ・ネガティブ評価の推移と変化点")
+        + body
+    )
+    return _canvas(inner)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 5「空間・体験分析」
+# ═══════════════════════════════════════════════════════════════════════════
+_RADAR_TOPICS = [
+    "空間の機能性", "空間の質感", "空間の快適性", "空間の感情的インパクト",
+    "美的完成度", "提供内容の品質", "スタッフ対応", "体験満足度",
+    "推奨意向", "再訪意向",
+]
+
+
+def _radar_svg(datasets: list[tuple[str, dict, str]], topics: list[str]) -> str:
+    """SVGレーダーチャート。datasets = [(label, {topic: score_0_100}, color)]"""
+    import math
+    n = len(topics)
+    cx, cy, r = 50, 50, 38
+    angle = [math.pi / 2 + 2 * math.pi * i / n for i in range(n)]
+
+    # グリッド (3段)
+    grid = ""
+    for frac in (0.33, 0.67, 1.0):
+        pts = " ".join(
+            f"{cx + math.cos(a) * r * frac:.1f},{cy - math.sin(a) * r * frac:.1f}"
+            for a in angle
+        )
+        grid += f'<polygon points="{pts}" fill="none" stroke="{LINE}" stroke-width="0.5" />'
+
+    # 軸線
+    axes = "".join(
+        f'<line x1="{cx:.1f}" y1="{cy:.1f}" x2="{cx + math.cos(a)*r:.1f}" y2="{cy - math.sin(a)*r:.1f}" '
+        f'stroke="{LINE}" stroke-width="0.4" />'
+        for a in angle
+    )
+
+    # ラベル
+    labels = "".join(
+        (lambda lx, ly, t:
+         f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="{"start" if lx > cx+2 else ("end" if lx < cx-2 else "middle")}" '
+         f'dominant-baseline="{"hanging" if ly > cy+2 else ("auto" if ly < cy-2 else "middle")}" '
+         f'font-size="3.5" fill="{SUB}">{escape(t[:6])}</text>'
+         )(cx + math.cos(a) * (r + 8), cy - math.sin(a) * (r + 8), t)
+        for a, t in zip(angle, topics)
+    )
+
+    # データ系列
+    series_colors = [ACCENT, "#A7ABB0", NEU]
+    series = ""
+    legend = ""
+    for (label, scores, col), sc_col in zip(datasets, series_colors):
+        vals = [min(100, max(0, scores.get(t, 50.0))) for t in topics]
+        pts = " ".join(
+            f"{cx + math.cos(a) * r * v/100:.1f},{cy - math.sin(a) * r * v/100:.1f}"
+            for a, v in zip(angle, vals)
+        )
+        series += (
+            f'<polygon points="{pts}" fill="{sc_col}" fill-opacity="0.12" '
+            f'stroke="{sc_col}" stroke-width="1.5" vector-effect="non-scaling-stroke" />'
+        )
+        legend += (
+            f'<text x="2" y="{88 + datasets.index((label, scores, col)) * 5:.0f}" '
+            f'font-size="3.5" fill="{sc_col}" font-weight="bold">— {escape(_clip(label, 8))}</text>'
+        )
+
+    return (
+        '<svg viewBox="0 0 100 100" style="width:100%;height:100%;">'
+        f'{grid}{axes}{labels}{series}{legend}'
+        '</svg>'
+    )
+
+
+def html_space_experience(b: dict) -> str:
+    """SLIDE 5「空間・体験分析」— レーダーチャート＋データ表＋4インサイトカード。"""
+    target_name = b.get("target", "対象施設")
+    target_scores = {t: v for t, v in zip(b.get("topic_names") or [], b.get("topic_values") or [])}
+    peer_ts = b.get("peer_topic_scores") or {}
+    overall_topic = b.get("overall_topic") or {}
+
+    # 競合平均
+    peer_avg: dict[str, float] = {}
+    if peer_ts:
+        for t in _RADAR_TOPICS:
+            vals = [sc.get(t, 50.0) for sc in peer_ts.values() if t in sc]
+            if vals:
+                peer_avg[t] = sum(vals) / len(vals)
+
+    datasets: list = [(target_name, target_scores, ACCENT)]
+    if peer_avg:
+        datasets.append(("競合平均", peer_avg, "#A7ABB0"))
+    if overall_topic:
+        datasets.append(("同業平均", overall_topic, NEU))
+
+    radar = (
+        f'<div style="flex:none;width:36cqw;aspect-ratio:1/1;">'
+        + _radar_svg(datasets, _RADAR_TOPICS)
+        + '</div>'
+    )
+
+    # データ表（全22観点）
+    order = topic_score.TOPIC_ORDER
+    table_rows = ""
+    for t in order:
+        tv = target_scores.get(t)
+        ov = overall_topic.get(t)
+        if tv is None:
+            continue
+        diff = (tv - ov) if ov is not None else None
+        dcol = (POS if diff and diff >= 0 else NEG) if diff is not None else SUB
+        diff_str = f"{diff:+.1f}" if diff is not None else "—"
+        table_rows += (
+            f'<div style="display:flex;align-items:center;border-bottom:1px solid {LINE};'
+            f'padding:.3cqw 0;font-size:.85cqw;">'
+            f'<div style="flex:2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:{INK};">'
+            f'{escape(t)}</div>'
+            f'<div style="flex:1;text-align:right;font-weight:700;color:{INK};">{_score_5pt(tv):.1f}</div>'
+            f'<div style="flex:1;text-align:right;color:{SUB};">'
+            f'{f"{_score_5pt(ov):.1f}" if ov is not None else "—"}</div>'
+            f'<div style="flex:1;text-align:right;font-weight:700;color:{dcol};">{diff_str}</div></div>'
+        )
+    table_header = (
+        f'<div style="display:flex;background:#F0EFE9;font-size:.78cqw;font-weight:700;color:{SUB};'
+        f'padding:.35cqw 0;border-bottom:2px solid {LINE};">'
+        '<div style="flex:2;overflow:hidden;">観点</div>'
+        '<div style="flex:1;text-align:right;">当施設</div>'
+        '<div style="flex:1;text-align:right;">平均</div>'
+        '<div style="flex:1;text-align:right;">差分</div></div>'
+    )
+    table = (
+        f'<div style="flex:1;min-width:0;display:flex;flex-direction:column;border:1px solid {CARD_LINE};'
+        f'border-radius:.9cqw;overflow:hidden;padding:.6cqw .9cqw;">'
+        f'{table_header}'
+        f'<div style="flex:1;overflow-y:auto;min-height:0;">{table_rows}</div>'
+        '</div>'
+    )
+
+    # 4インサイトカード
+    strengths = (b.get("strengths") or [])
+    weaknesses = (b.get("weaknesses") or [])
+    overall_score = b.get("overall_sentiment")
+    rank = b.get("rank")
+    total = b.get("total_fac", 0)
+
+    radar_top = max(
+        ((t, v) for t, v in target_scores.items() if t in _RADAR_TOPICS),
+        key=lambda x: x[1], default=(None, None)
+    )
+    radar_bot = min(
+        ((t, v) for t, v in target_scores.items() if t in _RADAR_TOPICS),
+        key=lambda x: x[1], default=(None, None)
+    )
+
+    cards_data = [
+        ("空間の強み", f"{radar_top[0] or '—'}\n{_score_5pt(radar_top[1]):.1f}pt" if radar_top[0] else "—", POS),
+        ("空間の課題", f"{radar_bot[0] or '—'}\n{_score_5pt(radar_bot[1]):.1f}pt" if radar_bot[0] else "—", NEG),
+        ("総合スコア", f"{overall_score}/100\n{rank}位/{total}施設" if (overall_score and rank) else "—", ACCENT),
+        ("改善優先度", f"{weaknesses[0][0]}\n{weaknesses[0][3]:+.1f}pt" if weaknesses else "—", "#C79A2E"),
+    ]
+
+    insight_cards = "".join(
+        f'<div style="flex:1;border:1px solid {CARD_LINE};border-radius:.9cqw;padding:.8cqw 1cqw;background:#FAFAF8;">'
+        f'<div style="font-size:.85cqw;color:{SUB};font-weight:600;margin-bottom:.3cqw;">{escape(title)}</div>'
+        + "".join(
+            f'<div style="font-size:{"1.1" if i==0 else ".95"}cqw;font-weight:700;color:{col};'
+            f'white-space:pre-line;line-height:1.35;">{escape(line)}</div>'
+            for i, line in enumerate(val.split("\n"))
+        )
+        + '</div>'
+        for title, val, col in cards_data
+    )
+
+    bottom = (
+        f'<div style="flex:none;display:flex;gap:.9cqw;margin-top:1cqw;height:8cqw;">'
+        f'{insight_cards}</div>'
+    )
+
+    right = (
+        f'<div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0;">'
+        f'{table}{bottom}</div>'
+    )
+
+    inner = (
+        _slide_header("5", "空間・体験分析", "10観点レーダー＋22観点スコア一覧（5点満点換算）")
+        + f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">{radar}{right}</div>'
+    )
+    return _canvas(inner)

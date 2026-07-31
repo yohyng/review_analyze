@@ -729,7 +729,12 @@ def render():
 
             st.markdown(preview.html_slide01(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide02(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_slide03(_bundle), unsafe_allow_html=True)
+            st.markdown(preview.html_market_position(_bundle), unsafe_allow_html=True)
+            st.markdown(preview.html_market_detail(_bundle), unsafe_allow_html=True)
+            st.markdown(preview.html_competitor_compare(_bundle), unsafe_allow_html=True)
+            st.markdown(preview.html_competitor_detail(_bundle), unsafe_allow_html=True)
+            st.markdown(preview.html_timeline(_bundle), unsafe_allow_html=True)
+            st.markdown(preview.html_space_experience(_bundle), unsafe_allow_html=True)
             st.markdown(preview.html_slide04(_bundle), unsafe_allow_html=True)
         else:
             st.warning("分析結果がありません。設定に戻って再実行してください。")
