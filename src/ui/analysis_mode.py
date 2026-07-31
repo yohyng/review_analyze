@@ -454,11 +454,26 @@ def render():
         scoring.compute_and_store(conn, _fid)
 
         # ③ ポジ／ネガの感情を分析中  ← 22観点の感情・トピック統合スコア（全施設）
-        _n_fac = len(_all_facility_names())
+        _all_fac_names = analysis.facility_names(conn)
+        _n_fac = len(_all_fac_names)
         _show(2, f"{_n_fac} 施設の比較マトリクスを構築中（{_n_with_text:,} 件の本文を解析）")
         _profile = text_analysis.build_profile(conn, _target, top_n=20)
-        _show(2, f"22観点の感情スコアをモデルで計算中（{_n_fac} 施設 × {_n_with_text:,} 件）")
-        _topic_matrix = _topic_matrix_cached(_topic_sig())
+
+        # キャッシュ済みなら即返却、なければ施設ごとにループして進捗を見せる
+        _sig = _topic_sig()
+        _tmat_cache_key = f"_vb_tmat_{_sig}"
+        if _tmat_cache_key in st.session_state:
+            _topic_matrix = st.session_state[_tmat_cache_key]
+            _show(2, f"キャッシュから取得完了 — {_n_fac} 施設")
+        else:
+            _topic_matrix = {}
+            _TICK = max(1, _n_fac // 20)   # 最大20回UI更新
+            for _fi, _fname in enumerate(_all_fac_names, 1):
+                _topic_matrix[_fname] = topic_score.analyze_facility(conn, _fname)
+                if _fi % _TICK == 0 or _fi == _n_fac:
+                    _show(2, f"感情スコアを計算中 — {_fi} / {_n_fac} 施設完了")
+            st.session_state[_tmat_cache_key] = _topic_matrix
+
         _ts_result = _topic_matrix.get(_target) or topic_score.analyze_facility(conn, _target)
 
         # ④ トピックを分類中（TF-IDF）  ← SLIDE 04 用

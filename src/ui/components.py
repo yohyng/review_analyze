@@ -1,6 +1,7 @@
 """Presentational helpers (HTML builders + small widgets) for the VoiceBAUM UI."""
 from __future__ import annotations
 
+import re
 from html import escape
 
 import streamlit as st
@@ -43,11 +44,26 @@ _STEP_SUBTITLES = [s[0] for s in LOADING_STEPS]
 _STEP_HINTS     = [s[1] for s in LOADING_STEPS]
 
 
+def _detail_with_animated_numbers(text: str) -> str:
+    """数字部分を slide-in アニメーション付き span でラップ（XSS安全）。
+
+    例: "90 施設・457 件" →
+        <span class="vb-num">90</span> 施設・<span class="vb-num">457</span> 件
+    """
+    escaped = escape(text)
+    return re.sub(
+        r"(\d[\d,]*)",
+        r'<span class="vb-num">\1</span>',
+        escaped,
+    )
+
+
 def loading_card_html(current: int, detail: str = "") -> str:
     """Full-screen loading overlay — step list with per-step detail text.
 
     `current` = index of the step currently running (0-based).
     `detail`  = fine-grained message shown directly under the active step.
+                Numbers in `detail` get a slide-in animation each time they change.
     """
     total = len(LOADING_STEPS)
     done = min(current, total)
@@ -73,12 +89,11 @@ def loading_card_html(current: int, detail: str = "") -> str:
                 f'<div style="width:8px;height:8px;border-radius:50%;background:{ACCENT};'
                 'animation:vb-pulse 1.1s ease-in-out infinite;"></div></div>'
             )
-            # active detail: fallback to built-in hint when no detail passed
             active_detail = detail or hint
             row_body = (
                 f'<div style="font-size:13.5px;font-weight:800;color:#16202B;">{escape(label)}</div>'
-                f'<div style="font-size:11.5px;color:{ACCENT};margin-top:3px;line-height:1.45;">'
-                f'▷ {escape(active_detail)}</div>'
+                f'<div style="font-size:11.5px;color:{ACCENT};margin-top:3px;line-height:1.55;">'
+                f'▷ {_detail_with_animated_numbers(active_detail)}</div>'
             )
         else:
             icon = (
@@ -104,15 +119,24 @@ def loading_card_html(current: int, detail: str = "") -> str:
         f'<div style="height:100%;width:{pct}%;background:{ACCENT};border-radius:99px;'
         'transition:width .4s ease;"></div></div></div>'
     )
-    pulse_css = (
-        '<style>@keyframes vb-pulse{'
+    anim_css = (
+        '<style>'
+        '@keyframes vb-pulse{'
         '0%,100%{opacity:.35;transform:scale(.7)}'
-        '50%{opacity:1;transform:scale(1)}}</style>'
+        '50%{opacity:1;transform:scale(1)}}'
+        '@keyframes vb-numslide{'
+        'from{transform:translateY(-5px) scale(.9);opacity:0}'
+        'to{transform:translateY(0) scale(1);opacity:1}}'
+        '.vb-num{'
+        'display:inline-block;font-weight:800;'
+        'animation:vb-numslide .22s cubic-bezier(.2,.8,.3,1) both;'
+        'font-variant-numeric:tabular-nums;}'
+        '</style>'
     )
     return (
         '<div style="position:fixed;inset:0;z-index:2147483000;background:#F7F7F4;'
         'display:flex;align-items:center;justify-content:center;padding:20px;">'
-        f'{pulse_css}'
+        f'{anim_css}'
         '<div class="vb-load-card" style="margin:0;">'
         '<div class="vb-load-title">口コミを解析しています…</div>'
         f'<div class="vb-load-sub">{escape(subtitle)}</div>'
