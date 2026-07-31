@@ -65,6 +65,7 @@ def _kz_pull(conn, key: str, query: str) -> bool:
         with st.spinner("KAIZODEから完了分を取り込み中…"):
             res = kaizode.sync_datasets(client, conn, log=lambda *_a: None)
         data.topic_matrix_cached.clear()
+        data.clear_list_caches()
         _stats = db.facility_stats(conn, query)
         if _stats and _stats["n_reviews"] > 0:
             st.success(f"✅ 「{query}」の口コミを取り込みました。分析できます。")
@@ -456,9 +457,13 @@ def render():
         # ③ ポジ／ネガの感情を分析中  ← 22観点の感情・トピック統合スコア（全施設）
         _n_fac = len(_all_facility_names())
         _show(2, f"{_n_fac} 施設・{_n_with_text:,} 件の感情・トピックを解析中（初回のみ時間がかかります）")
-        _profile = text_analysis.build_profile(conn, _target, top_n=20)
+        # build_profile はJanome+TF-IDF で重い → sig付きでセッション内キャッシュ
+        _sig = _topic_sig()
+        _prof_key = f"_vb_profile_{_target}_{hash(_sig)}"
+        _profile = st.session_state.get(_prof_key) or text_analysis.build_profile(conn, _target, top_n=20)
+        st.session_state[_prof_key] = _profile
         # @st.cache_data で全施設分をまとめてキャッシュ（セッション跨ぎで再利用）
-        _topic_matrix = _topic_matrix_cached(_topic_sig())
+        _topic_matrix = _topic_matrix_cached(_sig)
         _ts_result = _topic_matrix.get(_target) or topic_score.analyze_facility(conn, _target)
 
         # ④ トピックを分類中（TF-IDF）  ← SLIDE 04 用

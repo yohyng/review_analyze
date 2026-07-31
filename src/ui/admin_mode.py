@@ -301,6 +301,7 @@ def render():
                                           f"（重複 {_n_dup:,} 件スキップ）",
                                     state="complete",
                                 )
+                                data.clear_list_caches()
                                 st.balloons()
                 else:
                     st.warning("施設を1つ以上選択してください。")
@@ -1126,6 +1127,7 @@ def render():
                             "に達したため途中で停止しました。続きは翌月/枠回復後に取得されます。"
                         )
                     _topic_matrix_cached.clear()
+                    data.clear_list_caches()
                 except kaizode.KaizodeError as _e:
                     st.error(str(_e))
             st.caption(

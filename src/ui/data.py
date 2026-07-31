@@ -21,12 +21,15 @@ def get_conn():
     return c
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def all_facility_names() -> list[str]:
+    """施設名一覧（30秒TTLキャッシュ）。登録直後は _clear_list_cache() で即時無効化。"""
     return analysis.facility_names(get_conn())
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def review_counts() -> dict[str, int]:
-    """name -> review count (single query, for search suggestions)."""
+    """name -> review count (30秒TTL)。"""
     rows = get_conn().execute(
         """SELECT f.name, COUNT(r.id) FROM facility f
            LEFT JOIN review r ON r.facility_id = f.id
@@ -35,8 +38,9 @@ def review_counts() -> dict[str, int]:
     return {r[0]: r[1] for r in rows}
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def facility_meta() -> dict[str, str]:
-    """name -> sub-line (category, else review count) for the search dropdown."""
+    """name -> sub-line (category, else review count) for the search dropdown（30秒TTL）。"""
     rows = get_conn().execute(
         """SELECT f.name, f.category, COUNT(r.id) FROM facility f
            LEFT JOIN review r ON r.facility_id = f.id GROUP BY f.id""",
@@ -47,13 +51,22 @@ def facility_meta() -> dict[str, str]:
     return out
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def topic_sig() -> tuple:
-    """Data signature so the topic-matrix cache invalidates when reviews change."""
+    """Data signature for topic-matrix cache invalidation（30秒TTL）。"""
     rows = get_conn().execute(
         """SELECT f.name, COUNT(r.id) FROM facility f
            LEFT JOIN review r ON r.facility_id = f.id GROUP BY f.id""",
     ).fetchall()
     return tuple(sorted((r[0], r[1]) for r in rows))
+
+
+def clear_list_caches() -> None:
+    """施設を追加/削除した直後に呼んでリスト系キャッシュを即時無効化。"""
+    all_facility_names.clear()
+    review_counts.clear()
+    facility_meta.clear()
+    topic_sig.clear()
 
 
 @st.cache_data(show_spinner=False)
