@@ -442,29 +442,33 @@ def render():
             _ph.markdown(_loading_card_html(cur, detail), unsafe_allow_html=True)
 
         # ① 口コミデータを収集中
-        _show(0, f"口コミ {_n_rev:,} 件を読み込んでいます")
+        _show(0, f"「{_target}」の口コミ {_n_rev:,} 件をDBから読み込んでいます")
         _rev_rows = conn.execute(
             "SELECT rating, text FROM review WHERE facility_id = ?", (_fid,)
         ).fetchall()
         _revs = [(_r["rating"], _r["text"] or "") for _r in _rev_rows]
+        _n_with_text = sum(1 for _, t in _revs if t.strip())
 
         # ② 評価スコアを集計中
-        _show(1, f"口コミ {_n_rev:,} 件のスコアを集計中")
+        _show(1, f"口コミ {_n_rev:,} 件 ／ 本文あり {_n_with_text:,} 件 — 評点・ポジ率を集計中")
         scoring.compute_and_store(conn, _fid)
 
         # ③ ポジ／ネガの感情を分析中  ← 22観点の感情・トピック統合スコア（全施設）
         _n_fac = len(_all_facility_names())
-        _show(2, f"{_n_fac} 施設・{_n_rev:,} 件の感情／トピックを解析中（時間がかかる場合があります）")
+        _show(2, f"{_n_fac} 施設の比較マトリクスを構築中（{_n_with_text:,} 件の本文を解析）")
         _profile = text_analysis.build_profile(conn, _target, top_n=20)
+        _show(2, f"22観点の感情スコアをモデルで計算中（{_n_fac} 施設 × {_n_with_text:,} 件）")
         _topic_matrix = _topic_matrix_cached(_topic_sig())
         _ts_result = _topic_matrix.get(_target) or topic_score.analyze_facility(conn, _target)
 
         # ④ トピックを分類中（TF-IDF）  ← SLIDE 04 用
-        _show(3, f"{_ts_result.n_sentences:,} 文の特徴語を抽出中")
+        _n_sent = _ts_result.n_sentences
+        _show(3, f"本文 {_n_with_text:,} 件・{_n_sent:,} 文から特徴キーワードをTF-IDFで抽出中")
         _topic_list = topics.extract_topics(_revs, n_topics=5)
 
         # ⑤ 競合と比較中（＋任意でLLMインサイト）
-        _show(4, "競合施設と比較中")
+        _n_peers = len([n for n in _all_facility_names() if n != _target])
+        _show(4, f"比較対象 {_n_peers} 施設との 22 観点スコア差分を計算中")
         _insights = None
         if _api_key and not _profile.empty:
             _comp2 = (
@@ -477,6 +481,7 @@ def render():
                 _profile.bigrams["フレーズ"].tolist()
                 if not _profile.bigrams.empty else []
             )
+            _show(4, f"LLMに強み・弱み・示唆の生成を依頼中（キーワード {len(_kw)} 語）")
             _prompt = llm.build_prompt(
                 _target, _diff, _kw, _bi, _profile.high_rated, _profile.low_rated
             )
@@ -485,7 +490,7 @@ def render():
                 _insights = _res
 
         # ⑥ レポートを生成中
-        _show(5, "PowerPointレポートを生成中")
+        _show(5, f"「{_target}」の分析レポート（PowerPoint）を生成中")
         _tmp = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{_target}.pptx"
         report.build_report(
             conn, _target,

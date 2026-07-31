@@ -31,60 +31,93 @@ def facility_card(name: str) -> None:
 
 
 LOADING_STEPS = [
-    "口コミデータを収集中",
-    "評価スコアを集計中",
-    "ポジ／ネガの感情を分析中",
-    "トピックを分類中（TF-IDF）",
-    "競合と比較中",
-    "レポートを生成中",
+    ("口コミデータを収集中",      "DBから全口コミを読み込んでいます"),
+    ("評価スコアを集計中",        "評点・ポジ率などの基本指標を計算しています"),
+    ("ポジ／ネガの感情を分析中",   "22観点の感情・トピック統合スコアを解析中です"),
+    ("トピックを分類中（TF-IDF）", "施設を特徴づけるキーワードを抽出しています"),
+    ("競合と比較中",              "比較施設とのスコア差分を計算しています"),
+    ("レポートを生成中",          "PowerPoint ファイルをビルドしています"),
 ]
+
+_STEP_SUBTITLES = [s[0] for s in LOADING_STEPS]
+_STEP_HINTS     = [s[1] for s in LOADING_STEPS]
 
 
 def loading_card_html(current: int, detail: str = "") -> str:
-    """Full-screen loading overlay with the 6-step list + numeric progress.
+    """Full-screen loading overlay — step list with per-step detail text.
 
-    Rendered as a fixed, opaque overlay so nothing behind shows through.
+    `current` = index of the step currently running (0-based).
+    `detail`  = fine-grained message shown directly under the active step.
     """
     total = len(LOADING_STEPS)
     done = min(current, total)
     pct = round(100 * done / total)
+    all_done = current >= total
+
+    subtitle = "完了しました ✓" if all_done else _STEP_SUBTITLES[min(current, total - 1)]
 
     rows = []
-    for i, label in enumerate(LOADING_STEPS):
+    for i, (label, hint) in enumerate(LOADING_STEPS):
         if i < current:
-            icon = '<div class="vb-step-done">✓</div>'
-            lab = f'<div class="vb-step-label">{label}</div>'
+            icon = (
+                f'<div style="flex:none;width:22px;height:22px;border-radius:50%;'
+                f'background:{ACCENT};display:flex;align-items:center;justify-content:center;'
+                'color:#fff;font-size:12px;font-weight:800;">✓</div>'
+            )
+            row_body = f'<div style="font-size:13.5px;font-weight:700;color:#3A434E;">{escape(label)}</div>'
         elif i == current:
-            icon = '<div class="vb-step-active"></div>'
-            lab = f'<div class="vb-step-label">{label}</div>'
+            icon = (
+                f'<div style="flex:none;width:22px;height:22px;border-radius:50%;'
+                f'border:2.5px solid {ACCENT};background:{ACCENT_SOFT};'
+                'display:flex;align-items:center;justify-content:center;">'
+                f'<div style="width:8px;height:8px;border-radius:50%;background:{ACCENT};'
+                'animation:vb-pulse 1.1s ease-in-out infinite;"></div></div>'
+            )
+            # active detail: fallback to built-in hint when no detail passed
+            active_detail = detail or hint
+            row_body = (
+                f'<div style="font-size:13.5px;font-weight:800;color:#16202B;">{escape(label)}</div>'
+                f'<div style="font-size:11.5px;color:{ACCENT};margin-top:3px;line-height:1.45;">'
+                f'▷ {escape(active_detail)}</div>'
+            )
         else:
-            icon = '<div class="vb-step-todo"></div>'
-            lab = f'<div class="vb-step-label-todo">{label}</div>'
-        rows.append(f'<div class="vb-step-row">{icon}{lab}</div>')
+            icon = (
+                '<div style="flex:none;width:22px;height:22px;border-radius:50%;'
+                'border:2px solid #D8D4CE;background:#F4F3EF;"></div>'
+            )
+            row_body = f'<div style="font-size:13.5px;color:#B0B4BC;">{escape(label)}</div>'
 
-    detail_html = (
-        f'<div style="font-size:12px;color:#8A9098;margin-top:14px;text-align:center;">{detail}</div>'
-        if detail else ""
-    )
+        rows.append(
+            '<div style="display:flex;align-items:flex-start;gap:12px;padding:7px 0;">'
+            f'{icon}'
+            f'<div style="flex:1;min-width:0;">{row_body}</div>'
+            '</div>'
+        )
+
     progress = (
-        '<div style="margin:4px 0 18px;">'
+        '<div style="margin:4px 0 16px;">'
         '<div style="display:flex;justify-content:space-between;align-items:baseline;'
         'font-size:12.5px;font-weight:700;color:#5B6672;margin-bottom:8px;">'
         f'<span>{done} / {total} ステップ完了</span>'
         f'<span style="font-size:18px;font-weight:800;color:{ACCENT};">{pct}%</span></div>'
         '<div style="height:9px;background:#F1F0EA;border-radius:99px;overflow:hidden;">'
-        f'<div style="height:100%;width:{pct}%;background:{ACCENT};border-radius:99px;transition:width .3s ease;"></div>'
-        '</div></div>'
+        f'<div style="height:100%;width:{pct}%;background:{ACCENT};border-radius:99px;'
+        'transition:width .4s ease;"></div></div></div>'
+    )
+    pulse_css = (
+        '<style>@keyframes vb-pulse{'
+        '0%,100%{opacity:.35;transform:scale(.7)}'
+        '50%{opacity:1;transform:scale(1)}}</style>'
     )
     return (
         '<div style="position:fixed;inset:0;z-index:2147483000;background:#F7F7F4;'
         'display:flex;align-items:center;justify-content:center;padding:20px;">'
+        f'{pulse_css}'
         '<div class="vb-load-card" style="margin:0;">'
         '<div class="vb-load-title">口コミを解析しています…</div>'
-        '<div class="vb-load-sub">評価・感情・キーワードを集計中</div>'
+        f'<div class="vb-load-sub">{escape(subtitle)}</div>'
         + progress
         + "".join(rows)
-        + detail_html
         + "</div></div>"
     )
 
