@@ -739,15 +739,19 @@ def render():
                 _topic_list = topics.extract_topics(revs, n_topics=5)
 
                 # ⑤  競合比較 ＋ LLMインサイト
-                n_peers = total_fac - 1
+                #    指定競合モードでは選択した施設だけを比較軸にする（DBの
+                #    type='comparison' タグや全施設平均にすり替わらないように）。
+                _sel_peers = prog.get("_peers_for_bundle")
+                n_peers = len(_sel_peers) if _sel_peers else total_fac - 1
                 prog["step"]   = 4
                 prog["detail"] = f"比較対象 {n_peers} 施設との 22 観点スコア差分を計算中"
                 _insights = None
                 if akey and not _profile.empty:
-                    _comp2 = (
-                        analysis.build_comparison(tconn, tgt, ax, specific_name=spn)
-                        or analysis.build_comparison(tconn, tgt, "all_avg")
+                    _comp2 = analysis.build_comparison(
+                        tconn, tgt, ax, specific_name=spn, peers=_sel_peers
                     )
+                    if _comp2 is None and not _sel_peers:
+                        _comp2 = analysis.build_comparison(tconn, tgt, "all_avg")
                     _diff = _comp2.diff if _comp2 else None
                     _kw = _profile.tfidf_keywords["単語"].tolist()
                     _bi = (
@@ -773,6 +777,7 @@ def render():
                     insights=_insights,
                     topic_list=_topic_list if _topic_list else None,
                     topic_score_result=_ts_result if not _ts_result.empty else None,
+                    peers=_sel_peers,
                     output_path=_tmp,
                 )
 
@@ -792,6 +797,7 @@ def render():
                 result["insights_facility"] = tgt
                 result["an_axis"]           = ax if amode == "compare" else "comparison_avg"
                 result["an_specific_name"]  = spn
+                result["an_peers_used"]     = _sel_peers   # PPTX再生成でも同じ比較軸を使う
 
                 prog["step"]   = 6
                 prog["detail"] = "完了しました"
@@ -1004,6 +1010,7 @@ def render():
                                     topic_list=st.session_state.get("an_topic_list") or None,
                                     topic_score_result=st.session_state.get("an_topic_score"),
                                     profile_info=_info, photo_bytes=_photo_bytes,
+                                    peers=st.session_state.get("an_peers_used"),
                                     output_path=_tmp2)
                             st.session_state["an_result_path"] = str(_tmp2)
                             st.success("レポートを更新しました。上部のダウンロードから取得してください。")

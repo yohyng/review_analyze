@@ -561,14 +561,19 @@ def build_report(
     topic_score_result: "Optional[topic_score.TopicScoreResult]" = None,
     profile_info: Optional[dict] = None,
     photo_bytes: Optional[bytes] = None,
+    peers: Optional[list[str]] = None,
     output_path: str | Path = "report.pptx",
 ) -> Path:
     prs = Presentation()
     prs.slide_width = SLIDE_W
     prs.slide_height = SLIDE_H
 
-    comp = analysis.build_comparison(conn, target_name, axis, specific_name=specific_name)
-    if comp is None:
+    comp = analysis.build_comparison(
+        conn, target_name, axis, specific_name=specific_name, peers=peers
+    )
+    # 指定競合モード（peers あり）では全施設平均へのフォールバックをしない。
+    # 選択した競合にスコアが無いのに「全体平均」を出すと比較軸がすり替わるため。
+    if comp is None and not peers:
         comp = analysis.build_comparison(conn, target_name, "all_avg")
     profile = text_analysis.build_profile(conn, target_name, top_n=20)
 

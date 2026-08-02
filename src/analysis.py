@@ -114,12 +114,16 @@ def build_comparison(
     target_name: str,
     axis: str,
     specific_name: str | None = None,
+    peers: list[str] | None = None,
 ) -> ComparisonResult | None:
     """
     axis:
       'comparison_avg'  — vs average of facilities with type='comparison'
       'all_avg'         — vs average of ALL facilities in DB
       'specific'        — vs one named facility (specific_name required)
+
+    peers: 'comparison_avg' のとき、比較対象を明示的に指定する（指定競合モードで
+      ユーザーが選んだ施設）。None なら DB で type='comparison' の施設を使う。
     Returns None when there is not enough data to compute.
     """
     mat = _pick_matrix(conn)
@@ -129,11 +133,12 @@ def build_comparison(
     target = mat.loc[target_name].dropna()
 
     if axis == "comparison_avg":
-        peers = [n for n in facilities_by_type(conn, "comparison") if n in mat.index]
-        if not peers:
+        _src = peers if peers is not None else facilities_by_type(conn, "comparison")
+        peer_names = [n for n in _src if n in mat.index and n != target_name]
+        if not peer_names:
             return None
-        baseline = mat.loc[peers].mean().dropna()
-        label = f"比較施設の平均（{len(peers)}施設）"
+        baseline = mat.loc[peer_names].mean().dropna()
+        label = f"比較施設の平均（{len(peer_names)}施設）"
 
     elif axis == "all_avg":
         others = [n for n in mat.index if n != target_name]

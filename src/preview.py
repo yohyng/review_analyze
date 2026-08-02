@@ -76,26 +76,48 @@ def build_bundle(
 
     # ── 感情・トピックモデルによる比較（SLIDE 01-03 の素） ──────────── #
     ts = topic_results.get(target)
-    valid = {n: r for n, r in topic_results.items() if r is not None and not r.empty}
+    valid_all = {n: r for n, r in topic_results.items() if r is not None and not r.empty}
+
+    # ── 比較母数 ─────────────────────────────────────────────────── #
+    # 指定競合モード（peers_override あり）では母数を「自施設＋選択した競合」に
+    # 絞る。以降の順位・スコア分布・各観点の基準値がすべてこの範囲で計算される。
+    # マーケットモードでは従来どおり DB 全施設が母数。
+    is_competitor_mode = peers_override is not None
+    if is_competitor_mode:
+        peers = [p for p in peers_override if p != target]
+        valid = {n: r for n, r in valid_all.items() if n == target or n in peers}
+    else:
+        peers = analysis.facilities_by_type(conn, "comparison")
+        valid = valid_all
+    peer_valid = [p for p in peers if p in valid_all and p != target]
+    scope_label = "選択競合内" if is_competitor_mode else "市場内"
+    scope_noun = "選択競合" if is_competitor_mode else "市場"
+
     multi = len(valid) >= 2 and target in valid
 
     order = topic_score.TOPIC_ORDER
     target_scores = ts.sentiment_by_topic() if (ts and not ts.empty) else {}
 
-    # per-topic baseline: 全体平均（多施設）or 中立50（単体）
+    # 各観点の基準値。指定競合モードは「選択競合の平均」（自施設は母数が小さく
+    # 自分自身に引きずられるため除外）。マーケットモードは母数全体の平均。
+    baseline_src = {n: valid_all[n] for n in peer_valid} if is_competitor_mode else valid
     overall_topic = {}
     for t in order:
-        vals = [r.sentiment_by_topic().get(t) for r in valid.values()]
+        vals = [r.sentiment_by_topic().get(t) for r in baseline_src.values()]
         vals = [v for v in vals if v is not None]
         overall_topic[t] = (sum(vals) / len(vals)) if vals else 50.0
-    baseline_label = "全体平均" if multi else "中立(50)"
+    has_baseline = bool(baseline_src) and multi
+    baseline_label = (
+        ("選択競合の平均" if is_competitor_mode else "全体平均")
+        if has_baseline else "中立(50)"
+    )
 
     diffs = []
     for t in order:
         tv = target_scores.get(t)
         if tv is None:
             continue
-        base = overall_topic[t] if multi else 50.0
+        base = overall_topic[t] if has_baseline else 50.0
         diffs.append((t, round(tv, 2), round(base, 2), round(tv - base, 2)))
     diffs_sorted = sorted(diffs, key=lambda x: x[3], reverse=True)
     strengths = diffs_sorted[:5]
@@ -111,11 +133,6 @@ def build_bundle(
     overall_mean = (sum(fac_overall.values()) / len(fac_overall)) if fac_overall else None
     d_overall = (overall_score - overall_mean) if (multi and overall_score is not None) else None
 
-    if peers_override is not None:
-        peers = [p for p in peers_override if p != target]
-    else:
-        peers = analysis.facilities_by_type(conn, "comparison")
-    peer_valid = [p for p in peers if p in valid and p != target]
     peer_mean = (sum(fac_overall[p] for p in peer_valid) / len(peer_valid)) if peer_valid else None
     d_peer = (overall_score - peer_mean) if (peer_mean is not None and overall_score is not None) else None
 
@@ -155,11 +172,11 @@ def build_bundle(
 
     analysis_rows = [
         ("分析対象", target),
-        ("比較母数", f"{total_fac} 施設"),
+        ("比較母数", f"{scope_noun} {total_fac} 施設"),
         ("ピア施設数", f"{len(peer_valid)} 施設"),
         ("全体スコア", f"{overall_score}" if overall_score is not None else "—"),
-        ("全体順位", f"{rank} / {total_fac}" if rank else "—"),
-        ("全体平均との差", f"{d_overall:+.2f}" if d_overall is not None else "—"),
+        (f"{scope_label}順位", f"{rank} / {total_fac}" if rank else "—"),
+        (f"{scope_noun}平均との差", f"{d_overall:+.2f}" if d_overall is not None else "—"),
         ("ピア平均との差", f"{d_peer:+.2f}" if d_peer is not None else "—"),
         ("最も強い差分", _topic_diff_label(strengths[0] if strengths else None)),
         ("最も弱い差分", _topic_diff_label(weaknesses[0] if weaknesses else None)),
@@ -179,7 +196,7 @@ def build_bundle(
         insight = {
             "結論": (f"「{target}」は「{s0[0]}」「{s1[0]}」が{baseline_label}比で相対的に強い一方、"
                     f"「{w0[0]}」「{w1[0]}」が弱い。総合スコア {overall_score}"
-                    f"（{total_fac}施設中 {rank}位）。"),
+                    f"（{scope_label} {total_fac}施設中 {rank}位）。"),
             "強み": f"「{s0[0]}」が {baseline_label}比 {s0[3]:+.1f}pt で最も高評価。「{s1[0]}」（{s1[3]:+.1f}pt）も強み。",
             "弱み": f"「{w0[0]}」が {w0[3]:+.1f}pt と最も低く改善余地。「{w1[0]}」（{w1[3]:+.1f}pt）も下位。",
             "示唆": f"「{w0[0]}」「{w1[0]}」の口コミ体験を底上げすることで、総合評価の向上が期待できます。",
@@ -236,6 +253,10 @@ def build_bundle(
         "pos_rate": pos_rate,
         "rank": rank,
         "total_fac": total_fac,
+        # 比較母数のスコープ（指定競合モードか市場全体か）— スライドの見出しに使う
+        "comparison_scope": "competitor" if is_competitor_mode else "market",
+        "scope_label": scope_label,   # 「選択競合内」/「市場内」
+        "scope_noun": scope_noun,     # 「選択競合」/「市場」
         "date": f"{date.today():%Y年%m月%d日}",
         "basis": baseline_label,
         "baseline_label": baseline_label,
@@ -1026,7 +1047,8 @@ def html_market_position(b: dict) -> str:
     )
 
     inner = (
-        _slide_header("2", "市場内ポジション", f"比較対象 {total} 施設中の相対評価（感情・トピック統合スコア）")
+        _slide_header("2", f'{b.get("scope_label", "市場内")}ポジション',
+                      f"比較対象 {total} 施設中の相対評価（感情・トピック統合スコア）")
         + f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">{left}{right}</div>'
     )
     return _canvas(inner)
@@ -1173,9 +1195,11 @@ def html_market_detail(b: dict) -> str:
     mkt_card = (
         f'<div style="flex:none;border:1px solid {CARD_LINE};border-radius:1.1cqw;'
         f'padding:.9cqw 1.1cqw;background:#FAFAF8;">'
-        f'<div style="font-size:.95cqw;font-weight:700;color:{INK};margin-bottom:.4cqw;">市場の強み傾向（競合平均）</div>'
+        f'<div style="font-size:.95cqw;font-weight:700;color:{INK};margin-bottom:.4cqw;">'
+        f'{escape(b.get("scope_noun", "市場"))}の強み傾向（競合平均）</div>'
         + _mkt_rows(top_mkt, POS)
-        + f'<div style="font-size:.95cqw;font-weight:700;color:{INK};margin:.6cqw 0 .4cqw;">市場の課題傾向</div>'
+        + f'<div style="font-size:.95cqw;font-weight:700;color:{INK};margin:.6cqw 0 .4cqw;">'
+        f'{escape(b.get("scope_noun", "市場"))}の課題傾向</div>'
         + _mkt_rows(bot_mkt, NEG)
         + '</div>'
     )
@@ -1186,7 +1210,8 @@ def html_market_detail(b: dict) -> str:
     )
 
     inner = (
-        _slide_header("2", "市場内ポジション（詳細）", "22観点スコア推移と体験系3軸の市場布置")
+        _slide_header("2", f'{b.get("scope_label", "市場内")}ポジション（詳細）',
+                      "22観点スコア推移と体験系3軸の布置")
         + f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">{left}{right}</div>'
     )
     return _canvas(inner)
@@ -1652,7 +1677,9 @@ def html_space_experience(b: dict) -> str:
     datasets: list = [(target_name, target_scores, ACCENT)]
     if peer_avg:
         datasets.append(("競合平均", peer_avg, "#A7ABB0"))
-    if overall_topic:
+    # 指定競合モードでは overall_topic ＝ 選択競合の平均なので「競合平均」と
+    # 重なる。同じ線を2本描かない。
+    if overall_topic and b.get("comparison_scope") != "competitor":
         datasets.append(("同業平均", overall_topic, NEU))
 
     radar = (
