@@ -132,3 +132,65 @@ def test_monthly_review_counts_empty_facility(tmp_path):
     conn = _fresh(tmp_path)
     fid = db.upsert_facility(conn, "口コミ無し施設")
     assert db.monthly_review_counts(conn, fid) == []
+
+
+# --------------------------------------------------------------------------- #
+# 分析キャッシュ（口コミ件数をキーにして自動失効する）
+# --------------------------------------------------------------------------- #
+def test_topic_score_cache_roundtrip_and_invalidation(tmp_path):
+    conn = _fresh(tmp_path)
+    fid = db.upsert_facility(conn, "風の海")
+
+    assert db.get_topic_score_cache(conn, fid, 10) is None
+
+    db.set_topic_score_cache(conn, fid, 10, '[{"name": "接客"}]', 62.5, 300)
+    got = db.get_topic_score_cache(conn, fid, 10)
+    assert got["topics_json"] == '[{"name": "接客"}]'
+    assert got["overall_score"] == 62.5
+    assert got["n_sentences"] == 300
+
+    # 口コミ件数が変われば別キー → 自動的に再計算される
+    assert db.get_topic_score_cache(conn, fid, 11) is None
+
+    # 同一キーの再保存は上書き（重複行を作らない）
+    db.set_topic_score_cache(conn, fid, 10, "[]", 70.0, 310)
+    assert db.get_topic_score_cache(conn, fid, 10)["overall_score"] == 70.0
+    assert conn.execute("SELECT COUNT(*) FROM topic_score_cache").fetchone()[0] == 1
+
+
+def test_text_profile_cache_roundtrip_and_invalidation(tmp_path):
+    conn = _fresh(tmp_path)
+    fid = db.upsert_facility(conn, "風の海")
+
+    assert db.get_text_profile_cache(conn, fid, 5) is None
+
+    db.set_text_profile_cache(
+        conn, fid, 5,
+        '[{"単語": "景色", "スコア": 0.4}]', '[{"フレーズ": "景色 良い", "件数": 3}]',
+        "[]", '["最高でした"]', '["残念"]',
+    )
+    got = db.get_text_profile_cache(conn, fid, 5)
+    assert got["tfidf_json"] == '[{"単語": "景色", "スコア": 0.4}]'
+    assert got["bigrams_json"] == '[{"フレーズ": "景色 良い", "件数": 3}]'
+    assert got["trigrams_json"] == "[]"
+    assert got["high_rated_json"] == '["最高でした"]'
+    assert got["low_rated_json"] == '["残念"]'
+
+    # 本文ありの件数が増えたら別キー → 再抽出される
+    assert db.get_text_profile_cache(conn, fid, 6) is None
+
+    db.set_text_profile_cache(conn, fid, 5, "[]", "[]", "[]", "[]", "[]")
+    assert db.get_text_profile_cache(conn, fid, 5)["tfidf_json"] == "[]"
+    assert conn.execute("SELECT COUNT(*) FROM text_profile_cache").fetchone()[0] == 1
+
+
+def test_analysis_caches_cascade_on_facility_delete(tmp_path):
+    conn = _fresh(tmp_path)
+    fid = db.upsert_facility(conn, "風の海")
+    db.set_topic_score_cache(conn, fid, 3, "[]", 50.0, 9)
+    db.set_text_profile_cache(conn, fid, 3, "[]", "[]", "[]", "[]", "[]")
+
+    db.delete_facility(conn, fid)
+
+    assert conn.execute("SELECT COUNT(*) FROM topic_score_cache").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM text_profile_cache").fetchone()[0] == 0
