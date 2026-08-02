@@ -227,6 +227,230 @@ def _kz_collect_section(conn, query: str) -> None:
                 st.rerun()
 
 
+# ── Background thread: steps ③–⑥ ─────────────────────────────────────────── #
+#  重要: このスレッドから st.session_state に書いてはいけない。
+#  ScriptRunContext がスレッド属性として持ち回られる仕組みのため、素の Thread
+#  では ctx が None になり、Streamlit は書き込みを捨てられるグローバルのモック
+#  SessionState に黙って流す（エラーも警告も出ない）。
+#  → 成果物は素の dict である prog["result"] に貯め、session_state への反映は
+#    メインスレッド（render() のランニング画面の分岐 ①）が行う。
+#
+#  render() のクロージャではなくモジュール関数にしてあるのは、Streamlit 無しで
+#  そのままテストから実行できるようにするため（クロージャのままだと、ここでの
+#  取り違えを一切テストで検出できなかった）。
+def _analysis_worker(prog: dict) -> None:
+    try:
+        # 施設ループのローカル変数 result と衝突しない名前にすること。
+        ss_out: dict = {}       # ← session_state に入れてほしいもの
+        tconn = db.get_conn(prog.get("_db_path"))  # fresh thread-local connection
+        tgt   = prog["_target"]
+        amode = prog["_an_mode"]
+        ax    = prog["_axis"]
+        spn   = prog["_specific_name"]
+        akey  = prog["_api_key"]
+        revs  = prog["_revs"]
+        n_wt  = prog["_n_with_text"]
+        all_names = prog["_all_names"]
+        pkey  = prog["_prof_key"]
+
+        # ③-a  テキストプロファイル（session_state → DBキャッシュ → build_profile）
+        prog["step"] = 2
+        _profile = prog["_cached_profile"]
+        if not _profile:
+            _tgt_fid_row = tconn.execute(
+                "SELECT id FROM facility WHERE name = ?", (tgt,)
+            ).fetchone()
+            _tgt_fid = _tgt_fid_row["id"] if _tgt_fid_row else None
+            _tp_cached = (
+                db.get_text_profile_cache(tconn, _tgt_fid, n_wt)
+                if _tgt_fid else None
+            )
+            if _tp_cached:
+                prog["detail"] = f"「{tgt}」のキーワードプロファイル — DBキャッシュから読み込み中"
+                _tfidf_recs = json.loads(_tp_cached["tfidf_json"])
+                _bi_recs    = json.loads(_tp_cached["bigrams_json"])
+                _tri_recs   = json.loads(_tp_cached["trigrams_json"])
+                _profile = text_analysis.TextProfile(
+                    facility_name=tgt,
+                    n_reviews=n_wt,
+                    tfidf_keywords=(
+                        pd.DataFrame(_tfidf_recs) if _tfidf_recs
+                        else pd.DataFrame(columns=["単語", "スコア"])
+                    ),
+                    bigrams=(
+                        pd.DataFrame(_bi_recs) if _bi_recs
+                        else pd.DataFrame(columns=["フレーズ", "件数"])
+                    ),
+                    trigrams=(
+                        pd.DataFrame(_tri_recs) if _tri_recs
+                        else pd.DataFrame(columns=["フレーズ", "件数"])
+                    ),
+                    high_rated=json.loads(_tp_cached["high_rated_json"]),
+                    low_rated=json.loads(_tp_cached["low_rated_json"]),
+                    empty=len(_tfidf_recs) == 0,
+                )
+            else:
+                prog["detail"] = f"「{tgt}」の本文 {n_wt:,} 件からキーワードを抽出中"
+                _profile = text_analysis.build_profile(tconn, tgt, top_n=20)
+                if _tgt_fid and not _profile.empty:
+                    try:
+                        db.set_text_profile_cache(
+                            tconn, _tgt_fid, n_wt,
+                            json.dumps(_profile.tfidf_keywords.to_dict("records")),
+                            json.dumps(_profile.bigrams.to_dict("records")),
+                            json.dumps(_profile.trigrams.to_dict("records")),
+                            json.dumps(_profile.high_rated),
+                            json.dumps(_profile.low_rated),
+                        )
+                    except Exception:
+                        pass
+        ss_out[pkey] = _profile
+
+        # ③-b  全施設の感情スコア行列
+        #   優先順: session_state / @st.cache_data → DBキャッシュ → 計算
+        prebuilt = prog.get("_cached_matrix")
+        total_fac = len(all_names)
+        if prebuilt:
+            matrix = prebuilt
+            prog["detail"] = f"感情スコア {total_fac} 施設 — セッションキャッシュから読み込み完了"
+        else:
+            # facility_id と n_reviews をまとめて取得（1クエリ）
+            fac_rows = tconn.execute(
+                "SELECT f.id, f.name, COUNT(r.id) as nr "
+                "FROM facility f LEFT JOIN review r ON r.facility_id = f.id "
+                "GROUP BY f.id"
+            ).fetchall()
+            fac_info = {row["name"]: (row["id"], row["nr"]) for row in fac_rows}
+
+            matrix = {}
+            n_cached, n_computed = 0, 0
+            for i, fname in enumerate(all_names):
+                fid_n = fac_info.get(fname)
+                cached_row = (
+                    db.get_topic_score_cache(tconn, fid_n[0], fid_n[1])
+                    if fid_n else None
+                )
+                if cached_row:
+                    topics_data = json.loads(cached_row["topics_json"])
+                    ts_topics = [
+                        topic_score.TopicScore(**t) for t in topics_data
+                    ]
+                    matrix[fname] = topic_score.TopicScoreResult(
+                        topics=ts_topics,
+                        overall_score=cached_row["overall_score"],
+                        n_reviews=fid_n[1],
+                        n_sentences=cached_row["n_sentences"],
+                        backend="db_cache",
+                        empty=len(ts_topics) == 0,
+                    )
+                    n_cached += 1
+                    prog["detail"] = (
+                        f"感情スコア {i + 1}/{total_fac} 施設"
+                        f" — DBキャッシュ {n_cached} 件・計算済み {n_computed} 件"
+                    )
+                else:
+                    prog["detail"] = f"感情スコア {i + 1}/{total_fac} 施設: {fname}"
+                    result = topic_score.analyze_facility(tconn, fname)
+                    matrix[fname] = result
+                    n_computed += 1
+                    # DBに保存（次回 Streamlit 再起動後も有効）
+                    if fid_n and not result.empty:
+                        topics_json_str = json.dumps([
+                            {"name": t.name, "weight": t.weight,
+                             "avg_score": t.avg_score, "total_score": t.total_score,
+                             "salience": t.salience, "sentiment": t.sentiment}
+                            for t in result.topics
+                        ])
+                        try:
+                            db.set_topic_score_cache(
+                                tconn, fid_n[0], fid_n[1],
+                                topics_json_str, result.overall_score,
+                                result.n_sentences,
+                            )
+                        except Exception:
+                            pass  # キャッシュ保存失敗は無視
+
+            # session_state にも書き戻す（同セッション内の再実行を高速化）
+            ss_out[prog["_matrix_ss_key"]] = matrix
+
+        _ts_result = matrix.get(tgt) or topic_score.analyze_facility(tconn, tgt)
+
+        # ④  TF-IDF トピック抽出
+        prog["step"]   = 3
+        n_sent = _ts_result.n_sentences
+        prog["detail"] = f"本文 {n_wt:,} 件・{n_sent:,} 文から特徴キーワードをTF-IDFで抽出中"
+        _topic_list = topics.extract_topics(revs, n_topics=5)
+
+        # ⑤  競合比較 ＋ LLMインサイト
+        #    指定競合モードでは選択した施設だけを比較軸にする（DBの
+        #    type='comparison' タグや全施設平均にすり替わらないように）。
+        _sel_peers = prog.get("_peers_for_bundle")
+        n_peers = len(_sel_peers) if _sel_peers else total_fac - 1
+        prog["step"]   = 4
+        prog["detail"] = f"比較対象 {n_peers} 施設との 22 観点スコア差分を計算中"
+        _insights = None
+        if akey and not _profile.empty:
+            _comp2 = analysis.build_comparison(
+                tconn, tgt, ax, specific_name=spn, peers=_sel_peers
+            )
+            if _comp2 is None and not _sel_peers:
+                _comp2 = analysis.build_comparison(tconn, tgt, "all_avg")
+            _diff = _comp2.diff if _comp2 else None
+            _kw = _profile.tfidf_keywords["単語"].tolist()
+            _bi = (
+                _profile.bigrams["フレーズ"].tolist()
+                if not _profile.bigrams.empty else []
+            )
+            prog["detail"] = f"LLMに強み・弱み・示唆の生成を依頼中（キーワード {len(_kw)} 語）"
+            _prompt = llm.build_prompt(
+                tgt, _diff, _kw, _bi, _profile.high_rated, _profile.low_rated
+            )
+            _res = llm.generate_insights(_prompt, akey)
+            if not _res.error:
+                _insights = _res
+
+        # ⑥  レポート生成
+        prog["step"]   = 5
+        prog["detail"] = f"「{tgt}」の分析レポート（PowerPoint）を生成中"
+        _tmp = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{tgt}.pptx"
+        report.build_report(
+            tconn, tgt,
+            axis=ax if amode == "compare" else "comparison_avg",
+            specific_name=spn,
+            insights=_insights,
+            topic_list=_topic_list if _topic_list else None,
+            topic_score_result=_ts_result if not _ts_result.empty else None,
+            peers=_sel_peers,
+            output_path=_tmp,
+        )
+
+        # ビルドバンドル（プレビュー用）
+        _bundle = preview.build_bundle(
+            tconn, tgt, matrix, _profile, _insights,
+            peers_override=prog.get("_peers_for_bundle"),
+        )
+
+        # 結果を受け渡し用 dict へ（session_state 反映はメインスレッド）
+        ss_out["an_preview"]        = _bundle
+        ss_out["an_result_path"]    = str(_tmp)
+        ss_out["an_topic_list"]     = _topic_list
+        ss_out["an_topic_score"]    = _ts_result
+        ss_out["analysis_target"]   = tgt
+        ss_out["insights"]          = _insights
+        ss_out["insights_facility"] = tgt
+        ss_out["an_axis"]           = ax if amode == "compare" else "comparison_avg"
+        ss_out["an_specific_name"]  = spn
+        ss_out["an_peers_used"]     = _sel_peers   # PPTX再生成でも同じ比較軸を使う
+
+        prog["step"]   = 6
+        prog["detail"] = "完了しました"
+        prog["result"] = ss_out
+        prog["done"]   = True   # ← result を入れてから最後に立てる
+
+    except Exception:
+        prog["error"] = traceback.format_exc()
+
+
 def render():
     conn = data.get_conn()
     _all_facility_names = data.all_facility_names
@@ -586,226 +810,9 @@ def render():
             "_cached_matrix": _cached_matrix,
             "_matrix_ss_key": _matrix_ss_key,
             "_peers_for_bundle": _peers_for_bundle,
+            "_db_path": None,   # None → 既定のDB/Turso（テストから差し替え可能）
         }
         st.session_state[_PROG_KEY] = _new_prog
-
-        # ── Background thread: steps ③–⑥ ────────────────────────────────
-        #  重要: このスレッドから st.session_state に書いてはいけない。
-        #  ScriptRunContext がスレッド属性として持ち回られる仕組みのため、素の
-        #  Thread では ctx が None になり、Streamlit は書き込みを捨てられる
-        #  グローバルのモック SessionState に黙って流す（エラーも出ない）。
-        #  → 成果物は素の dict である prog["result"] に貯め、session_state への
-        #    反映はメインスレッド（上の分岐 ①）が行う。
-        def _analysis_worker(prog: dict) -> None:
-            try:
-                result: dict = {}       # ← session_state に入れてほしいもの
-                tconn = db.get_conn()  # fresh thread-local connection
-                tgt   = prog["_target"]
-                amode = prog["_an_mode"]
-                ax    = prog["_axis"]
-                spn   = prog["_specific_name"]
-                akey  = prog["_api_key"]
-                revs  = prog["_revs"]
-                n_wt  = prog["_n_with_text"]
-                all_names = prog["_all_names"]
-                pkey  = prog["_prof_key"]
-
-                # ③-a  テキストプロファイル（session_state → DBキャッシュ → build_profile）
-                prog["step"] = 2
-                _profile = prog["_cached_profile"]
-                if not _profile:
-                    _tgt_fid_row = tconn.execute(
-                        "SELECT id FROM facility WHERE name = ?", (tgt,)
-                    ).fetchone()
-                    _tgt_fid = _tgt_fid_row["id"] if _tgt_fid_row else None
-                    _tp_cached = (
-                        db.get_text_profile_cache(tconn, _tgt_fid, n_wt)
-                        if _tgt_fid else None
-                    )
-                    if _tp_cached:
-                        prog["detail"] = f"「{tgt}」のキーワードプロファイル — DBキャッシュから読み込み中"
-                        _tfidf_recs = json.loads(_tp_cached["tfidf_json"])
-                        _bi_recs    = json.loads(_tp_cached["bigrams_json"])
-                        _tri_recs   = json.loads(_tp_cached["trigrams_json"])
-                        _profile = text_analysis.TextProfile(
-                            facility_name=tgt,
-                            n_reviews=n_wt,
-                            tfidf_keywords=(
-                                pd.DataFrame(_tfidf_recs) if _tfidf_recs
-                                else pd.DataFrame(columns=["単語", "スコア"])
-                            ),
-                            bigrams=(
-                                pd.DataFrame(_bi_recs) if _bi_recs
-                                else pd.DataFrame(columns=["フレーズ", "件数"])
-                            ),
-                            trigrams=(
-                                pd.DataFrame(_tri_recs) if _tri_recs
-                                else pd.DataFrame(columns=["フレーズ", "件数"])
-                            ),
-                            high_rated=json.loads(_tp_cached["high_rated_json"]),
-                            low_rated=json.loads(_tp_cached["low_rated_json"]),
-                            empty=len(_tfidf_recs) == 0,
-                        )
-                    else:
-                        prog["detail"] = f"「{tgt}」の本文 {n_wt:,} 件からキーワードを抽出中"
-                        _profile = text_analysis.build_profile(tconn, tgt, top_n=20)
-                        if _tgt_fid and not _profile.empty:
-                            try:
-                                db.set_text_profile_cache(
-                                    tconn, _tgt_fid, n_wt,
-                                    json.dumps(_profile.tfidf_keywords.to_dict("records")),
-                                    json.dumps(_profile.bigrams.to_dict("records")),
-                                    json.dumps(_profile.trigrams.to_dict("records")),
-                                    json.dumps(_profile.high_rated),
-                                    json.dumps(_profile.low_rated),
-                                )
-                            except Exception:
-                                pass
-                result[pkey] = _profile
-
-                # ③-b  全施設の感情スコア行列
-                #   優先順: session_state / @st.cache_data → DBキャッシュ → 計算
-                prebuilt = prog.get("_cached_matrix")
-                total_fac = len(all_names)
-                if prebuilt:
-                    matrix = prebuilt
-                    prog["detail"] = f"感情スコア {total_fac} 施設 — セッションキャッシュから読み込み完了"
-                else:
-                    # facility_id と n_reviews をまとめて取得（1クエリ）
-                    fac_rows = tconn.execute(
-                        "SELECT f.id, f.name, COUNT(r.id) as nr "
-                        "FROM facility f LEFT JOIN review r ON r.facility_id = f.id "
-                        "GROUP BY f.id"
-                    ).fetchall()
-                    fac_info = {row["name"]: (row["id"], row["nr"]) for row in fac_rows}
-
-                    matrix = {}
-                    n_cached, n_computed = 0, 0
-                    for i, fname in enumerate(all_names):
-                        fid_n = fac_info.get(fname)
-                        cached_row = (
-                            db.get_topic_score_cache(tconn, fid_n[0], fid_n[1])
-                            if fid_n else None
-                        )
-                        if cached_row:
-                            topics_data = json.loads(cached_row["topics_json"])
-                            ts_topics = [
-                                topic_score.TopicScore(**t) for t in topics_data
-                            ]
-                            matrix[fname] = topic_score.TopicScoreResult(
-                                topics=ts_topics,
-                                overall_score=cached_row["overall_score"],
-                                n_reviews=fid_n[1],
-                                n_sentences=cached_row["n_sentences"],
-                                backend="db_cache",
-                                empty=len(ts_topics) == 0,
-                            )
-                            n_cached += 1
-                            prog["detail"] = (
-                                f"感情スコア {i + 1}/{total_fac} 施設"
-                                f" — DBキャッシュ {n_cached} 件・計算済み {n_computed} 件"
-                            )
-                        else:
-                            prog["detail"] = f"感情スコア {i + 1}/{total_fac} 施設: {fname}"
-                            result = topic_score.analyze_facility(tconn, fname)
-                            matrix[fname] = result
-                            n_computed += 1
-                            # DBに保存（次回 Streamlit 再起動後も有効）
-                            if fid_n and not result.empty:
-                                topics_json_str = json.dumps([
-                                    {"name": t.name, "weight": t.weight,
-                                     "avg_score": t.avg_score, "total_score": t.total_score,
-                                     "salience": t.salience, "sentiment": t.sentiment}
-                                    for t in result.topics
-                                ])
-                                try:
-                                    db.set_topic_score_cache(
-                                        tconn, fid_n[0], fid_n[1],
-                                        topics_json_str, result.overall_score,
-                                        result.n_sentences,
-                                    )
-                                except Exception:
-                                    pass  # キャッシュ保存失敗は無視
-
-                    # session_state にも書き戻す（同セッション内の再実行を高速化）
-                    result[prog["_matrix_ss_key"]] = matrix
-
-                _ts_result = matrix.get(tgt) or topic_score.analyze_facility(tconn, tgt)
-
-                # ④  TF-IDF トピック抽出
-                prog["step"]   = 3
-                n_sent = _ts_result.n_sentences
-                prog["detail"] = f"本文 {n_wt:,} 件・{n_sent:,} 文から特徴キーワードをTF-IDFで抽出中"
-                _topic_list = topics.extract_topics(revs, n_topics=5)
-
-                # ⑤  競合比較 ＋ LLMインサイト
-                #    指定競合モードでは選択した施設だけを比較軸にする（DBの
-                #    type='comparison' タグや全施設平均にすり替わらないように）。
-                _sel_peers = prog.get("_peers_for_bundle")
-                n_peers = len(_sel_peers) if _sel_peers else total_fac - 1
-                prog["step"]   = 4
-                prog["detail"] = f"比較対象 {n_peers} 施設との 22 観点スコア差分を計算中"
-                _insights = None
-                if akey and not _profile.empty:
-                    _comp2 = analysis.build_comparison(
-                        tconn, tgt, ax, specific_name=spn, peers=_sel_peers
-                    )
-                    if _comp2 is None and not _sel_peers:
-                        _comp2 = analysis.build_comparison(tconn, tgt, "all_avg")
-                    _diff = _comp2.diff if _comp2 else None
-                    _kw = _profile.tfidf_keywords["単語"].tolist()
-                    _bi = (
-                        _profile.bigrams["フレーズ"].tolist()
-                        if not _profile.bigrams.empty else []
-                    )
-                    prog["detail"] = f"LLMに強み・弱み・示唆の生成を依頼中（キーワード {len(_kw)} 語）"
-                    _prompt = llm.build_prompt(
-                        tgt, _diff, _kw, _bi, _profile.high_rated, _profile.low_rated
-                    )
-                    _res = llm.generate_insights(_prompt, akey)
-                    if not _res.error:
-                        _insights = _res
-
-                # ⑥  レポート生成
-                prog["step"]   = 5
-                prog["detail"] = f"「{tgt}」の分析レポート（PowerPoint）を生成中"
-                _tmp = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{tgt}.pptx"
-                report.build_report(
-                    tconn, tgt,
-                    axis=ax if amode == "compare" else "comparison_avg",
-                    specific_name=spn,
-                    insights=_insights,
-                    topic_list=_topic_list if _topic_list else None,
-                    topic_score_result=_ts_result if not _ts_result.empty else None,
-                    peers=_sel_peers,
-                    output_path=_tmp,
-                )
-
-                # ビルドバンドル（プレビュー用）
-                _bundle = preview.build_bundle(
-                    tconn, tgt, matrix, _profile, _insights,
-                    peers_override=prog.get("_peers_for_bundle"),
-                )
-
-                # 結果を受け渡し用 dict へ（session_state 反映はメインスレッド）
-                result["an_preview"]        = _bundle
-                result["an_result_path"]    = str(_tmp)
-                result["an_topic_list"]     = _topic_list
-                result["an_topic_score"]    = _ts_result
-                result["analysis_target"]   = tgt
-                result["insights"]          = _insights
-                result["insights_facility"] = tgt
-                result["an_axis"]           = ax if amode == "compare" else "comparison_avg"
-                result["an_specific_name"]  = spn
-                result["an_peers_used"]     = _sel_peers   # PPTX再生成でも同じ比較軸を使う
-
-                prog["step"]   = 6
-                prog["detail"] = "完了しました"
-                prog["result"] = result
-                prog["done"]   = True   # ← result を入れてから最後に立てる
-
-            except Exception:
-                prog["error"] = traceback.format_exc()
 
         _thread = threading.Thread(
             target=_analysis_worker, args=(_new_prog,), daemon=True

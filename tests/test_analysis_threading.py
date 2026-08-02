@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import ast
 import threading
 from pathlib import Path
 
@@ -28,8 +29,14 @@ def _worker_source() -> str:
     """analysis_mode._analysis_worker の本体ソースだけを切り出す。"""
     text = SRC.read_text(encoding="utf-8")
     start = text.index("def _analysis_worker(")
-    end = text.index("_thread = threading.Thread(", start)
+    end = text.index("\ndef ", start + 1)      # 次のモジュールレベル def まで
     return text[start:end]
+
+
+def _worker_ast() -> ast.FunctionDef:
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    return next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_analysis_worker")
 
 
 def test_spawned_thread_has_no_script_run_ctx():
@@ -56,6 +63,41 @@ def test_worker_never_touches_session_state():
         "ワーカースレッドから st.session_state に書くと、ctx が無いため "
         "Streamlit のモックに落ちて無言で捨てられる。結果は result dict に入れ、"
         "反映はメインスレッド側で行うこと。"
+    )
+
+
+def test_worker_result_accumulator_is_never_reassigned():
+    """prog["result"] に入れる dict が、途中の別代入で潰されていないこと。
+
+    受け渡し用の dict を `result` という名前にしたところ、施設ループの
+    `result = topic_score.analyze_facility(...)` に上書きされて
+    TypeError: 'TopicScoreResult' object does not support item assignment
+    になった。同じ取り違えを二度やらないための番人。
+    """
+    fn = _worker_ast()
+
+    # prog["result"] = <名前> から、受け渡し用 dict の変数名を特定する
+    acc = None
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        tgt, val = node.targets[0], node.value
+        if (isinstance(tgt, ast.Subscript) and isinstance(tgt.value, ast.Name)
+                and tgt.value.id == "prog"
+                and getattr(tgt.slice, "value", None) == "result"
+                and isinstance(val, ast.Name)):
+            acc = val.id
+    assert acc, 'prog["result"] = <変数> が見つからない'
+
+    binds = []
+    for node in ast.walk(fn):
+        targets = (node.targets if isinstance(node, ast.Assign)
+                   else [node.target] if isinstance(node, ast.AnnAssign) else [])
+        binds += [t for t in targets if isinstance(t, ast.Name) and t.id == acc]
+
+    assert len(binds) == 1, (
+        f"受け渡し用 dict `{acc}` が {len(binds)} 回代入されている。"
+        "途中で別の値に潰されると結果が session_state に渡らない。"
     )
 
 
