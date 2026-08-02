@@ -219,3 +219,112 @@ def test_period_label_absent_when_no_review_dates(tmp_path):
                              peers_override=[])
     assert b["period_label"] == ""
     assert "分析期間" not in slides.slide1_facility_info(b)
+
+
+# --------------------------------------------------------------------------- #
+# 縦書き — フォント任せにせず1文字ずつ積む
+# --------------------------------------------------------------------------- #
+def test_vertical_text_stacks_each_character():
+    """writing-mode に頼ると環境によって漢字が重なるため、自前で積んでいる。
+
+    headless Chromium では和文フォントに縦書きメトリクスが無く、
+    「提供内容の品質」の漢字が全部同じ位置に重なる事故が実際に起きた。
+    """
+    html = slides.vertical_text("提供内容の品質", size=0.55)
+    assert "writing-mode" not in html
+    for ch in "提供内容の品質":
+        assert f">{ch}</div>" in html
+    assert html.count("</div>") == len("提供内容の品質") + 1
+
+
+def test_vertical_text_rotates_long_vowel_marks():
+    """「サービス」の長音符は縦組みで横倒しにする。"""
+    html = slides.vertical_text("サービス", size=0.55)
+    assert "rotate(90deg)" in html
+    # 回転するのは長音符だけ
+    assert html.count("rotate(90deg)") == 1
+
+
+def test_indicator_axis_labels_are_vertical(tmp_path):
+    b = _bundle(tmp_path)
+    html = slides.slide2_market_detail(b)
+    assert "writing-mode" not in html          # 全部が自前の縦組み
+    assert "①" in html and "⑲" in html          # 丸番号は19まで
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 2「市場内ポジション」（PDF p4）
+# --------------------------------------------------------------------------- #
+def test_slide2_shows_rank_distribution_and_top3(tmp_path):
+    b = _bundle(tmp_path)
+    html = slides.slide2_market_position(b)
+    for t in ("総合評価ランキング", "同業施設内の総合評価分布", "強み TOP3", "弱み TOP3"):
+        assert t in html, t
+    assert f'/ {b["total_fac"]}施設中' in html
+    assert "低評価" in html and "高評価" in html
+    assert "市場平均" in html
+
+
+def test_slide2_percentile_matches_rank(tmp_path):
+    b = _bundle(tmp_path)
+    assert b["percentile"] == round(100 * b["rank"] / b["total_fac"])
+    assert f'上位{b["percentile"]}%' in slides.slide2_market_position(b)
+
+
+def test_slide2_scores_are_five_point_with_two_decimals(tmp_path):
+    """5点満点は必ず小数2桁（2.6 ではなく 2.60）。"""
+    assert slides._pt5(52.0) == "2.60"
+    assert slides._pt5(100.0) == "5.00"
+    assert slides._pt5(None) == "—"
+    # グラフの座標計算用は数値
+    assert slides._score5(52.0) == 2.6
+    assert slides._score5(None) is None
+
+
+def test_slide2_survives_single_facility(tmp_path):
+    """比較相手がいなくても落ちない。"""
+    b = _bundle(tmp_path, n_peers=0)
+    assert slides.slide2_market_position(b)
+    assert slides.slide2_market_detail(b)
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 2 詳細（PDF p5）
+# --------------------------------------------------------------------------- #
+def test_slide2_detail_has_all_three_panels(tmp_path):
+    b = _bundle(tmp_path)
+    html = slides.slide2_market_detail(b)
+    for t in ("乃村独自の口コミ分析指標", "総合体験評価マッピング", "マーケット傾向",
+              "プランナー起点", "指標（代表例）", "当施設", "同業平均", "総合評価",
+              "この市場で評価されやすい指標", "この市場で課題になりやすい指標",
+              "口コミから算出した主要スコア", "体験満足度", "推奨意向", "再訪意向"):
+        assert t in html, t
+    assert "※ 各指標は1〜5点で評価" in html
+    assert "○ バブルサイズ＝再訪意向" in html
+    assert f'※ マッピングは全{b["total_fac"]}施設を表示' in html
+
+
+def test_market_trend_lists_five_each_and_does_not_overlap(tmp_path):
+    b = _bundle(tmp_path)
+    good, bad = b["market_trend_good"], b["market_trend_bad"]
+    assert len(good) == 5 and len(bad) == 5
+    assert not set(good) & set(bad)
+    # 上位は下位より必ずスコアが高い
+    ot = b["overall_topic"]
+    assert min(ot[t] for t in good) >= max(ot[t] for t in bad)
+
+
+def test_outcome_map_covers_the_comparison_universe(tmp_path):
+    b = _bundle(tmp_path, n_peers=5)
+    assert set(b["outcome_map"]) == {"target"} | {f"peer{i}" for i in range(5)}
+    for v in b["outcome_map"].values():
+        assert set(v) == {"体験満足度", "推奨意向", "再訪意向"}
+
+
+def test_experience_map_can_be_limited_to_selected_peers(tmp_path):
+    """SLIDE 3 詳細では競合だけを描くため names で絞れる。"""
+    b = _bundle(tmp_path, n_peers=5)
+    only2 = slides.experience_map(b, names=["peer0", "peer1"], label_points=True)
+    assert "peer0" in only2 and "peer1" in only2
+    assert "peer4" not in only2
+    assert "当施設" in only2                    # 対象施設は常に描く

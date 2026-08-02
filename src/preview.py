@@ -246,6 +246,25 @@ def build_bundle(
     # 全施設の総合スコア分布（ヒストグラム用）
     ranking_dist = sorted(fac_overall.values())
 
+    # 上位何%か（SLIDE 2 の「上位19%」）
+    percentile = round(100 * rank / total_fac) if (rank and total_fac) else None
+
+    # 総合体験評価マッピング用（横軸=体験満足度／縦軸=推奨意向／バブル=再訪意向）。
+    # 比較母数の全施設ぶんを返す（SLIDE 2 は市場全体、SLIDE 3 は競合のみを描く）。
+    outcome_map: dict[str, dict[str, float]] = {}
+    for _nm, _r in valid.items():
+        _sb = _r.sentiment_by_topic()
+        outcome_map[_nm] = {
+            t: round(_sb.get(t, 50.0), 1) for t in topic_score.OUTCOME_TOPICS
+        }
+
+    # マーケット傾向（この市場で評価されやすい／課題になりやすい指標）。
+    # driver 19指標の母数平均を高い順・低い順に並べる。
+    _mkt = [(t, overall_topic[t]) for t in topic_score.DRIVER_TOPICS if t in overall_topic]
+    _mkt.sort(key=lambda x: -x[1])
+    market_trend_good = [t for t, _ in _mkt[:5]]
+    market_trend_bad = [t for t, _ in _mkt[-5:]][::-1]
+
     # 月別ポジ/ネガ件数
     monthly_pos_neg = db.monthly_rating_counts(conn, fid) if fid else []
 
@@ -308,6 +327,10 @@ def build_bundle(
         "peer_count": len(peer_valid),
         # SLIDE 2-5 追加データ
         "ranking_dist": ranking_dist,
+        "percentile": percentile,
+        "outcome_map": outcome_map,
+        "market_trend_good": market_trend_good,
+        "market_trend_bad": market_trend_bad,
         "overall_topic": overall_topic,
         "peer_topic_scores": peer_topic_scores,
         "monthly_pos_neg": monthly_pos_neg,
