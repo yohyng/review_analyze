@@ -557,10 +557,57 @@ def render():
                     all_names = prog["_all_names"]
                     pkey  = prog["_prof_key"]
 
-                    # ③-a  テキストプロファイル（build_profile は Janome+TF-IDF）
-                    prog["step"]   = 2
-                    prog["detail"] = f"「{tgt}」の本文 {n_wt:,} 件からキーワードを抽出中"
-                    _profile = prog["_cached_profile"] or text_analysis.build_profile(tconn, tgt, top_n=20)
+                    # ③-a  テキストプロファイル（session_state → DBキャッシュ → build_profile）
+                    prog["step"] = 2
+                    _profile = prog["_cached_profile"]
+                    if not _profile:
+                        _tgt_fid_row = tconn.execute(
+                            "SELECT id FROM facility WHERE name = ?", (tgt,)
+                        ).fetchone()
+                        _tgt_fid = _tgt_fid_row["id"] if _tgt_fid_row else None
+                        _tp_cached = (
+                            db.get_text_profile_cache(tconn, _tgt_fid, n_wt)
+                            if _tgt_fid else None
+                        )
+                        if _tp_cached:
+                            prog["detail"] = f"「{tgt}」のキーワードプロファイル — DBキャッシュから読み込み中"
+                            _tfidf_recs = json.loads(_tp_cached["tfidf_json"])
+                            _bi_recs    = json.loads(_tp_cached["bigrams_json"])
+                            _tri_recs   = json.loads(_tp_cached["trigrams_json"])
+                            _profile = text_analysis.TextProfile(
+                                facility_name=tgt,
+                                n_reviews=n_wt,
+                                tfidf_keywords=(
+                                    pd.DataFrame(_tfidf_recs) if _tfidf_recs
+                                    else pd.DataFrame(columns=["単語", "スコア"])
+                                ),
+                                bigrams=(
+                                    pd.DataFrame(_bi_recs) if _bi_recs
+                                    else pd.DataFrame(columns=["フレーズ", "件数"])
+                                ),
+                                trigrams=(
+                                    pd.DataFrame(_tri_recs) if _tri_recs
+                                    else pd.DataFrame(columns=["フレーズ", "件数"])
+                                ),
+                                high_rated=json.loads(_tp_cached["high_rated_json"]),
+                                low_rated=json.loads(_tp_cached["low_rated_json"]),
+                                empty=len(_tfidf_recs) == 0,
+                            )
+                        else:
+                            prog["detail"] = f"「{tgt}」の本文 {n_wt:,} 件からキーワードを抽出中"
+                            _profile = text_analysis.build_profile(tconn, tgt, top_n=20)
+                            if _tgt_fid and not _profile.empty:
+                                try:
+                                    db.set_text_profile_cache(
+                                        tconn, _tgt_fid, n_wt,
+                                        json.dumps(_profile.tfidf_keywords.to_dict("records")),
+                                        json.dumps(_profile.bigrams.to_dict("records")),
+                                        json.dumps(_profile.trigrams.to_dict("records")),
+                                        json.dumps(_profile.high_rated),
+                                        json.dumps(_profile.low_rated),
+                                    )
+                                except Exception:
+                                    pass
                     st.session_state[pkey] = _profile
 
                     # ③-b  全施設の感情スコア行列

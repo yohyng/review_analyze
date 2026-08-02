@@ -298,6 +298,18 @@ CREATE TABLE IF NOT EXISTS topic_score_cache (
     PRIMARY KEY (facility_id, n_reviews)
 );
 
+CREATE TABLE IF NOT EXISTS text_profile_cache (
+    facility_id     INTEGER NOT NULL REFERENCES facility(id) ON DELETE CASCADE,
+    n_reviews       INTEGER NOT NULL,
+    tfidf_json      TEXT    NOT NULL DEFAULT '[]',
+    bigrams_json    TEXT    NOT NULL DEFAULT '[]',
+    trigrams_json   TEXT    NOT NULL DEFAULT '[]',
+    high_rated_json TEXT    NOT NULL DEFAULT '[]',
+    low_rated_json  TEXT    NOT NULL DEFAULT '[]',
+    created_at      TEXT    DEFAULT (datetime('now')),
+    PRIMARY KEY (facility_id, n_reviews)
+);
+
 CREATE INDEX IF NOT EXISTS idx_review_facility ON review(facility_id);
 CREATE INDEX IF NOT EXISTS idx_subscore_review ON review_subscore(review_db_id);
 CREATE INDEX IF NOT EXISTS idx_score_facility ON score(facility_id);
@@ -399,6 +411,41 @@ def set_topic_score_cache(
         "(facility_id, n_reviews, topics_json, overall_score, n_sentences) "
         "VALUES (?, ?, ?, ?, ?)",
         (facility_id, n_reviews, topics_json, overall_score, n_sentences),
+    )
+    conn.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Text-profile cache (TF-IDF キーワード + N-gram を永続化)
+# --------------------------------------------------------------------------- #
+def get_text_profile_cache(conn, facility_id: int, n_reviews: int):
+    """DBキャッシュがあれば {"tfidf_json", "bigrams_json", "trigrams_json",
+    "high_rated_json", "low_rated_json"} を返す。"""
+    row = conn.execute(
+        "SELECT tfidf_json, bigrams_json, trigrams_json, high_rated_json, low_rated_json "
+        "FROM text_profile_cache WHERE facility_id = ? AND n_reviews = ?",
+        (facility_id, n_reviews),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def set_text_profile_cache(
+    conn,
+    facility_id: int,
+    n_reviews: int,
+    tfidf_json: str,
+    bigrams_json: str,
+    trigrams_json: str,
+    high_rated_json: str,
+    low_rated_json: str,
+) -> None:
+    """TF-IDF プロファイルをDBにキャッシュ保存する（同キーがあれば上書き）。"""
+    conn.execute(
+        "INSERT OR REPLACE INTO text_profile_cache "
+        "(facility_id, n_reviews, tfidf_json, bigrams_json, trigrams_json, "
+        "high_rated_json, low_rated_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (facility_id, n_reviews, tfidf_json, bigrams_json, trigrams_json,
+         high_rated_json, low_rated_json),
     )
     conn.commit()
 
