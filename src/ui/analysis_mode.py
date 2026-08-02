@@ -338,13 +338,84 @@ def render():
                 )
 
             else:
-                # ── 選択済み：施設カード + 分析ボタン（ネイティブ）─────── #
+                # ── 選択済み：施設カード + 分析タイプ選択 + 実行ボタン ── #
                 _chk = db.facility_stats(conn, _target)
                 _stats_ok = bool(_chk and _chk["n_reviews"] > 0)
+                _others = [n for n in _names if n != _target]
 
                 st.markdown(_selected_card_html(_target, _meta), unsafe_allow_html=True)
-                st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+                st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
+                # ── 分析タイプ選択（2択カード）──────────────────────── #
+                _an_type = st.session_state.get("an_analysis_type", "competitor")
+                _tc, _tm = st.columns(2)
+                with _tc:
+                    if st.button(
+                        "🎯 指定競合との比較",
+                        help="最大5施設を選んで詳細な強み・弱みを比較します",
+                        width="stretch",
+                        type="primary" if _an_type == "competitor" else "secondary",
+                        key="an_type_btn_competitor",
+                    ):
+                        st.session_state["an_analysis_type"] = "competitor"
+                        st.rerun()
+                with _tm:
+                    if st.button(
+                        "📊 マーケット比較",
+                        help=f"DB内 {len(_others)} 施設全体との比較で市場ポジションを把握します",
+                        width="stretch",
+                        type="primary" if _an_type == "market" else "secondary",
+                        key="an_type_btn_market",
+                    ):
+                        st.session_state["an_analysis_type"] = "market"
+                        st.rerun()
+
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+                if _an_type == "competitor":
+                    if _others:
+                        # デフォルト: DB登録済み比較施設（最大5件）
+                        _default_peers = [p for p in
+                                          analysis.facilities_by_type(conn, "comparison")
+                                          if p in _others][:5]
+                        _prev_sel = [p for p in
+                                     st.session_state.get("an_peers", _default_peers)
+                                     if p in _others][:5]
+                        _selected_peers = st.multiselect(
+                            "比較施設を選択（最大5件）",
+                            options=_others,
+                            default=_prev_sel,
+                            max_selections=5,
+                            key="an_peers_multi",
+                            placeholder="施設名を入力して絞り込む...",
+                        )
+                        st.session_state["an_peers"] = _selected_peers
+                        st.session_state["an_mode"] = "compare" if _selected_peers else "single"
+                        st.session_state["an_axis_label"] = "比較施設の平均"
+                    else:
+                        st.info("比較できる施設がありません。単体分析で実行します。")
+                        st.session_state["an_mode"] = "single"
+                        st.session_state["an_peers"] = []
+                else:
+                    st.caption(
+                        f"比較対象: DB内の全施設（{len(_others)} 施設）"
+                        " — 市場全体での順位・スコア分布を表示します"
+                    )
+                    st.session_state["an_peers"] = _others
+                    st.session_state["an_mode"] = "compare"
+                    st.session_state["an_axis_label"] = "DB全体の平均"
+
+                # ── LLM キー（任意）─────────────────────────────────── #
+                if not llm.get_api_key():
+                    with st.expander("Gemini API キー（LLMインサイト、任意）", expanded=False):
+                        st.text_input(
+                            "Gemini API キー", type="password", key="an_api_key",
+                            help="aistudio.google.com で無料取得できます。省略可。",
+                            label_visibility="collapsed",
+                        )
+
+                # ── 実行ボタン ────────────────────────────────────────── #
+                st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
                 _rc1, _rc2, _rc3 = st.columns([1, 2, 1])
                 with _rc2:
                     if _stats_ok:
@@ -359,45 +430,6 @@ def render():
                         st.session_state["an_target"] = None
                         st.session_state.pop("an_search", None)
                         st.rerun()
-
-                # 比較分析・LLM は詳細オプション（既定は畳んでおく）
-                st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-                with st.expander("詳細オプション（比較分析・LLMインサイト）", expanded=False):
-                    _mode = st.radio(
-                        "分析タイプ", ["🏠 単体で分析", "🆚 比較分析"],
-                        horizontal=True, key="an_mode_radio",
-                    )
-                    st.session_state["an_mode"] = "single" if "単体" in _mode else "compare"
-                    if st.session_state["an_mode"] == "compare":
-                        _others = [n for n in _names if n != _target]
-                        if _others:
-                            _axis_label = st.radio(
-                                "比較基準", ["比較施設の平均", "DB全体の平均", "特定施設を指定"],
-                                key="an_axis_label",
-                            )
-                            if _axis_label == "特定施設を指定":
-                                _spec = st.selectbox("比較先", _others, key="an_specific")
-                                st.session_state["an_peers"] = [_spec] if _spec else []
-                            elif _axis_label == "比較施設の平均":
-                                _peers = analysis.facilities_by_type(conn, "comparison")
-                                st.session_state["an_peers"] = _peers
-                                if _peers:
-                                    st.caption(f"比較対象: {', '.join(_peers)}")
-                                else:
-                                    st.warning("「比較施設」種別の施設がありません。DB全体平均で代替します。")
-                            else:
-                                st.session_state["an_peers"] = _others
-                                st.caption(f"比較対象: DB内の全施設（{len(_others)} 施設）")
-                        else:
-                            st.info("比較できる他の施設がありません。単体分析で実行します。")
-                            st.session_state["an_mode"] = "single"
-                    else:
-                        st.session_state["an_peers"] = []
-                    if not llm.get_api_key():
-                        st.text_input(
-                            "Gemini API キー（任意）", type="password", key="an_api_key",
-                            help="aistudio.google.com で無料取得できます。省略可。",
-                        )
 
     # ══════════════════════════════════════════════════════════════════════ #
     # RUNNING (analysis + report generation)
@@ -415,13 +447,17 @@ def render():
         _fid = _fid_row["id"]
 
         _api_key = llm.get_api_key() or st.session_state.get("an_api_key", "")
+        _an_type = st.session_state.get("an_analysis_type", "competitor")
         _axis = "comparison_avg"
         _specific_name = None
+        _peers_for_bundle = None  # None → build_bundle が DB タグ施設を使う
         if _an_mode == "compare":
             _peers_ss = st.session_state.get("an_peers", [])
             _axis_lbl = st.session_state.get("an_axis_label", "比較施設の平均")
-            if _axis_lbl == "DB全体の平均":
+            if _an_type == "market" or _axis_lbl == "DB全体の平均":
                 _axis = "all_avg"
+            elif _an_type == "competitor" and _peers_ss:
+                _peers_for_bundle = _peers_ss  # スライドの競合表示を選択施設で上書き
             elif _axis_lbl == "特定施設を指定" and _peers_ss:
                 _axis = "specific"
                 _specific_name = _peers_ss[0]
@@ -502,6 +538,7 @@ def render():
                 "_cached_profile": _cached_profile,
                 "_cached_matrix": _cached_matrix,
                 "_matrix_ss_key": _matrix_ss_key,
+                "_peers_for_bundle": _peers_for_bundle,
             }
             st.session_state[_PROG_KEY] = _new_prog
 
@@ -588,7 +625,10 @@ def render():
                     )
 
                     # ビルドバンドル（プレビュー用）
-                    _bundle = preview.build_bundle(tconn, tgt, matrix, _profile, _insights)
+                    _bundle = preview.build_bundle(
+                        tconn, tgt, matrix, _profile, _insights,
+                        peers_override=prog.get("_peers_for_bundle"),
+                    )
 
                     # 結果をセッション状態に書き込む
                     st.session_state["an_preview"]         = _bundle

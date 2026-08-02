@@ -49,6 +49,7 @@ def build_bundle(
     topic_results: dict,      # {facility_name: topic_score.TopicScoreResult}
     profile,                  # text_analysis.TextProfile
     insights,                 # llm.InsightResult | None
+    peers_override: list | None = None,  # 指定競合モード: 明示的な比較施設リスト
 ) -> dict:
     frow = conn.execute(
         "SELECT id, category, general_rating, floor_area FROM facility WHERE name = ?", (target,)
@@ -110,7 +111,10 @@ def build_bundle(
     overall_mean = (sum(fac_overall.values()) / len(fac_overall)) if fac_overall else None
     d_overall = (overall_score - overall_mean) if (multi and overall_score is not None) else None
 
-    peers = analysis.facilities_by_type(conn, "comparison")
+    if peers_override is not None:
+        peers = [p for p in peers_override if p != target]
+    else:
+        peers = analysis.facilities_by_type(conn, "comparison")
     peer_valid = [p for p in peers if p in valid and p != target]
     peer_mean = (sum(fac_overall[p] for p in peer_valid) / len(peer_valid)) if peer_valid else None
     d_peer = (overall_score - peer_mean) if (peer_mean is not None and overall_score is not None) else None
