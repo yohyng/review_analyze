@@ -8,6 +8,8 @@ from __future__ import annotations
 import base64
 import os
 import tempfile
+import threading
+import traceback
 from html import escape
 from pathlib import Path
 
@@ -433,96 +435,185 @@ def render():
             unsafe_allow_html=True,
         )
 
-        _n_rev = conn.execute(
-            "SELECT COUNT(*) FROM review WHERE facility_id = ?", (_fid,)
-        ).fetchone()[0]
+        # ── Progress state key (unique per target so restarting a different
+        #    facility doesn't collide with a stale background thread)
+        _PROG_KEY = f"_vb_prog_{_target}"
+        _prog = st.session_state.get(_PROG_KEY, {})
+        _bg_alive = _prog.get("running") and not _prog.get("done") and not _prog.get("error")
 
-        _ph = st.empty()
-
-        def _show(cur, detail=""):
-            _ph.markdown(_loading_card_html(cur, detail), unsafe_allow_html=True)
-
-        # ① 口コミデータを収集中
-        _show(0, f"「{_target}」の口コミ {_n_rev:,} 件をDBから読み込んでいます")
-        _rev_rows = conn.execute(
-            "SELECT rating, text FROM review WHERE facility_id = ?", (_fid,)
-        ).fetchall()
-        _revs = [(_r["rating"], _r["text"] or "") for _r in _rev_rows]
-        _n_with_text = sum(1 for _, t in _revs if t.strip())
-
-        # ② 評価スコアを集計中
-        _show(1, f"口コミ {_n_rev:,} 件 ／ 本文あり {_n_with_text:,} 件 — 評点・ポジ率を集計中")
-        scoring.compute_and_store(conn, _fid)
-
-        # ③ ポジ／ネガの感情を分析中  ← 22観点の感情・トピック統合スコア（全施設）
-        _n_fac = len(_all_facility_names())
-        _show(2, f"{_n_fac} 施設・{_n_with_text:,} 件の感情・トピックを解析中（初回のみ時間がかかります）")
-        # build_profile はJanome+TF-IDF で重い → sig付きでセッション内キャッシュ
-        _sig = _topic_sig()
-        _prof_key = f"_vb_profile_{_target}_{hash(_sig)}"
-        _profile = st.session_state.get(_prof_key) or text_analysis.build_profile(conn, _target, top_n=20)
-        st.session_state[_prof_key] = _profile
-        # @st.cache_data で全施設分をまとめてキャッシュ（セッション跨ぎで再利用）
-        _topic_matrix = _topic_matrix_cached(_sig)
-        _ts_result = _topic_matrix.get(_target) or topic_score.analyze_facility(conn, _target)
-
-        # ④ トピックを分類中（TF-IDF）  ← SLIDE 04 用
-        _n_sent = _ts_result.n_sentences
-        _show(3, f"本文 {_n_with_text:,} 件・{_n_sent:,} 文から特徴キーワードをTF-IDFで抽出中")
-        _topic_list = topics.extract_topics(_revs, n_topics=5)
-
-        # ⑤ 競合と比較中（＋任意でLLMインサイト）
-        _n_peers = len([n for n in _all_facility_names() if n != _target])
-        _show(4, f"比較対象 {_n_peers} 施設との 22 観点スコア差分を計算中")
-        _insights = None
-        if _api_key and not _profile.empty:
-            _comp2 = (
-                analysis.build_comparison(conn, _target, _axis, specific_name=_specific_name)
-                or analysis.build_comparison(conn, _target, "all_avg")
+        if not _bg_alive:
+            # ── Sync phase: steps ① and ② (fast; ② must be in main thread) ──
+            _n_rev = conn.execute(
+                "SELECT COUNT(*) FROM review WHERE facility_id = ?", (_fid,)
+            ).fetchone()[0]
+            _ph0 = st.empty()
+            _ph0.markdown(
+                _loading_card_html(0, f"「{_target}」の口コミ {_n_rev:,} 件をDBから読み込んでいます"),
+                unsafe_allow_html=True,
             )
-            _diff = _comp2.diff if _comp2 else None
-            _kw = _profile.tfidf_keywords["単語"].tolist()
-            _bi = (
-                _profile.bigrams["フレーズ"].tolist()
-                if not _profile.bigrams.empty else []
+            _rev_rows = conn.execute(
+                "SELECT rating, text FROM review WHERE facility_id = ?", (_fid,)
+            ).fetchall()
+            _revs = [(_r["rating"], _r["text"] or "") for _r in _rev_rows]
+            _n_with_text = sum(1 for _, t in _revs if t.strip())
+
+            _ph0.markdown(
+                _loading_card_html(1, f"口コミ {_n_rev:,} 件 ／ 本文あり {_n_with_text:,} 件 — 評点・ポジ率を集計中"),
+                unsafe_allow_html=True,
             )
-            _show(4, f"LLMに強み・弱み・示唆の生成を依頼中（キーワード {len(_kw)} 語）")
-            _prompt = llm.build_prompt(
-                _target, _diff, _kw, _bi, _profile.high_rated, _profile.low_rated
+            scoring.compute_and_store(conn, _fid)
+
+            _all_names = _all_facility_names()
+            _n_fac = len(_all_names)
+            _prof_key = f"_vb_profile_{_target}_{hash(_topic_sig())}"
+            _cached_profile = st.session_state.get(_prof_key)
+
+            # Init shared progress dict (thread writes to this directly)
+            _new_prog: dict = {
+                "step": 2,
+                "detail": f"{_n_fac} 施設・{_n_with_text:,} 件の感情スコアを解析中 (1/{_n_fac})",
+                "running": True,
+                "done": False,
+                "error": None,
+                # pass-through for thread
+                "_target": _target,
+                "_an_mode": _an_mode,
+                "_axis": _axis,
+                "_specific_name": _specific_name,
+                "_api_key": _api_key,
+                "_revs": _revs,
+                "_n_rev": _n_rev,
+                "_n_with_text": _n_with_text,
+                "_all_names": _all_names,
+                "_prof_key": _prof_key,
+                "_cached_profile": _cached_profile,
+            }
+            st.session_state[_PROG_KEY] = _new_prog
+
+            # ── Background thread: steps ③–⑥ ────────────────────────────────
+            def _analysis_worker(prog: dict) -> None:
+                try:
+                    tconn = db.get_conn()  # fresh thread-local connection
+                    tgt   = prog["_target"]
+                    amode = prog["_an_mode"]
+                    ax    = prog["_axis"]
+                    spn   = prog["_specific_name"]
+                    akey  = prog["_api_key"]
+                    revs  = prog["_revs"]
+                    n_wt  = prog["_n_with_text"]
+                    all_names = prog["_all_names"]
+                    pkey  = prog["_prof_key"]
+
+                    # ③-a  テキストプロファイル（build_profile は Janome+TF-IDF）
+                    prog["step"]   = 2
+                    prog["detail"] = f"「{tgt}」の本文 {n_wt:,} 件からキーワードを抽出中"
+                    _profile = prog["_cached_profile"] or text_analysis.build_profile(tconn, tgt, top_n=20)
+                    st.session_state[pkey] = _profile
+
+                    # ③-b  全施設の感情スコア行列（施設数分ループ、進捗を逐次更新）
+                    total_fac = len(all_names)
+                    matrix: dict = {}
+                    for i, fname in enumerate(all_names):
+                        prog["detail"] = (
+                            f"感情スコア {i + 1}/{total_fac} 施設: {fname}"
+                        )
+                        matrix[fname] = topic_score.analyze_facility(tconn, fname)
+
+                    _ts_result = matrix.get(tgt) or topic_score.analyze_facility(tconn, tgt)
+
+                    # ④  TF-IDF トピック抽出
+                    prog["step"]   = 3
+                    n_sent = _ts_result.n_sentences
+                    prog["detail"] = f"本文 {n_wt:,} 件・{n_sent:,} 文から特徴キーワードをTF-IDFで抽出中"
+                    _topic_list = topics.extract_topics(revs, n_topics=5)
+
+                    # ⑤  競合比較 ＋ LLMインサイト
+                    n_peers = total_fac - 1
+                    prog["step"]   = 4
+                    prog["detail"] = f"比較対象 {n_peers} 施設との 22 観点スコア差分を計算中"
+                    _insights = None
+                    if akey and not _profile.empty:
+                        _comp2 = (
+                            analysis.build_comparison(tconn, tgt, ax, specific_name=spn)
+                            or analysis.build_comparison(tconn, tgt, "all_avg")
+                        )
+                        _diff = _comp2.diff if _comp2 else None
+                        _kw = _profile.tfidf_keywords["単語"].tolist()
+                        _bi = (
+                            _profile.bigrams["フレーズ"].tolist()
+                            if not _profile.bigrams.empty else []
+                        )
+                        prog["detail"] = f"LLMに強み・弱み・示唆の生成を依頼中（キーワード {len(_kw)} 語）"
+                        _prompt = llm.build_prompt(
+                            tgt, _diff, _kw, _bi, _profile.high_rated, _profile.low_rated
+                        )
+                        _res = llm.generate_insights(_prompt, akey)
+                        if not _res.error:
+                            _insights = _res
+
+                    # ⑥  レポート生成
+                    prog["step"]   = 5
+                    prog["detail"] = f"「{tgt}」の分析レポート（PowerPoint）を生成中"
+                    _tmp = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{tgt}.pptx"
+                    report.build_report(
+                        tconn, tgt,
+                        axis=ax if amode == "compare" else "comparison_avg",
+                        specific_name=spn,
+                        insights=_insights,
+                        topic_list=_topic_list if _topic_list else None,
+                        topic_score_result=_ts_result if not _ts_result.empty else None,
+                        output_path=_tmp,
+                    )
+
+                    # ビルドバンドル（プレビュー用）
+                    _bundle = preview.build_bundle(tconn, tgt, matrix, _profile, _insights)
+
+                    # 結果をセッション状態に書き込む
+                    st.session_state["an_preview"]         = _bundle
+                    st.session_state["an_result_path"]     = str(_tmp)
+                    st.session_state["an_topic_list"]      = _topic_list
+                    st.session_state["an_topic_score"]     = _ts_result
+                    st.session_state["analysis_target"]    = tgt
+                    st.session_state["insights"]           = _insights
+                    st.session_state["insights_facility"]  = tgt
+                    st.session_state["an_axis"]            = ax if amode == "compare" else "comparison_avg"
+                    st.session_state["an_specific_name"]   = spn
+                    st.session_state["an_screen"]          = "preview"
+
+                    prog["step"]   = 6
+                    prog["detail"] = "完了しました"
+                    prog["done"]   = True
+
+                except Exception:
+                    prog["error"] = traceback.format_exc()
+
+            _thread = threading.Thread(
+                target=_analysis_worker, args=(_new_prog,), daemon=True
             )
-            _res = llm.generate_insights(_prompt, _api_key)
-            if not _res.error:
-                _insights = _res
+            _thread.start()
+            _ph0.empty()
 
-        # ⑥ レポートを生成中
-        _show(5, f"「{_target}」の分析レポート（PowerPoint）を生成中")
-        _tmp = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{_target}.pptx"
-        report.build_report(
-            conn, _target,
-            axis=_axis if _an_mode == "compare" else "comparison_avg",
-            specific_name=_specific_name,
-            insights=_insights,
-            topic_list=_topic_list if _topic_list else None,
-            topic_score_result=_ts_result if not _ts_result.empty else None,
-            output_path=_tmp,
-        )
+        # ── Fragment polls progress every second ─────────────────────────────
+        @st.fragment(run_every="1s")
+        def _progress_ui():
+            _p = st.session_state.get(_PROG_KEY, {})
+            if _p.get("error"):
+                st.error("分析中にエラーが発生しました:\n\n```\n" + _p["error"] + "\n```")
+                if st.button("設定に戻る", key="an_err_back"):
+                    st.session_state["an_screen"] = "setup"
+                    del st.session_state[_PROG_KEY]
+                    st.rerun()
+                return
+            if _p.get("done"):
+                st.rerun()
+                return
+            st.markdown(
+                _loading_card_html(_p.get("step", 2), _p.get("detail", "")),
+                unsafe_allow_html=True,
+            )
 
-        _show(6, "完了しました")  # all steps complete
-
-        # Build the preview bundle now (so preview reruns stay instant)
-        st.session_state["an_preview"] = preview.build_bundle(
-            conn, _target, _topic_matrix, _profile, _insights,
-        )
-        st.session_state["an_result_path"] = str(_tmp)
-        st.session_state["an_topic_list"] = _topic_list
-        st.session_state["an_topic_score"] = _ts_result
-        st.session_state["analysis_target"] = _target
-        st.session_state["insights"] = _insights
-        st.session_state["insights_facility"] = _target
-        st.session_state["an_axis"] = _axis if _an_mode == "compare" else "comparison_avg"
-        st.session_state["an_specific_name"] = _specific_name
-        st.session_state["an_screen"] = "preview"
-        st.rerun()
+        _progress_ui()
+        st.stop()
 
     # ══════════════════════════════════════════════════════════════════════ #
     # PREVIEW SCREEN — analysis result rendered as stacked slides
