@@ -155,3 +155,67 @@ def test_slide1_colors_come_from_report_theme(tmp_path):
     known |= {"#FFF", "#FF", "#F5B324", "#D9D9D9", "#F1F0EA"}
     for hexcol in set(re.findall(r"#[0-9A-Fa-f]{6}", html)):
         assert hexcol.upper() in known, f"テーマ外の色: {hexcol}"
+
+
+# --------------------------------------------------------------------------- #
+# 分析期間 — 固定値ではなく、その施設の口コミが実際にある範囲から出す
+# --------------------------------------------------------------------------- #
+def _conn_with_periods(tmp_path):
+    """対象施設は2024年のみ、競合は2021〜2026 と期間が異なるDBを作る。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    spec = {
+        "target": ["2024-03-01", "2024-09-01"],
+        "peer0":  ["2021-01-01", "2026-05-01"],
+        "peer1":  ["2023-07-01", "2025-02-01"],
+    }
+    for nm, dates in spec.items():
+        fid = db.upsert_facility(conn, nm, ftype="comparison")
+        for i, d in enumerate(dates):
+            conn.execute(
+                "INSERT INTO review(facility_id, review_id, rating, text, review_date) "
+                "VALUES (?, ?, ?, ?, ?)", (fid, f"{nm}-{i}", 5, "良い", d))
+    conn.commit()
+    matrix = {nm: _result(0.5 + 0.02 * i) for i, nm in enumerate(spec)}
+    return preview.build_bundle(conn, "target", matrix, None, None,
+                                peers_override=["peer0", "peer1"])
+
+
+def test_period_label_is_derived_from_the_target_facility(tmp_path):
+    """対象施設のページは、その施設の口コミ期間だけを出す。"""
+    b = _conn_with_periods(tmp_path)
+    assert b["period_label"] == "2024/3〜2024/9"
+
+
+def test_period_label_scope_covers_compared_facilities(tmp_path):
+    """比較スライドは、比較した施設すべてを含む期間を出す。"""
+    b = _conn_with_periods(tmp_path)
+    assert b["period_label_scope"] == "2021/1〜2026/5"
+
+
+def test_slide1_header_uses_the_target_period_not_the_peers(tmp_path):
+    b = _conn_with_periods(tmp_path)
+    html = slides.slide1_facility_info(b)
+    assert "分析期間：2024/3〜2024/9" in html
+    assert "2021/1" not in html          # 競合の期間を混ぜない
+
+
+def test_competitor_slide_header_uses_the_scope_period(tmp_path):
+    b = _conn_with_periods(tmp_path)
+    html = preview.html_competitor_compare(b)
+    assert "分析期間：2021/1〜2026/5" in html
+
+
+def test_period_label_absent_when_no_review_dates(tmp_path):
+    """日付が無い口コミしかない施設でも落ちない（期間表記を出さない）。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    fid = db.upsert_facility(conn, "target", ftype="target")
+    conn.execute(
+        "INSERT INTO review(facility_id, review_id, rating, text, review_date) "
+        "VALUES (?, ?, ?, ?, ?)", (fid, "r1", 5, "良い", None))
+    conn.commit()
+    b = preview.build_bundle(conn, "target", {"target": _result(0.5)}, None, None,
+                             peers_override=[])
+    assert b["period_label"] == ""
+    assert "分析期間" not in slides.slide1_facility_info(b)

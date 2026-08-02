@@ -249,21 +249,30 @@ def build_bundle(
     # 月別ポジ/ネガ件数
     monthly_pos_neg = db.monthly_rating_counts(conn, fid) if fid else []
 
-    # ── 分析期間（比較母数の口コミが実際にカバーしている範囲）───────────── #
-    period_label = ""
-    _period_names = [target] + peer_valid
-    if _period_names:
-        _ph = ",".join("?" * len(_period_names))
-        _pr = conn.execute(
+    # ── 分析期間 ────────────────────────────────────────────────────── #
+    # 固定値ではなく、その施設の口コミが実際にカバーしている範囲から出す。
+    # スライドによって対象が違うので2種類返す:
+    #   period_label       … 対象施設だけ（SLIDE 1「施設・基本情報」など）
+    #   period_label_scope … 対象施設＋比較施設（比較系スライドのヘッダ）
+    def _ym(s: str) -> str:
+        return f"{s[:4]}/{s[5:7].lstrip('0')}" if len(s) >= 7 else str(s)
+
+    def _period_of(names: list[str]) -> str:
+        if not names:
+            return ""
+        ph = ",".join("?" * len(names))
+        row = conn.execute(
             f"SELECT MIN(r.review_date), MAX(r.review_date) FROM review r "
             f"JOIN facility f ON f.id = r.facility_id "
-            f"WHERE f.name IN ({_ph}) AND r.review_date IS NOT NULL AND r.review_date != ''",
-            _period_names,
+            f"WHERE f.name IN ({ph}) AND r.review_date IS NOT NULL AND r.review_date != ''",
+            names,
         ).fetchone()
-        if _pr and _pr[0] and _pr[1]:
-            def _ym(s: str) -> str:
-                return f"{s[:4]}/{s[5:7].lstrip('0')}" if len(s) >= 7 else str(s)
-            period_label = f"{_ym(_pr[0])}〜{_ym(_pr[1])}"
+        if not row or not row[0] or not row[1]:
+            return ""
+        return f"{_ym(row[0])}〜{_ym(row[1])}"
+
+    period_label = _period_of([target])
+    period_label_scope = _period_of([target] + peer_valid) or period_label
 
     return {
         "target": target,
@@ -277,7 +286,8 @@ def build_bundle(
         "comparison_scope": "competitor" if is_competitor_mode else "market",
         "scope_label": scope_label,   # 「選択競合内」/「市場内」
         "scope_noun": scope_noun,     # 「選択競合」/「市場」
-        "period_label": period_label,  # 口コミが実際にカバーする期間「2023/4〜2024/3」
+        "period_label": period_label,              # 対象施設の口コミ期間
+        "period_label_scope": period_label_scope,  # 対象施設＋比較施設の口コミ期間
         "date": f"{date.today():%Y年%m月%d日}",
         "basis": baseline_label,
         "baseline_label": baseline_label,
@@ -1428,7 +1438,8 @@ def html_competitor_compare(b: dict) -> str:
     )
 
     n_fac = len(cols) - 1 if has_avg else len(cols)
-    period = b.get("period_label") or ""
+    # 比較スライドなので、対象施設だけでなく比較施設も含めた期間を出す
+    period = b.get("period_label_scope") or b.get("period_label") or ""
     meta = (
         f'<div style="margin-left:auto;text-align:right;font-size:.85cqw;color:{SUB};">'
         f'分析対象：{n_fac}施設'
