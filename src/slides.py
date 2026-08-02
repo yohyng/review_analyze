@@ -736,9 +736,12 @@ def experience_map(b: dict, *, names: list[str] | None = None,
                      f'opacity="{0.85 if label_points else 0.55}"/>')
         if is_me or label_points:
             nm_disp = "当施設" if is_me else _clip_name(nm, 7)
+            # 上端付近のバブルはラベルを上に置くとパネルからはみ出すので下に回す
+            off = f"{rr * 1.9 + 3:.1f}" if py > 14 else f"-{rr * 1.9 + 1.6:.1f}"
+            shift = "0" if px < 14 else ("-100%" if px > 86 else "-50%")
             labels += (
                 f'<div style="position:absolute;left:{px:.2f}%;top:{py:.2f}%;'
-                f'transform:translate(-50%,-{rr * 1.9 + 3:.1f}cqw);'
+                f'transform:translate({shift},-{off}cqw);'
                 f'font-size:.68cqw;font-weight:800;white-space:nowrap;'
                 f'color:{T.ACCENT_DEEP if is_me else T.INK};">{escape(nm_disp)}</div>'
             )
@@ -788,7 +791,7 @@ def _outcome_boxes(b: dict) -> str:
     mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
     items = [("😊", "体験満足度"), ("👍", "推奨意向"), ("🔁", "再訪意向")]
     boxes = "".join(
-        f'<div style="flex:1;min-height:0;border:1.4px solid {T.ACCENT};'
+        f'<div style="flex:0 0 5.4cqw;border:1.4px solid {T.ACCENT};'
         'border-radius:.7cqw;display:flex;align-items:center;justify-content:center;'
         'gap:.6cqw;padding:.3cqw;">'
         f'<span style="font-size:1.3cqw;">{icon}</span>'
@@ -801,7 +804,7 @@ def _outcome_boxes(b: dict) -> str:
     )
     return (
         '<div style="width:11cqw;flex:none;display:flex;flex-direction:column;'
-        'gap:.55cqw;min-height:0;">'
+        'gap:.7cqw;min-height:0;justify-content:center;">'
         f'<div style="flex:none;font-size:.66cqw;font-weight:700;'
         f'color:{T.ACCENT_DEEP};">口コミから算出した主要スコア</div>'
         f'{boxes}</div>'
@@ -815,8 +818,8 @@ def market_trend(b: dict, note: str) -> str:
 
     def col(letter: str, title: str, items: list, accent: str, bg: str) -> str:
         rows = "".join(
-            '<div style="flex:1;display:flex;align-items:center;gap:.5cqw;'
-            'font-size:.78cqw;min-width:0;">'
+            '<div style="flex:none;height:2.1cqw;display:flex;align-items:center;'
+            'gap:.5cqw;font-size:.78cqw;min-width:0;">'
             f'<span style="flex:none;width:1.2cqw;height:1.2cqw;border-radius:50%;'
             f'border:1.2px solid {accent};"></span>'
             f'<span style="flex:1;min-width:0;color:{T.INK};overflow:hidden;'
@@ -892,3 +895,215 @@ def slide2_market_detail(b: dict) -> str:
         f'padding:1.2cqw 1.8cqw .4cqw;">{left}{right}</div>'
     )
     return canvas(header + body + footer())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 3「指定競合との比較」— docs/design/slide_p06.png / slide_p07.png
+# ═══════════════════════════════════════════════════════════════════════════
+def compare_columns(b: dict) -> list[tuple[str, str, dict, str]]:
+    """(表示名, 施設名, スコア, 色) の列。自施設 → 競合A〜E → 同業平均。"""
+    mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
+    peers = b.get("peer_topic_scores") or {}
+    cols: list[tuple[str, str, dict, str]] = [
+        ("自施設", b.get("target", ""), mine, T.SERIES_SELF)
+    ]
+    for i, nm in enumerate(list(peers)[: len(T.SERIES_PEERS)]):
+        cols.append((f"競合{'ABCDE'[i]}", nm, peers[nm], T.SERIES_PEERS[i]))
+    if b.get("overall_topic"):
+        cols.append(("同業平均", "同業平均", b["overall_topic"], T.SERIES_AVG))
+    return cols
+
+
+def _compare_chart(b: dict, topics: list[str]) -> str:
+    """主要19指標の折れ線（自施設・競合A〜D・同業平均）。1〜5点の固定軸。"""
+    cols = compare_columns(b)
+    n = len(topics)
+    LO, HI = 1.0, 5.0
+
+    def y(v): return (1 - (min(max(_score5(v), LO), HI) - LO) / (HI - LO)) * 100
+    def x(i): return i / (n - 1) * 100 if n > 1 else 50.0
+
+    dash = 'stroke-dasharray="3.5 2.5"'
+    grid = "".join(
+        f'<line x1="0" y1="{y(g * 20):.2f}" x2="100" y2="{y(g * 20):.2f}" '
+        f'stroke="{T.LINE}" stroke-width=".45" vector-effect="non-scaling-stroke"/>'
+        for g in (1, 2, 3, 4, 5)
+    )
+    series = ""
+    for label, _nm, sc, col in cols:
+        is_avg = label == "同業平均"
+        pts = " ".join(f"{x(i):.2f},{y(sc.get(t, 50.0)):.2f}" for i, t in enumerate(topics))
+        series += (
+            f'<polyline points="{pts}" fill="none" stroke="{col}" '
+            f'stroke-width="{1.1 if is_avg else 1.5}" {dash if is_avg else ""} '
+            'stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
+        )
+        if not is_avg:
+            series += "".join(
+                f'<circle cx="{x(i):.2f}" cy="{y(sc.get(t, 50.0)):.2f}" r="1.15" '
+                f'fill="#fff" stroke="{col}" stroke-width=".95" '
+                'vector-effect="non-scaling-stroke"/>'
+                for i, t in enumerate(topics)
+            )
+    ylabs = "".join(
+        f'<div style="position:absolute;top:{y(g * 20):.2f}%;left:-2.4cqw;width:2cqw;'
+        f'text-align:right;transform:translateY(-50%);font-size:.6cqw;color:{T.SUB};">'
+        f'{g}.0</div>'
+        for g in (1, 2, 3, 4, 5)
+    )
+    xlabs = "".join(
+        f'<div style="position:absolute;left:{x(i):.2f}%;top:0;'
+        'transform:translateX(-50%);">' + vertical_text(t, size=.5) + '</div>'
+        for i, t in enumerate(topics)
+    )
+    legend = "".join(
+        f'<span style="font-size:.68cqw;color:{T.INK};white-space:nowrap;">'
+        f'<span style="color:{col};font-weight:800;">'
+        f'{"╌╌" if lb == "同業平均" else "─○─"}</span> {escape(lb)}</span>'
+        for lb, _nm, _sc, col in cols
+    )
+    return (
+        '<div style="flex:none;display:flex;gap:.9cqw;flex-wrap:wrap;'
+        f'margin-bottom:.35cqw;">{legend}</div>'
+        '<div style="flex:1;position:relative;min-height:0;margin-left:2.6cqw;">'
+        f'{ylabs}'
+        '<svg viewBox="0 0 100 100" preserveAspectRatio="none" '
+        'style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;">'
+        f'{grid}{series}</svg></div>'
+        '<div style="flex:none;position:relative;height:8.6cqw;margin-left:2.6cqw;'
+        f'margin-top:.35cqw;">{xlabs}</div>'
+    )
+
+
+def _compare_heatmap(b: dict, topics: list[str]) -> str:
+    """施設別スコアヒートマップ。行=19指標 × 列=自施設/競合A〜D/同業平均。"""
+    cols = compare_columns(b)
+    vals = [sc.get(t, 50.0) for _l, _n, sc, _c in cols for t in topics]
+    lo, hi = min(vals), max(vals)
+    mid = (lo + hi) / 2
+    half = max(hi - mid, mid - lo) or 1
+
+    def bg(v: float) -> str:
+        r = (v - mid) / half
+        if r >= 0:
+            return f"rgba(233,64,107,{0.05 + 0.30 * min(r, 1):.3f})"
+        return f"rgba(91,155,213,{0.05 + 0.30 * min(-r, 1):.3f})"
+
+    c = "padding:.24cqw .1cqw;text-align:center;font-size:.64cqw;"
+    head = (
+        f'<div style="display:flex;background:#F4F3EE;font-weight:800;color:{T.SUB};">'
+        f'<div style="width:7.2cqw;flex:none;{c}text-align:left;padding-left:.4cqw;">'
+        '指標</div>'
+        + "".join(
+            f'<div style="flex:1;{c}color:{col};">{escape(lb)}</div>'
+            for lb, _n, _s, col in cols
+        )
+        + '</div>'
+    )
+    rows = "".join(
+        f'<div style="flex:1;display:flex;border-top:1px solid {T.LINE};">'
+        f'<div style="width:7.2cqw;flex:none;{c}text-align:left;padding-left:.4cqw;'
+        f'color:{T.INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        f'{escape(t)}</div>'
+        + "".join(
+            f'<div style="flex:1;{c}background:{bg(sc.get(t, 50.0))};'
+            f'color:{T.INK};font-weight:700;">{_pt5(sc.get(t, 50.0))}</div>'
+            for _l, _n, sc, _c in cols
+        )
+        + '</div>'
+        for t in topics
+    )
+    return f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;">{head}{rows}</div>'
+
+
+def _vs_peer_lists(b: dict, topics: list[str]) -> tuple[list, list]:
+    """競合平均との差（5点満点）。(勝っている項目, 負けている項目)。"""
+    mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
+    peers = b.get("peer_topic_scores") or {}
+    if not peers:
+        return [], []
+    win, lose = [], []
+    for t in topics:
+        pv = [p.get(t, 50.0) for p in peers.values()]
+        if not pv:
+            continue
+        d = (mine.get(t, 50.0) - sum(pv) / len(pv)) / 100 * 5
+        (win if d > 0 else lose).append((t, round(d, 2)))
+    win.sort(key=lambda z: -z[1])
+    lose.sort(key=lambda z: z[1])
+    return win, lose
+
+
+def _diff_grid(rows: list, color: str, cap: int) -> str:
+    if not rows:
+        return f'<div style="color:{T.SUB};font-size:.8cqw;">該当なし</div>'
+    return (
+        '<div style="flex:1;display:grid;grid-template-columns:1fr 1fr;'
+        'column-gap:1.4cqw;align-content:space-around;">'
+        + "".join(
+            '<div style="display:flex;align-items:center;gap:.5cqw;font-size:.82cqw;">'
+            f'<span style="flex:none;width:.44cqw;height:.44cqw;border-radius:50%;'
+            f'background:{color};"></span>'
+            f'<span style="flex:1;min-width:0;color:{T.INK};overflow:hidden;'
+            f'text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</span>'
+            f'<span style="flex:none;color:{color};font-weight:700;">'
+            f'（{d:+.2f}）</span></div>'
+            for t, d in rows[:cap]
+        )
+        + '</div>'
+    )
+
+
+def _compare_header(b: dict, detail: bool) -> str:
+    cols = compare_columns(b)
+    n_fac = sum(1 for lb, _n, _s, _c in cols if lb != "同業平均")
+    period = b.get("period_label_scope") or b.get("period_label") or ""
+    meta = f"分析対象：{n_fac}施設"
+    if period:
+        meta += f"　分析期間：{period}"
+    return slide_header("3", "指定競合との比較", meta,
+                        sub_title="詳細" if detail else "")
+
+
+def slide3_competitor_compare(b: dict) -> str:
+    """SLIDE 3「指定競合との比較」。docs/design/slide_p06.png。"""
+    topics = _driver_topics(b)
+    if not topics:
+        return canvas(
+            _compare_header(b, False)
+            + f'<div style="flex:1;display:flex;align-items:center;'
+            f'justify-content:center;color:{T.SUB};font-size:1.1cqw;">'
+            '比較できるデータがありません。</div>' + footer()
+        )
+    win, lose = _vs_peer_lists(b, topics)
+    body = (
+        f'<div style="flex:none;font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
+        f'color:{T.INK};padding:.9cqw 1.8cqw .6cqw;">'
+        '2〜5施設を横並びで比較し、自施設の立ち位置を把握します。</div>'
+        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;padding:0 1.8cqw;">'
+        + panel("主要19指標の比較（5点満点）", _compare_chart(b, topics))
+        + panel("施設別スコアヒートマップ（5点満点）", _compare_heatmap(b, topics))
+        + '</div>'
+        '<div style="flex:none;display:flex;gap:1.1cqw;height:8.6cqw;'
+        'padding:.9cqw 1.8cqw 0;">'
+        + panel("自施設だけの強み", _diff_grid(win, T.ACCENT_DEEP, 6))
+        + panel("競合に負けている項目", _diff_grid(lose, T.NAVY, 4))
+        + '</div>'
+    )
+    return canvas(_compare_header(b, False) + body + footer())
+
+
+def slide3_competitor_detail(b: dict) -> str:
+    """SLIDE 3「指定競合との比較（詳細）」。docs/design/slide_p07.png。"""
+    peers = list((b.get("peer_topic_scores") or {}))[: len(T.SERIES_PEERS)]
+    body = (
+        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;'
+        'padding:1.2cqw 1.8cqw .4cqw;">'
+        + panel("総合体験評価マッピング",
+                experience_map(b, names=peers, label_points=True), style="flex:1")
+        + panel("指定競合の傾向",
+                market_trend(b, "※ 市場傾向は同カテゴリ施設の口コミ分析から算出"),
+                style="flex:1")
+        + '</div>'
+    )
+    return canvas(_compare_header(b, True) + body + footer())

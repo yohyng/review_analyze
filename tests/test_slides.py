@@ -328,3 +328,86 @@ def test_experience_map_can_be_limited_to_selected_peers(tmp_path):
     assert "peer0" in only2 and "peer1" in only2
     assert "peer4" not in only2
     assert "当施設" in only2                    # 対象施設は常に描く
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 3「指定競合との比較」＋詳細（PDF p6, p7）
+# --------------------------------------------------------------------------- #
+def test_compare_columns_are_self_peers_then_average(tmp_path):
+    b = _bundle(tmp_path, n_peers=4)
+    labels = [c[0] for c in slides.compare_columns(b)]
+    assert labels == ["自施設", "競合A", "競合B", "競合C", "競合D", "同業平均"]
+
+
+def test_compare_columns_cap_peers_at_five(tmp_path):
+    b = _bundle(tmp_path, n_peers=8)
+    labels = [c[0] for c in slides.compare_columns(b)]
+    assert "競合E" in labels and "競合F" not in labels
+
+
+def test_slide3_has_chart_heatmap_and_diff_panels(tmp_path):
+    b = _bundle(tmp_path, n_peers=4)
+    html = slides.slide3_competitor_compare(b)
+    for t in ("指定競合との比較", "2〜5施設を横並びで比較し、自施設の立ち位置を把握します。",
+              "主要19指標の比較（5点満点）", "施設別スコアヒートマップ（5点満点）",
+              "自施設だけの強み", "競合に負けている項目", "分析対象：5施設"):
+        assert t in html, t
+    for t in topic_score.DRIVER_TOPICS:
+        assert t[:4] in html, t
+    for t in topic_score.OUTCOME_TOPICS:
+        assert t not in html, t
+
+
+def test_slide3_diff_values_are_five_point_scale(tmp_path):
+    """差分は5点満点（100点満点の pt ではない）。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    for nm in ("target", "peer1"):
+        db.upsert_facility(conn, nm, ftype="comparison")
+    conn.commit()
+    matrix = {"target": _result(0.80), "peer1": _result(0.40)}
+    b = preview.build_bundle(conn, "target", matrix, None, None, peers_override=["peer1"])
+    html = slides.slide3_competitor_compare(b)
+    assert "+2.00" in html          # 4.00 - 2.00
+    assert "+40.0" not in html
+
+
+def test_slide3_detail_has_map_and_trend(tmp_path):
+    b = _bundle(tmp_path, n_peers=4)
+    html = slides.slide3_competitor_detail(b)
+    assert "総合体験評価マッピング" in html and "指定競合の傾向" in html
+    assert "（詳細）" in html
+    assert "体験満足度" in html and "推奨意向" in html and "再訪意向" in html
+    # 詳細は競合だけをプロットして名前を出す
+    for i in range(4):
+        assert f"peer{i}" in html
+    assert "当施設" in html
+
+
+def test_slide3_detail_excludes_non_selected_facilities(tmp_path):
+    """母数に他施設がいても、詳細のマッピングには競合だけを描く。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    names = ["target", "peerA", "peerB", "outsider"]
+    for nm in names:
+        db.upsert_facility(conn, nm, ftype="comparison")
+    conn.commit()
+    matrix = {nm: _result(0.5 + 0.04 * i) for i, nm in enumerate(names)}
+    b = preview.build_bundle(conn, "target", matrix, None, None,
+                             peers_override=["peerA", "peerB"])
+    html = slides.slide3_competitor_detail(b)
+    assert "peerA" in html and "peerB" in html
+    assert "outsider" not in html
+
+
+def test_slide3_survives_no_peers(tmp_path):
+    b = _bundle(tmp_path, n_peers=0)
+    assert slides.slide3_competitor_compare(b)
+    assert slides.slide3_competitor_detail(b)
+
+
+def test_bubble_labels_stay_inside_the_plot(tmp_path):
+    """端のバブルはラベルの寄せ方を変えてパネル外へ出さない。"""
+    b = _bundle(tmp_path, n_peers=4)
+    html = slides.experience_map(b, names=list(b["peer_topic_scores"]), label_points=True)
+    assert "translate(0," in html or "translate(-100%," in html or "translate(-50%," in html
