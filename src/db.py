@@ -288,6 +288,16 @@ CREATE TABLE IF NOT EXISTS kaizode_usage (
     updated_at      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS topic_score_cache (
+    facility_id   INTEGER NOT NULL REFERENCES facility(id) ON DELETE CASCADE,
+    n_reviews     INTEGER NOT NULL,
+    topics_json   TEXT    NOT NULL,
+    overall_score REAL    NOT NULL DEFAULT 0,
+    n_sentences   INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    DEFAULT (datetime('now')),
+    PRIMARY KEY (facility_id, n_reviews)
+);
+
 CREATE INDEX IF NOT EXISTS idx_review_facility ON review(facility_id);
 CREATE INDEX IF NOT EXISTS idx_subscore_review ON review_subscore(review_db_id);
 CREATE INDEX IF NOT EXISTS idx_score_facility ON score(facility_id);
@@ -360,6 +370,37 @@ def init_db(conn) -> None:
         conn.execute(stmt)
     conn.commit()
     _migrate(conn)
+
+
+# --------------------------------------------------------------------------- #
+# Topic-score cache (永続化キャッシュ — 口コミ件数が変わったら自動失効)
+# --------------------------------------------------------------------------- #
+def get_topic_score_cache(conn, facility_id: int, n_reviews: int):
+    """キャッシュがあれば {"topics_json": str, "overall_score": float, "n_sentences": int} を返す。"""
+    row = conn.execute(
+        "SELECT topics_json, overall_score, n_sentences FROM topic_score_cache "
+        "WHERE facility_id = ? AND n_reviews = ?",
+        (facility_id, n_reviews),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def set_topic_score_cache(
+    conn,
+    facility_id: int,
+    n_reviews: int,
+    topics_json: str,
+    overall_score: float,
+    n_sentences: int,
+) -> None:
+    """スコア結果をDBにキャッシュ保存する（同キーがあれば上書き）。"""
+    conn.execute(
+        "INSERT OR REPLACE INTO topic_score_cache "
+        "(facility_id, n_reviews, topics_json, overall_score, n_sentences) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (facility_id, n_reviews, topics_json, overall_score, n_sentences),
+    )
+    conn.commit()
 
 
 # --------------------------------------------------------------------------- #

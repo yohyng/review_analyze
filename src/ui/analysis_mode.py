@@ -6,6 +6,7 @@ app_mode == "analysis".
 from __future__ import annotations
 
 import base64
+import json
 import os
 import tempfile
 import threading
@@ -563,19 +564,70 @@ def render():
                     st.session_state[pkey] = _profile
 
                     # ③-b  全施設の感情スコア行列
-                    #   キャッシュあり → 即返却（ほぼ0秒）
-                    #   キャッシュなし（初回 / キャッシュ破棄後）→ 施設ごとにループ
+                    #   優先順: session_state / @st.cache_data → DBキャッシュ → 計算
                     prebuilt = prog.get("_cached_matrix")
                     total_fac = len(all_names)
                     if prebuilt:
                         matrix = prebuilt
-                        prog["detail"] = f"感情スコア {total_fac} 施設 — キャッシュから読み込み完了"
+                        prog["detail"] = f"感情スコア {total_fac} 施設 — セッションキャッシュから読み込み完了"
                     else:
+                        # facility_id と n_reviews をまとめて取得（1クエリ）
+                        fac_rows = tconn.execute(
+                            "SELECT f.id, f.name, COUNT(r.id) as nr "
+                            "FROM facility f LEFT JOIN review r ON r.facility_id = f.id "
+                            "GROUP BY f.id"
+                        ).fetchall()
+                        fac_info = {row["name"]: (row["id"], row["nr"]) for row in fac_rows}
+
                         matrix = {}
+                        n_cached, n_computed = 0, 0
                         for i, fname in enumerate(all_names):
-                            prog["detail"] = f"感情スコア {i + 1}/{total_fac} 施設: {fname}"
-                            matrix[fname] = topic_score.analyze_facility(tconn, fname)
-                        # 次回実行のためにセッション内キャッシュへ書き戻す
+                            fid_n = fac_info.get(fname)
+                            cached_row = (
+                                db.get_topic_score_cache(tconn, fid_n[0], fid_n[1])
+                                if fid_n else None
+                            )
+                            if cached_row:
+                                topics_data = json.loads(cached_row["topics_json"])
+                                ts_topics = [
+                                    topic_score.TopicScore(**t) for t in topics_data
+                                ]
+                                matrix[fname] = topic_score.TopicScoreResult(
+                                    topics=ts_topics,
+                                    overall_score=cached_row["overall_score"],
+                                    n_reviews=fid_n[1],
+                                    n_sentences=cached_row["n_sentences"],
+                                    backend="db_cache",
+                                    empty=len(ts_topics) == 0,
+                                )
+                                n_cached += 1
+                                prog["detail"] = (
+                                    f"感情スコア {i + 1}/{total_fac} 施設"
+                                    f" — DBキャッシュ {n_cached} 件・計算済み {n_computed} 件"
+                                )
+                            else:
+                                prog["detail"] = f"感情スコア {i + 1}/{total_fac} 施設: {fname}"
+                                result = topic_score.analyze_facility(tconn, fname)
+                                matrix[fname] = result
+                                n_computed += 1
+                                # DBに保存（次回 Streamlit 再起動後も有効）
+                                if fid_n and not result.empty:
+                                    topics_json_str = json.dumps([
+                                        {"name": t.name, "weight": t.weight,
+                                         "avg_score": t.avg_score, "total_score": t.total_score,
+                                         "salience": t.salience, "sentiment": t.sentiment}
+                                        for t in result.topics
+                                    ])
+                                    try:
+                                        db.set_topic_score_cache(
+                                            tconn, fid_n[0], fid_n[1],
+                                            topics_json_str, result.overall_score,
+                                            result.n_sentences,
+                                        )
+                                    except Exception:
+                                        pass  # キャッシュ保存失敗は無視
+
+                        # session_state にも書き戻す（同セッション内の再実行を高速化）
                         st.session_state[prog["_matrix_ss_key"]] = matrix
 
                     _ts_result = matrix.get(tgt) or topic_score.analyze_facility(tconn, tgt)
