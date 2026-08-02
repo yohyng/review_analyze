@@ -465,13 +465,26 @@ def render():
 
             _all_names = _all_facility_names()
             _n_fac = len(_all_names)
-            _prof_key = f"_vb_profile_{_target}_{hash(_topic_sig())}"
+            _sig = _topic_sig()
+            _prof_key = f"_vb_profile_{_target}_{hash(_sig)}"
             _cached_profile = st.session_state.get(_prof_key)
+            # キャッシュ確認（優先順位）:
+            #   1) session_state（前回このセッションでスレッドが構築したもの）
+            #   2) @st.cache_data（旧コードが過去に構築したクロスセッションキャッシュ）
+            #   3) None → スレッド内でループ計算（初回のみ）
+            _matrix_ss_key = f"_vb_matrix_{hash(_sig)}"
+            _cached_matrix = st.session_state.get(_matrix_ss_key) or None
+            if not _cached_matrix:
+                try:
+                    _cached_matrix = _topic_matrix_cached(_sig) or None
+                except Exception:
+                    _cached_matrix = None
 
             # Init shared progress dict (thread writes to this directly)
             _new_prog: dict = {
                 "step": 2,
-                "detail": f"{_n_fac} 施設・{_n_with_text:,} 件の感情スコアを解析中 (1/{_n_fac})",
+                "detail": f"{_n_fac} 施設のキャッシュを確認中…" if _cached_matrix else
+                          f"{_n_fac} 施設・{_n_with_text:,} 件の感情スコアを解析中 (1/{_n_fac})",
                 "running": True,
                 "done": False,
                 "error": None,
@@ -487,6 +500,8 @@ def render():
                 "_all_names": _all_names,
                 "_prof_key": _prof_key,
                 "_cached_profile": _cached_profile,
+                "_cached_matrix": _cached_matrix,
+                "_matrix_ss_key": _matrix_ss_key,
             }
             st.session_state[_PROG_KEY] = _new_prog
 
@@ -510,14 +525,21 @@ def render():
                     _profile = prog["_cached_profile"] or text_analysis.build_profile(tconn, tgt, top_n=20)
                     st.session_state[pkey] = _profile
 
-                    # ③-b  全施設の感情スコア行列（施設数分ループ、進捗を逐次更新）
+                    # ③-b  全施設の感情スコア行列
+                    #   キャッシュあり → 即返却（ほぼ0秒）
+                    #   キャッシュなし（初回 / キャッシュ破棄後）→ 施設ごとにループ
+                    prebuilt = prog.get("_cached_matrix")
                     total_fac = len(all_names)
-                    matrix: dict = {}
-                    for i, fname in enumerate(all_names):
-                        prog["detail"] = (
-                            f"感情スコア {i + 1}/{total_fac} 施設: {fname}"
-                        )
-                        matrix[fname] = topic_score.analyze_facility(tconn, fname)
+                    if prebuilt:
+                        matrix = prebuilt
+                        prog["detail"] = f"感情スコア {total_fac} 施設 — キャッシュから読み込み完了"
+                    else:
+                        matrix = {}
+                        for i, fname in enumerate(all_names):
+                            prog["detail"] = f"感情スコア {i + 1}/{total_fac} 施設: {fname}"
+                            matrix[fname] = topic_score.analyze_facility(tconn, fname)
+                        # 次回実行のためにセッション内キャッシュへ書き戻す
+                        st.session_state[prog["_matrix_ss_key"]] = matrix
 
                     _ts_result = matrix.get(tgt) or topic_score.analyze_facility(tconn, tgt)
 
