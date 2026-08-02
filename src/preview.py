@@ -25,6 +25,10 @@ NEU = "#C9C3B6"
 NEG = "#C66B61"
 LINE = "#E1E0D9"
 CARD_LINE = "#E9E8E2"
+# SLIDE 3（指定競合との比較）— 紺のパネル見出しと競合A〜Dの系列色
+PANEL_HEAD = "#1B2A5B"
+PEER_COLORS = ["#1B2A5B", "#5B9BD5", "#1FA98C", "#7B4FD8"]
+NEU_LINE = "#A7ABB0"
 
 
 def _clip(s: str, n: int) -> str:
@@ -245,6 +249,22 @@ def build_bundle(
     # 月別ポジ/ネガ件数
     monthly_pos_neg = db.monthly_rating_counts(conn, fid) if fid else []
 
+    # ── 分析期間（比較母数の口コミが実際にカバーしている範囲）───────────── #
+    period_label = ""
+    _period_names = [target] + peer_valid
+    if _period_names:
+        _ph = ",".join("?" * len(_period_names))
+        _pr = conn.execute(
+            f"SELECT MIN(r.review_date), MAX(r.review_date) FROM review r "
+            f"JOIN facility f ON f.id = r.facility_id "
+            f"WHERE f.name IN ({_ph}) AND r.review_date IS NOT NULL AND r.review_date != ''",
+            _period_names,
+        ).fetchone()
+        if _pr and _pr[0] and _pr[1]:
+            def _ym(s: str) -> str:
+                return f"{s[:4]}/{s[5:7].lstrip('0')}" if len(s) >= 7 else str(s)
+            period_label = f"{_ym(_pr[0])}〜{_ym(_pr[1])}"
+
     return {
         "target": target,
         "category": category,
@@ -257,6 +277,7 @@ def build_bundle(
         "comparison_scope": "competitor" if is_competitor_mode else "market",
         "scope_label": scope_label,   # 「選択競合内」/「市場内」
         "scope_noun": scope_noun,     # 「選択競合」/「市場」
+        "period_label": period_label,  # 口コミが実際にカバーする期間「2023/4〜2024/3」
         "date": f"{date.today():%Y年%m月%d日}",
         "basis": baseline_label,
         "baseline_label": baseline_label,
@@ -1220,166 +1241,216 @@ def html_market_detail(b: dict) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 # SLIDE 3「指定競合との比較」
 # ═══════════════════════════════════════════════════════════════════════════
+def _panel(title: str, body: str, flex: str = "flex:1") -> str:
+    """紺ヘッダ＋白本文のパネル（SLIDE 3 の共通ブロック）。"""
+    return (
+        f'<div style="{flex};min-width:0;display:flex;flex-direction:column;'
+        f'border:1px solid {CARD_LINE};border-radius:.7cqw;overflow:hidden;">'
+        f'<div style="flex:none;background:{PANEL_HEAD};color:#fff;text-align:center;'
+        f'font-size:1.05cqw;font-weight:800;padding:.5cqw;">{escape(title)}</div>'
+        f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;'
+        f'padding:.7cqw .8cqw;background:#fff;">{body}</div></div>'
+    )
+
+
 def html_competitor_compare(b: dict) -> str:
-    """SLIDE 3: 22観点の複数施設折れ線＋ヒートマップ表＋強み弱みリスト。"""
-    order = topic_score.TOPIC_ORDER
+    """SLIDE 3「指定競合との比較」— 主要19指標の折れ線＋施設別ヒートマップ＋強み弱み。
+
+    体験満足度・推奨意向・再訪意向は体験の結果側（outcome）なので、施設を横並びで
+    比較するこのスライドでは driver 側の19指標だけを扱う（topic_score.DRIVER_TOPICS）。
+    スコアはすべて 5点満点換算で表示する。
+    """
     target_name = b.get("target", "対象施設")
     target_scores = {t: v for t, v in zip(b.get("topic_names") or [], b.get("topic_values") or [])}
     peer_ts = b.get("peer_topic_scores") or {}
-    basis = b.get("baseline_label", "全体平均")
+    overall_topic = b.get("overall_topic") or {}
 
-    all_facilities = {target_name: target_scores, **peer_ts}
-    FAC_COLORS = [ACCENT, "#2D7DD2", "#3BB273", "#E66000", "#8338EC", "#FF6B6B"]
-    fac_list = list(all_facilities.keys())
+    topics = [t for t in topic_score.DRIVER_TOPICS if t in target_scores]
+    n = len(topics)
+    if not topics:
+        return _canvas(
+            _slide_header("3", "指定競合との比較", "2〜5施設を横並びで比較し、自施設の立ち位置を把握します。")
+            + f'<div style="flex:1;display:flex;align-items:center;justify-content:center;'
+            f'color:{SUB};font-size:1.1cqw;">比較できるデータがありません。</div>'
+        )
 
-    topics_avail = [t for t in order if t in target_scores]
-    n = len(topics_avail)
+    # ── 列の構成: 自施設 → 競合A..D → 同業平均 ──────────────────── #
+    peer_names = list(peer_ts.keys())[:4]
+    cols: list[tuple[str, str, dict, str]] = [("自施設", target_name, target_scores, ACCENT)]
+    for i, nm in enumerate(peer_names):
+        cols.append((f"競合{'ABCD'[i]}", nm, peer_ts[nm], PEER_COLORS[i]))
+    has_avg = bool(overall_topic)
+    if has_avg:
+        cols.append(("同業平均", b.get("baseline_label", "同業平均"), overall_topic, NEU_LINE))
 
-    # ── 多施設折れ線チャート ──────────────────────────────────── #
-    if topics_avail:
-        all_vals = [v for sc in all_facilities.values() for t, v in sc.items() if t in topics_avail]
-        mn, mx = (min(all_vals) - 5) if all_vals else 30, (max(all_vals) + 5) if all_vals else 90
-        rng = mx - mn or 1
+    # ── 主要19指標の折れ線（5点満点・1.0〜5.0固定軸）──────────────── #
+    LO, HI = 1.0, 5.0
 
-        def _line(scores, col, is_target):
-            vals = [scores.get(t, 50.0) for t in topics_avail]
-            pts = " ".join(
-                f"{(i/(n-1)*100 if n>1 else 50):.2f},{(1-(v-mn)/rng)*100:.2f}"
-                for i, v in enumerate(vals)
+    def _y(v100: float) -> float:
+        return (1 - (min(max(_score_5pt(v100), LO), HI) - LO) / (HI - LO)) * 100
+
+    def _x(i: int) -> float:
+        return i / (n - 1) * 100 if n > 1 else 50.0
+
+    _dash_grid = 'stroke-dasharray="2 2"'
+    _dash_avg = 'stroke-dasharray="3 2"'
+    grid = "".join(
+        f'<line x1="0" y1="{_y(g / 5 * 100):.2f}" x2="100" y2="{_y(g / 5 * 100):.2f}" '
+        f'stroke="{LINE}" stroke-width=".4" vector-effect="non-scaling-stroke" '
+        f'{"" if g in (1, 5) else _dash_grid} />'
+        for g in (1, 2, 3, 4, 5)
+    )
+    series = ""
+    for label, _nm, sc, col in cols:
+        is_avg = label == "同業平均"
+        pts = " ".join(f"{_x(i):.2f},{_y(sc.get(t, 50.0)):.2f}" for i, t in enumerate(topics))
+        series += (
+            f'<polyline points="{pts}" fill="none" stroke="{col}" '
+            f'stroke-width="{1.1 if is_avg else 1.6}" '
+            f'{_dash_avg if is_avg else ""} '
+            f'stroke-linejoin="round" vector-effect="non-scaling-stroke" />'
+        )
+        if not is_avg:   # マーカー（同業平均は線のみ）
+            series += "".join(
+                f'<circle cx="{_x(i):.2f}" cy="{_y(sc.get(t, 50.0)):.2f}" r="1.1" '
+                f'fill="#fff" stroke="{col}" stroke-width=".9" vector-effect="non-scaling-stroke" />'
+                for i, t in enumerate(topics)
             )
-            sw = "2" if is_target else "1.2"
-            da = "" if is_target else 'stroke-dasharray="3 2"'
-            return (
-                f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="{sw}" '
-                f'{da} stroke-linejoin="round" vector-effect="non-scaling-stroke" />'
-            )
 
-        svglines = "".join(
-            _line(sc, FAC_COLORS[min(i, len(FAC_COLORS)-1)], nm == target_name)
-            for i, (nm, sc) in enumerate(all_facilities.items())
-        )
-        xlabs = "".join(
-            f'<div style="position:absolute;left:{(i/(n-1)*100 if n>1 else 50):.1f}%;bottom:0;'
-            'transform:translateX(-50%) rotate(-40deg);transform-origin:top center;'
-            f'font-size:.55cqw;color:#A7ABB0;white-space:nowrap;">{escape(t)}</div>'
-            for i, t in enumerate(topics_avail)
-        )
-        legend = "".join(
-            f'<span style="margin-right:.9cqw;font-size:.8cqw;white-space:nowrap;">'
-            f'<span style="color:{FAC_COLORS[min(i, len(FAC_COLORS)-1)]};font-weight:800;">─</span> '
-            f'{escape(_clip(nm, 10))}</span>'
-            for i, nm in enumerate(fac_list)
-        )
-        chart = (
-            '<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
-            f'<div style="flex:1;position:relative;border-bottom:1px solid {LINE};">'
-            f'<div style="position:absolute;inset:0;">'
-            f'<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="width:100%;height:100%;overflow:visible;">'
-            f'{svglines}</svg></div></div>'
-            f'<div style="position:relative;height:5cqw;">{xlabs}</div>'
-            f'<div style="flex:none;margin-top:.3cqw;">{legend}</div>'
-            '</div>'
-        )
-    else:
-        chart = f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:{SUB};font-size:1.1cqw;">データ不足</div>'
+    ylabs = "".join(
+        f'<div style="position:absolute;top:{_y(g / 5 * 100):.2f}%;left:-1.8cqw;width:1.5cqw;'
+        f'text-align:right;transform:translateY(-50%);font-size:.65cqw;color:{SUB};">{g}.0</div>'
+        for g in (1, 2, 3, 4, 5)
+    )
+    # 19本のラベルを狭いパネルに収めるため、傾きを強めにして長い名称は詰める
+    xlabs = "".join(
+        f'<div style="position:absolute;left:{_x(i):.2f}%;top:0;'
+        'transform:translateX(-50%) rotate(-55deg);transform-origin:top right;'
+        f'font-size:.52cqw;color:{SUB};white-space:nowrap;">{escape(_clip(t, 10))}</div>'
+        for i, t in enumerate(topics)
+    )
+    legend = "".join(
+        f'<span style="margin-right:1cqw;font-size:.72cqw;white-space:nowrap;color:{INK};">'
+        f'<span style="color:{col};font-weight:800;">{"╌" if lb == "同業平均" else "─○─"}</span> '
+        f'{escape(lb)}</span>'
+        for lb, _nm, _sc, col in cols
+    )
+    chart_body = (
+        f'<div style="flex:none;margin-bottom:.4cqw;">{legend}</div>'
+        f'<div style="flex:1;position:relative;min-height:0;margin-left:1.8cqw;">'
+        f'{ylabs}'
+        f'<svg viewBox="0 0 100 100" preserveAspectRatio="none" '
+        f'style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;">'
+        f'{grid}{series}</svg></div>'
+        f'<div style="flex:none;position:relative;height:5.2cqw;margin-left:1.8cqw;">{xlabs}</div>'
+    )
+    chart = _panel("主要19指標の比較（5点満点）", chart_body)
 
-    # ── ヒートマップ表（上位8トピックのみ）──────────────────── #
-    show_topics = topics_avail[:8]
-    all_t_vals = [sc.get(t, 50.0) for sc in all_facilities.values() for t in show_topics]
-    t_min, t_max = (min(all_t_vals), max(all_t_vals)) if all_t_vals else (0, 100)
-    t_rng = t_max - t_min or 1
+    # ── 施設別スコアヒートマップ: 行=19指標 × 列=施設 ────────────── #
+    #    高い=ピンク / 低い=青 の2色発散。中心は各指標の平均ではなく全体の中央値。
+    heat_vals = [sc.get(t, 50.0) for _l, _n, sc, _c in cols for t in topics]
+    h_min, h_max = min(heat_vals), max(heat_vals)
+    h_mid = (h_min + h_max) / 2
+    h_half = max(h_max - h_mid, h_mid - h_min) or 1
 
-    def _heat_col(v):
-        ratio = (v - t_min) / t_rng
-        r = int(199 + (79 - 199) * ratio)
-        g = int(193 + (138 - 193) * ratio)
-        b_ = int(182 + (107 - 182) * ratio)
-        return f"rgb({r},{g},{b_})"
+    def _heat_bg(v: float) -> str:
+        r = (v - h_mid) / h_half          # -1(低) 〜 +1(高)
+        if r >= 0:                        # 高い → ピンク
+            return f"rgba(176,51,138,{0.06 + 0.24 * min(r, 1):.3f})"
+        return f"rgba(45,125,210,{0.06 + 0.24 * min(-r, 1):.3f})"
 
-    header_row = (
-        f'<div style="display:flex;background:#F0EFE9;font-size:.75cqw;font-weight:700;color:{SUB};">'
-        f'<div style="width:9cqw;flex:none;padding:.4cqw .5cqw;">施設</div>'
+    _hcell = "padding:.28cqw .1cqw;text-align:center;font-size:.72cqw;"
+    head = (
+        f'<div style="display:flex;background:#F4F3EE;font-weight:800;color:{SUB};">'
+        f'<div style="width:7.6cqw;flex:none;{_hcell}text-align:left;padding-left:.45cqw;">指標</div>'
         + "".join(
-            f'<div style="flex:1;padding:.4cqw .2cqw;text-align:center;white-space:nowrap;'
-            f'overflow:hidden;text-overflow:ellipsis;">{escape(t[:5])}</div>'
-            for t in show_topics
+            f'<div style="flex:1;{_hcell}color:{col};">{escape(lb)}</div>'
+            for lb, _nm, _sc, col in cols
         )
         + '</div>'
     )
-    data_rows = ""
-    for i, (nm, sc) in enumerate(all_facilities.items()):
-        col = FAC_COLORS[min(i, len(FAC_COLORS)-1)]
-        data_rows += (
-            f'<div style="display:flex;border-top:1px solid {LINE};">'
-            f'<div style="width:9cqw;flex:none;padding:.35cqw .5cqw;font-size:.75cqw;font-weight:700;'
-            f'color:{col};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(_clip(nm, 8))}</div>'
-            + "".join(
-                f'<div style="flex:1;background:{_heat_col(sc.get(t, 50.0))};text-align:center;'
-                f'padding:.35cqw .1cqw;font-size:.75cqw;font-weight:700;color:{INK};">'
-                f'{_score_5pt(sc.get(t, 50.0)):.1f}</div>'
-                for t in show_topics
-            )
-            + '</div>'
+    rows_html = "".join(
+        f'<div style="display:flex;border-top:1px solid {LINE};">'
+        f'<div style="width:7.6cqw;flex:none;{_hcell}text-align:left;padding-left:.45cqw;'
+        f'color:{INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</div>'
+        + "".join(
+            f'<div style="flex:1;{_hcell}background:{_heat_bg(sc.get(t, 50.0))};'
+            f'color:{INK};font-weight:700;">{_score_5pt(sc.get(t, 50.0)):.2f}</div>'
+            for _l, _n, sc, _c in cols
         )
-    heatmap = (
-        f'<div style="flex:none;border:1px solid {CARD_LINE};border-radius:.8cqw;overflow:hidden;">'
-        f'{header_row}{data_rows}</div>'
+        + '</div>'
+        for t in topics
+    )
+    heatmap = _panel(
+        "施設別スコアヒートマップ（5点満点）",
+        f'<div style="flex:1;min-height:0;overflow:hidden;">{head}{rows_html}</div>',
     )
 
-    # ── 自施設だけの強み / 競合に負けている項目 ─────────────────── #
-    def _comp_diff_lists() -> tuple[list, list]:
-        if not peer_ts:
-            return [], []
-        strengths_vs, weaknesses_vs = [], []
-        for t in topics_avail:
+    # ── 自施設だけの強み / 競合に負けている項目（競合平均との差・5点満点）── #
+    sv, wv = [], []
+    if peer_ts:
+        for t in topics:
             tv = target_scores.get(t, 50.0)
-            peer_vals = [psc.get(t, 50.0) for psc in peer_ts.values()]
-            if not peer_vals:
+            pvals = [psc.get(t, 50.0) for psc in peer_ts.values()]
+            if not pvals:
                 continue
-            peer_avg = sum(peer_vals) / len(peer_vals)
-            diff = tv - peer_avg
-            if diff > 0:
-                strengths_vs.append((t, tv, peer_avg, diff))
-            else:
-                weaknesses_vs.append((t, tv, peer_avg, diff))
-        strengths_vs.sort(key=lambda x: -x[3])
-        weaknesses_vs.sort(key=lambda x: x[3])
-        return strengths_vs[:4], weaknesses_vs[:4]
+            d5 = _score_5pt(tv) - round(sum(pvals) / len(pvals) / 100 * 5, 2)
+            (sv if d5 > 0 else wv).append((t, round(d5, 2)))
+        sv.sort(key=lambda x: -x[1])
+        wv.sort(key=lambda x: x[1])
 
-    sv, wv = _comp_diff_lists()
+    def _diff_panel(title: str, rows: list, col: str, cap: int) -> str:
+        if not rows:
+            body = f'<div style="color:{SUB};font-size:.8cqw;">該当なし</div>'
+        else:
+            body = (
+                '<div style="display:grid;grid-template-columns:1fr 1fr;'
+                'column-gap:1.2cqw;row-gap:.3cqw;">'
+                + "".join(
+                    f'<div style="display:flex;align-items:center;gap:.4cqw;font-size:.8cqw;">'
+                    f'<span style="flex:none;width:.42cqw;height:.42cqw;border-radius:50%;'
+                    f'background:{col};"></span>'
+                    f'<span style="flex:1;min-width:0;color:{INK};overflow:hidden;'
+                    f'text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</span>'
+                    f'<span style="flex:none;color:{col};font-weight:700;">'
+                    f'（{d:+.2f}）</span></div>'
+                    for t, d in rows[:cap]
+                )
+                + '</div>'
+            )
+        return _panel(title, body, flex="flex:1")
 
-    def _diff_list(title, rows, col) -> str:
-        items = "".join(
-            f'<div style="display:flex;justify-content:space-between;padding:.35cqw 0;'
-            f'border-bottom:1px solid {LINE};font-size:.88cqw;">'
-            f'<span style="color:{INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
-            f'max-width:11cqw;">{escape(t)}</span>'
-            f'<span style="color:{col};font-weight:700;white-space:nowrap;">{d:+.1f}pt</span></div>'
-            for t, tv, bv, d in rows
-        )
-        return (
-            f'<div style="flex:1;min-width:0;">'
-            f'<div style="font-size:.95cqw;font-weight:800;color:{col};margin-bottom:.3cqw;">{escape(title)}</div>'
-            f'{items}</div>'
-        )
-
-    diff_panel = (
-        f'<div style="flex:none;display:flex;gap:1.1cqw;margin-top:1cqw;">'
-        + _diff_list("自施設だけの強み", sv, POS)
-        + _diff_list("競合に負けている項目", wv, NEG)
+    bottom = (
+        '<div style="flex:none;display:flex;gap:1.2cqw;margin-top:.9cqw;height:7.2cqw;">'
+        + _diff_panel("自施設だけの強み", sv, ACCENT, 6)
+        + _diff_panel("競合に負けている項目", wv, PANEL_HEAD, 4)
         + '</div>'
-    ) if (sv or wv) else ""
+    )
 
-    right = (
-        f'<div style="width:28cqw;flex:none;display:flex;flex-direction:column;gap:.9cqw;">'
-        f'{heatmap}{diff_panel}</div>'
+    n_fac = len(cols) - 1 if has_avg else len(cols)
+    period = b.get("period_label") or ""
+    meta = (
+        f'<div style="margin-left:auto;text-align:right;font-size:.85cqw;color:{SUB};">'
+        f'分析対象：{n_fac}施設'
+        + (f'　分析期間：{escape(period)}' if period else "")
+        + '</div>'
+    )
+    header = (
+        '<div style="display:flex;align-items:center;gap:1.1cqw;margin-bottom:.1cqw;">'
+        f'<div style="flex:none;width:2.8cqw;height:2.8cqw;background:{ACCENT};border-radius:.55cqw;'
+        'color:#fff;font-weight:800;font-size:1.3cqw;display:flex;align-items:center;'
+        'justify-content:center;">3</div>'
+        f'<div style="font-size:2.2cqw;font-weight:800;color:{INK};line-height:1.1;">指定競合との比較</div>'
+        f'{meta}</div>'
+        f'<div style="font-size:1.05cqw;color:{INK};font-weight:700;margin:.5cqw 0 .9cqw;">'
+        '2〜5施設を横並びで比較し、自施設の立ち位置を把握します。</div>'
     )
 
     inner = (
-        _slide_header("3", "指定競合との比較", "22観点スコアの多施設比較（5点満点換算）")
-        + f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">'
-        f'<div style="flex:1;min-width:0;display:flex;flex-direction:column;">{chart}</div>'
-        f'{right}</div>'
+        header
+        + '<div style="flex:1;display:flex;gap:1.2cqw;min-height:0;">'
+        f'{chart}{heatmap}</div>'
+        + bottom
     )
     return _canvas(inner)
 

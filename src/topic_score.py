@@ -253,6 +253,12 @@ DEFAULT_TOPICS: List[TopicDef] = [
 
 # SLIDE 02 のラベル順（全体を末尾に）
 TOPIC_ORDER: List[str] = [t.name for t in DEFAULT_TOPICS]
+
+# 「体験満足度 / 推奨意向 / 再訪意向」は施設の打ち手ではなく、体験の結果として
+# 現れる outcome 指標。施設を横並びで比較する SLIDE 3 では、差の原因になりうる
+# driver 側だけを見たいので、この3つを除いた 19 指標を「主要19指標」とする。
+OUTCOME_TOPICS: List[str] = ["体験満足度", "推奨意向", "再訪意向"]
+DRIVER_TOPICS: List[str] = [t for t in TOPIC_ORDER if t not in OUTCOME_TOPICS]
 OVERALL_LABEL = "全体"
 
 POSITIVE_WORDS: List[str] = [

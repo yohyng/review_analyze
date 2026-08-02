@@ -157,3 +157,86 @@ def test_build_comparison_accepts_explicit_peers(tmp_path):
         conn, "target", "comparison_avg", peers=["chosen", "target"]
     )
     assert "1施設" in with_self.baseline_label
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 3「指定競合との比較」— 資料（主要19指標・5点満点・施設別ヒートマップ）準拠
+# --------------------------------------------------------------------------- #
+def test_driver_topics_are_the_19_indicators():
+    """主要19指標＝22観点から outcome 3指標を除いたもの。"""
+    assert topic_score.OUTCOME_TOPICS == ["体験満足度", "推奨意向", "再訪意向"]
+    assert len(topic_score.DRIVER_TOPICS) == 19
+    assert topic_score.DRIVER_TOPICS == topic_score.TOPIC_ORDER[:19]
+    assert not set(topic_score.DRIVER_TOPICS) & set(topic_score.OUTCOME_TOPICS)
+
+
+def test_slide3_shows_only_driver_topics(tmp_path):
+    conn, matrix = _setup(tmp_path)
+    b = preview.build_bundle(
+        conn, "target", matrix, None, None, peers_override=["peer1", "peer2"]
+    )
+    html = preview.html_competitor_compare(b)
+
+    for t in topic_score.DRIVER_TOPICS:
+        assert t[:6] in html, f"19指標の {t} が出ていない"
+    for t in topic_score.OUTCOME_TOPICS:
+        assert t not in html, f"outcome指標 {t} を出してはいけない"
+
+
+def test_slide3_columns_are_self_peers_and_average(tmp_path):
+    conn, matrix = _setup(tmp_path)
+    b = preview.build_bundle(
+        conn, "target", matrix, None, None,
+        peers_override=["peer1", "peer2", "peer3"],
+    )
+    html = preview.html_competitor_compare(b)
+
+    assert "主要19指標の比較（5点満点）" in html
+    assert "施設別スコアヒートマップ（5点満点）" in html
+    assert "自施設だけの強み" in html and "競合に負けている項目" in html
+    assert "2〜5施設を横並びで比較し、自施設の立ち位置を把握します。" in html
+    for lbl in ("自施設", "競合A", "競合B", "競合C", "同業平均"):
+        assert lbl in html, lbl
+    assert "競合D" not in html          # ピアは3施設なのでDは出ない
+    assert "分析対象：4施設" in html      # 自施設＋競合3（同業平均は施設数に数えない）
+
+
+def test_slide3_caps_peer_columns_at_four(tmp_path):
+    """競合は最大4列（競合A〜D）まで。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    names = ["target"] + [f"p{i}" for i in range(6)]
+    for nm in names:
+        db.upsert_facility(conn, nm, ftype="comparison")
+    matrix = {nm: _result(0.5 + 0.02 * i) for i, nm in enumerate(names)}
+
+    b = preview.build_bundle(
+        conn, "target", matrix, None, None, peers_override=names[1:]
+    )
+    html = preview.html_competitor_compare(b)
+    assert "競合D" in html
+    assert "競合E" not in html
+
+
+def test_slide3_scores_are_on_a_five_point_scale(tmp_path):
+    """ヒートマップの数値が 0-100 ではなく 5点満点で出ること。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    for nm in ("target", "peer1"):
+        db.upsert_facility(conn, nm, ftype="comparison")
+    # 感情 0.8 → 80/100 → 4.00点
+    matrix = {"target": _result(0.80), "peer1": _result(0.40)}
+
+    b = preview.build_bundle(conn, "target", matrix, None, None, peers_override=["peer1"])
+    html = preview.html_competitor_compare(b)
+    assert "4.00" in html and "2.00" in html
+    assert ">80.0<" not in html and ">80<" not in html
+    # 差分も5点満点（80-40=40pt ではなく 4.00-2.00=+2.00）
+    assert "+2.00" in html
+
+
+def test_slide3_handles_no_peers(tmp_path):
+    """競合未選択でも落ちない。"""
+    conn, matrix = _setup(tmp_path)
+    b = preview.build_bundle(conn, "target", matrix, None, None, peers_override=[])
+    assert preview.html_competitor_compare(b)
