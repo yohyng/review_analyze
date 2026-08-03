@@ -910,7 +910,11 @@ def compare_columns(b: dict) -> list[tuple[str, str, dict, str]]:
     for i, nm in enumerate(list(peers)[: len(T.SERIES_PEERS)]):
         cols.append((f"競合{'ABCDE'[i]}", nm, peers[nm], T.SERIES_PEERS[i]))
     if b.get("overall_topic"):
-        cols.append(("同業平均", "同業平均", b["overall_topic"], T.SERIES_AVG))
+        # 指定競合モードでは母数が選択競合なので overall_topic ＝ 競合の平均。
+        # 「同業平均」と名乗ると市場全体の平均だと誤解されるため名前を変える。
+        avg_label = ("競合平均" if b.get("comparison_scope") == "competitor"
+                     else "同業平均")
+        cols.append((avg_label, avg_label, b["overall_topic"], T.SERIES_AVG))
     return cols
 
 
@@ -931,7 +935,7 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
     )
     series = ""
     for label, _nm, sc, col in cols:
-        is_avg = label == "同業平均"
+        is_avg = label.endswith("平均")
         pts = " ".join(f"{x(i):.2f},{y(sc.get(t, 50.0)):.2f}" for i, t in enumerate(topics))
         series += (
             f'<polyline points="{pts}" fill="none" stroke="{col}" '
@@ -959,7 +963,7 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
     legend = "".join(
         f'<span style="font-size:.68cqw;color:{T.INK};white-space:nowrap;">'
         f'<span style="color:{col};font-weight:800;">'
-        f'{"╌╌" if lb == "同業平均" else "─○─"}</span> {escape(lb)}</span>'
+        f'{"╌╌" if lb.endswith("平均") else "─○─"}</span> {escape(lb)}</span>'
         for lb, _nm, _sc, col in cols
     )
     return (
@@ -1056,7 +1060,7 @@ def _diff_grid(rows: list, color: str, cap: int) -> str:
 
 def _compare_header(b: dict, detail: bool) -> str:
     cols = compare_columns(b)
-    n_fac = sum(1 for lb, _n, _s, _c in cols if lb != "同業平均")
+    n_fac = sum(1 for lb, _n, _s, _c in cols if not lb.endswith("平均"))
     period = b.get("period_label_scope") or b.get("period_label") or ""
     meta = f"分析対象：{n_fac}施設"
     if period:
@@ -1297,3 +1301,364 @@ def slide4_timeline(b: dict) -> str:
         slide_header("4", "時間軸分析", meta) + body
         + footer("※スコアは5点満点を−1〜+1のスケールに変換して集計")
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 5「空間・体験分析」— docs/design/slide_p09.png / slide_p10.png
+# ═══════════════════════════════════════════════════════════════════════════
+def _space_series(b: dict) -> list[tuple[str, dict, str, bool]]:
+    """(凡例名, スコア, 色, 破線か) の3系列。当施設／競合平均／同業平均。"""
+    from . import topic_score
+    mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
+    peers = b.get("peer_topic_scores") or {}
+    peer_avg = {}
+    for t in topic_score.SPACE_TOPICS:
+        vals = [p[t] for p in peers.values() if t in p]
+        if vals:
+            peer_avg[t] = sum(vals) / len(vals)
+    out = [("当施設", mine, T.ACCENT, False)]
+    if peer_avg:
+        out.append(("競合平均", peer_avg, "#2D6FD0", True))
+    # 指定競合モードでは母数＝選択競合なので overall_topic は競合平均と一致する。
+    # 同じ系列を2本描いても情報が増えないので、市場比較のときだけ足す。
+    if b.get("overall_topic") and b.get("comparison_scope") != "competitor":
+        out.append(("同業平均", b["overall_topic"], T.SERIES_AVG, True))
+    return out
+
+
+def _radar(b: dict) -> str:
+    """10軸のレーダーチャート（0〜5の同心リング）。"""
+    import math
+    from . import topic_score
+    axes = [t for t in topic_score.SPACE_TOPICS
+            if t in (b.get("topic_names") or [])]
+    n = len(axes)
+    if n < 3:
+        return (f'<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.SUB};font-size:.9cqw;">データ不足</div>')
+
+    CX, CY, R = 50.0, 50.0, 33.0
+
+    def pos(i: int, v5: float, r: float = R) -> tuple[float, float]:
+        a = math.radians(-90 + 360 * i / n)
+        rr = r * max(0.0, min(5.0, v5)) / 5.0
+        return CX + rr * math.cos(a), CY + rr * math.sin(a)
+
+    rings = "".join(
+        '<polygon points="' + " ".join(
+            f"{x:.2f},{y:.2f}" for x, y in (pos(i, g) for i in range(n))
+        ) + f'" fill="none" stroke="{T.LINE}" stroke-width=".35" '
+        'vector-effect="non-scaling-stroke"/>'
+        for g in (1, 2, 3, 4, 5)
+    )
+    spokes = "".join(
+        f'<line x1="{CX}" y1="{CY}" x2="{pos(i, 5)[0]:.2f}" y2="{pos(i, 5)[1]:.2f}" '
+        f'stroke="{T.LINE}" stroke-width=".3" vector-effect="non-scaling-stroke"/>'
+        for i in range(n)
+    )
+    polys = ""
+    for name, sc, col, dashed in _space_series(b):
+        pts = " ".join(
+            f"{x:.2f},{y:.2f}"
+            for x, y in (pos(i, _score5(sc.get(t, 50.0)) or 0) for i, t in enumerate(axes))
+        )
+        dash = 'stroke-dasharray="2.5 1.8"' if dashed else ""
+        polys += (
+            f'<polygon points="{pts}" fill="none" stroke="{col}" stroke-width="1.3" '
+            f'{dash} stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
+        )
+        polys += "".join(
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="1" fill="{col}"/>'
+            for x, y in (pos(i, _score5(sc.get(t, 50.0)) or 0) for i, t in enumerate(axes))
+        )
+    ring_labels = "".join(
+        f'<text x="{CX + 1:.1f}" y="{CY - R * g / 5 + 1:.1f}" font-size="2.4" '
+        f'fill="{T.SUB}">{g}</text>'
+        for g in (0, 1, 2, 3, 4, 5)
+    )
+    labels = ""
+    for i, t in enumerate(axes):
+        lx, ly = pos(i, 5.9)
+        anchor = "center"
+        if lx < CX - 4:
+            anchor = "right"
+        elif lx > CX + 4:
+            anchor = "left"
+        shift = {"center": "-50%", "right": "-100%", "left": "0"}[anchor]
+        labels += (
+            f'<div style="position:absolute;left:{lx:.1f}%;top:{ly:.1f}%;'
+            f'transform:translate({shift},-50%);font-size:.66cqw;font-weight:700;'
+            f'color:{T.INK};white-space:nowrap;max-width:11cqw;">'
+            f'{i + 1}. {escape(t)}</div>'
+        )
+    legend = "".join(
+        '<div style="display:flex;align-items:center;gap:.4cqw;font-size:.7cqw;'
+        f'color:{T.INK};"><span style="color:{col};font-weight:800;">'
+        f'{"╌●╌" if dashed else "─●─"}</span>{escape(name)}</div>'
+        for name, _sc, col, dashed in _space_series(b)
+    )
+    return (
+        '<div style="flex:1;position:relative;min-height:0;display:flex;">'
+        '<div style="position:absolute;inset:0;">'
+        '<svg viewBox="0 0 100 100" style="width:100%;height:100%;">'
+        f'{rings}{spokes}{ring_labels}{polys}</svg></div>'
+        f'{labels}'
+        '<div style="position:absolute;right:.2cqw;bottom:.2cqw;display:flex;'
+        f'flex-direction:column;gap:.25cqw;">{legend}</div></div>'
+    )
+
+
+def _space_table(b: dict, lo: int, hi: int) -> str:
+    """評価軸テーブル（No./評価軸/当施設/競合平均/同業平均）。"""
+    from . import topic_score
+    series = _space_series(b)
+    axes = [t for t in topic_score.SPACE_TOPICS if t in (b.get("topic_names") or [])]
+    cell = "padding:.22cqw .15cqw;font-size:.62cqw;text-align:center;"
+    head = (
+        f'<div style="display:flex;background:#F4F3EE;font-weight:800;color:{T.SUB};">'
+        f'<div style="width:1.7cqw;flex:none;{cell}">No.</div>'
+        f'<div style="flex:2.3;{cell}">評価軸</div>'
+        + "".join(
+            f'<div style="flex:1;{cell}color:{col};">{escape(nm)}</div>'
+            for nm, _s, col, _d in series
+        )
+        + '</div>'
+    )
+    rows = "".join(
+        f'<div style="flex:1;display:flex;border-top:1px solid {T.LINE};">'
+        f'<div style="width:1.7cqw;flex:none;{cell}color:{T.SUB};">{i + 1}</div>'
+        f'<div style="flex:2.3;{cell}text-align:left;color:{T.INK};overflow:hidden;'
+        f'text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</div>'
+        + "".join(
+            f'<div style="flex:1;{cell}font-weight:{"800" if k == 0 else "400"};'
+            f'color:{col if k == 0 else T.INK};">{_pt5(sc.get(t, 50.0))}</div>'
+            for k, (_nm, sc, col, _d) in enumerate(series)
+        )
+        + '</div>'
+        for i, t in enumerate(axes) if lo <= i + 1 <= hi
+    )
+    return (
+        f'<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
+        f'border:1px solid {T.CARD_LINE};border-radius:.4cqw;overflow:hidden;">'
+        f'{head}{rows}</div>'
+    )
+
+
+def space_findings(b: dict) -> dict:
+    """SLIDE 5 の要約に使う所見。すべてスコアから決定論的に出す。"""
+    from . import topic_score
+    mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
+    series = dict((nm, sc) for nm, sc, _c, _d in _space_series(b))
+    base = series.get("競合平均") or series.get("同業平均") or {}
+    axes = [t for t in topic_score.SPACE_TOPICS if t in mine]
+
+    diffs = [(t, (mine[t] - base.get(t, 50.0)) / 100 * 5) for t in axes] if base else []
+    diffs.sort(key=lambda z: -z[1])
+    above = [t for t, d in diffs if d > 0]
+    return {
+        "axes": axes,
+        "n_above": len(above),
+        "n_axes": len(axes),
+        "strong": [t for t, _ in diffs[:3]],
+        "weak": [t for t, _ in diffs[-3:]][::-1],
+        "diffs": dict(diffs),
+        "base_label": "競合平均" if "競合平均" in series else "同業平均",
+    }
+
+
+def _summary_cards(b: dict) -> str:
+    f = space_findings(b)
+    if not f["axes"]:
+        return (f'<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.SUB};font-size:.9cqw;">データ不足</div>')
+    texts = [
+        f'{f["n_axes"]}軸中{f["n_above"]}軸で<br>{f["base_label"]}を<br>上回る',
+        "特に高評価：<br>" + "・<br>".join(f["strong"][:3]),
+        "改善余地：<br>" + "・<br>".join(f["weak"][:3]),
+        (f'{f["base_label"]}を上回る軸が<br>半数以上を占め<br>全体として優位'
+         if f["n_above"] * 2 >= f["n_axes"]
+         else f'{f["base_label"]}を下回る軸が<br>半数を超え<br>底上げが課題'),
+    ]
+    cards = "".join(
+        f'<div style="flex:1;min-height:0;background:{c["bg"]};border-radius:.9cqw;'
+        'display:flex;flex-direction:column;align-items:center;justify-content:center;'
+        'gap:.5cqw;padding:.8cqw .5cqw;text-align:center;">'
+        f'<div style="font-size:2.2cqw;font-weight:800;color:{c["fg"]};'
+        f'line-height:1;">{c["no"]}</div>'
+        f'<div style="width:2.2cqw;height:2px;background:{c["fg"]};"></div>'
+        f'<div style="font-size:.78cqw;font-weight:700;color:{T.INK};'
+        f'line-height:1.5;">{txt}</div></div>'
+        for c, txt in zip(T.SUMMARY_CARDS, texts)
+    )
+    return f'<div style="flex:1;display:flex;gap:.8cqw;min-height:0;">{cards}</div>'
+
+
+def slide5_space_experience(b: dict) -> str:
+    """SLIDE 5「空間・体験分析」。docs/design/slide_p09.png。"""
+    conf = (
+        '<div style="margin-left:auto;display:flex;align-items:center;'
+        'padding-right:1.8cqw;"><span style="border:1.5px solid #E0342A;'
+        'color:#E0342A;background:#fff;border-radius:.4cqw;padding:.25cqw 1cqw;'
+        'font-size:.85cqw;font-weight:800;">confidential</span></div>'
+    )
+    header = (
+        f'<div style="flex:none;display:flex;align-items:stretch;background:{T.NAVY};'
+        'height:7.4cqw;">'
+        f'<div style="flex:none;width:6.6cqw;background:{T.ACCENT};color:#fff;'
+        'display:flex;align-items:center;justify-content:center;'
+        'font-size:3.1cqw;font-weight:800;">5</div>'
+        f'<div style="display:flex;align-items:center;padding-left:2.2cqw;color:#fff;'
+        f'font-size:{T.FS["slide_title"]}cqw;font-weight:800;">空間・体験分析</div>'
+        f'{conf}</div>'
+    )
+    left = panel(
+        "乃村独自の空間分析指標",
+        _radar(b)
+        + '<div style="flex:none;display:flex;gap:.6cqw;margin-top:.5cqw;">'
+        + _space_table(b, 1, 5) + _space_table(b, 6, 10) + '</div>'
+        + f'<div style="flex:none;font-size:{T.FS["note"]}cqw;color:{T.SUB};'
+        'margin-top:.3cqw;">※ スコアは5点満点（高いほど評価が高いことを示します）</div>',
+        style="flex:1.25",
+    )
+    body = (
+        f'<div style="flex:none;font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
+        f'color:{T.INK};padding:.9cqw 1.8cqw .6cqw;">'
+        '空間と体験の質を10の観点で評価し、改善の優先ポイントを可視化します。</div>'
+        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;padding:0 1.8cqw;">'
+        f'{left}' + panel("本ページの要約", _summary_cards(b), style="flex:1")
+        + '</div>'
+    )
+    return canvas(header + body + footer())
+
+
+def _trend_badge(diff5: float) -> tuple[str, str]:
+    """競合平均との差から 強み／課題／良好 を決める。"""
+    if diff5 >= 0.15:
+        return "強み", "強み"
+    if diff5 <= -0.15:
+        return "課題", "課題"
+    return "良好", "良好"
+
+
+def slide5_space_detail(b: dict) -> str:
+    """SLIDE 5「空間体験分析（詳細）」。docs/design/slide_p10.png。"""
+    from . import topic_score
+    f = space_findings(b)
+    axes = f["axes"]
+    cols = compare_columns(b)
+    mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
+
+    cell = "padding:.3cqw .15cqw;font-size:.68cqw;text-align:center;"
+    head = (
+        f'<div style="display:flex;background:#F4F3EE;font-weight:800;color:{T.SUB};">'
+        f'<div style="width:2cqw;flex:none;{cell}">No.</div>'
+        f'<div style="width:11cqw;flex:none;{cell}text-align:left;">評価項目</div>'
+        + "".join(
+            f'<div style="flex:1;{cell}color:{col};">{escape(lb)}</div>'
+            for lb, _n, _s, col in cols
+        )
+        + f'<div style="width:5cqw;flex:none;{cell}">傾向</div>'
+        f'<div style="flex:2.6;{cell}text-align:left;">ポイント</div></div>'
+    )
+    rows = ""
+    for i, t in enumerate(axes, 1):
+        d5 = f["diffs"].get(t, 0.0)
+        badge, key = _trend_badge(d5)
+        style = T.TREND_BADGES[key]
+        point = (
+            f'{f["base_label"]}を {abs(d5):.2f}pt 上回り、強みとして機能'
+            if d5 >= 0.15 else
+            f'{f["base_label"]}を {abs(d5):.2f}pt 下回り、改善余地あり'
+            if d5 <= -0.15 else
+            f'{f["base_label"]}と同水準（差 {d5:+.2f}pt）'
+        )
+        rows += (
+            f'<div style="flex:1;display:flex;align-items:center;'
+            f'border-top:1px solid {T.LINE};">'
+            f'<div style="width:2cqw;flex:none;{cell}">'
+            f'<span style="display:inline-flex;width:1.3cqw;height:1.3cqw;'
+            f'border-radius:50%;background:{T.ACCENT};color:#fff;font-size:.58cqw;'
+            'font-weight:800;align-items:center;justify-content:center;">'
+            f'{i}</span></div>'
+            f'<div style="width:11cqw;flex:none;{cell}text-align:left;color:{T.INK};'
+            f'font-weight:700;overflow:hidden;text-overflow:ellipsis;'
+            f'white-space:nowrap;">{escape(t)}</div>'
+            + "".join(
+                f'<div style="flex:1;{cell}color:{T.INK};'
+                f'font-weight:{"800" if lb == "自施設" else "400"};'
+                + (f'background:{T.HEAT_HIGH_W};' if lb == "自施設" else "")
+                + f'">{_pt5(sc.get(t, 50.0))}</div>'
+                for lb, _n, sc, _c in cols
+            )
+            + f'<div style="width:5cqw;flex:none;{cell}">'
+            f'<span style="display:inline-block;background:{style["bg"]};'
+            f'color:{style["fg"]};border:1px solid {style["border"]};'
+            'border-radius:.35cqw;padding:.1cqw .6cqw;font-size:.62cqw;'
+            f'font-weight:800;">{badge}</span></div>'
+            f'<div style="flex:2.6;{cell}text-align:left;color:{T.INK};'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+            f'{escape(point)}</div></div>'
+        )
+
+    legend = "".join(
+        '<span style="display:inline-flex;align-items:center;gap:.25cqw;'
+        f'font-size:.62cqw;color:{T.INK};margin-right:.7cqw;">'
+        f'<span style="width:.5cqw;height:.5cqw;border-radius:50%;background:{col};">'
+        f'</span>{lo:.1f}〜{hi:.1f}</span>'
+        for lo, hi, col in T.SCORE_BANDS
+    )
+    strong = "」「".join(f["strong"][:3]) or "—"
+    weak = "」「".join(f["weak"][:3]) or "—"
+    summary = (
+        f'<div style="flex:1;min-width:0;background:#F5F8FD;border-radius:.7cqw;'
+        'padding:.7cqw 1cqw;display:flex;align-items:center;gap:.8cqw;">'
+        '<span style="flex:none;font-size:1.2cqw;">💡</span>'
+        f'<span style="font-size:.8cqw;line-height:1.6;color:{T.INK};">'
+        f'<b style="color:#1B4DA8;">総合サマリー</b>　自施設は'
+        f'<b style="color:{T.ACCENT_DEEP};">「{escape(strong)}」</b>で優位性があります。'
+        f'一方で<b style="color:#1B4DA8;">「{escape(weak)}」</b>に改善の余地が'
+        '견られます。</span></div>'
+    ).replace("견られます", "見られます")
+
+    n_fac = sum(1 for lb, _n, _s, _c in cols if not lb.endswith("平均"))
+    period = b.get("period_label_scope") or b.get("period_label") or ""
+    lead = (
+        '<div style="flex:none;display:flex;align-items:baseline;'
+        'padding:.9cqw 1.8cqw .6cqw;">'
+        f'<span style="font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
+        f'color:{T.INK};">空間と体験の質を10の視点で評価し、'
+        '改善の優先ポイントを可視化します。</span>'
+        f'<span style="margin-left:auto;font-size:.8cqw;color:{T.SUB};">'
+        f'分析対象：{n_fac}施設'
+        + (f'　|　分析期間：{escape(period)}' if period else "")
+        + '</span></div>'
+    )
+    body = (
+        lead
+        + '<div style="flex:1;display:flex;flex-direction:column;min-height:0;'
+        'padding:0 1.8cqw;">'
+        + panel("施設別スコアヒートマップ（10項目）",
+                f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;">'
+                f'{head}{rows}</div>')
+        + '</div>'
+        '<div style="flex:none;display:flex;gap:1cqw;align-items:center;'
+        'padding:.8cqw 1.8cqw 0;">'
+        + summary
+        + '<div style="width:16cqw;flex:none;border:1px solid ' + T.CARD_LINE
+        + ';border-radius:.7cqw;padding:.5cqw .7cqw;">'
+        f'<div style="font-size:.66cqw;font-weight:800;color:{T.INK};'
+        'margin-bottom:.25cqw;">スコアの見方（5点満点）</div>'
+        f'<div>{legend}</div></div></div>'
+    )
+    header = (
+        f'<div style="flex:none;display:flex;align-items:stretch;background:{T.NAVY};'
+        'height:7.4cqw;">'
+        f'<div style="flex:none;width:6.6cqw;background:{T.ACCENT};color:#fff;'
+        'display:flex;align-items:center;justify-content:center;'
+        'font-size:3.1cqw;font-weight:800;">5</div>'
+        f'<div style="display:flex;align-items:center;padding-left:2.2cqw;color:#fff;'
+        f'font-size:{T.FS["slide_title"]}cqw;font-weight:800;">空間体験分析'
+        f'<span style="font-size:{T.FS["slide_title"] * 0.62:.2f}cqw;font-weight:700;">'
+        '（詳細）</span></div>' + _planner_badge() + '</div>'
+    )
+    return canvas(header + body + footer("※スコアは5点満点です"))

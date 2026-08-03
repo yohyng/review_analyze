@@ -259,6 +259,15 @@ TOPIC_ORDER: List[str] = [t.name for t in DEFAULT_TOPICS]
 # driver 側だけを見たいので、この3つを除いた 19 指標を「主要19指標」とする。
 OUTCOME_TOPICS: List[str] = ["体験満足度", "推奨意向", "再訪意向"]
 DRIVER_TOPICS: List[str] = [t for t in TOPIC_ORDER if t not in OUTCOME_TOPICS]
+
+# SLIDE 5「空間・体験分析」で扱う10観点。19指標のうち、空間そのものと
+# そこで提供される体験の質に関わるものだけを取り出したもの（スタッフ・料金・
+# 立地・ブランドは施設運営側の変数なのでここでは扱わない）。
+SPACE_TOPICS: List[str] = [
+    "提供内容の品質", "提供内容の多様性", "提供内容の独自性", "提供内容の更新性",
+    "情報提供", "空間の機能性", "空間の質感", "空間の快適性",
+    "空間の感情的インパクト", "美的完成度",
+]
 OVERALL_LABEL = "全体"
 
 POSITIVE_WORDS: List[str] = [

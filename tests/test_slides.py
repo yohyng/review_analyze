@@ -334,9 +334,10 @@ def test_experience_map_can_be_limited_to_selected_peers(tmp_path):
 # SLIDE 3「指定競合との比較」＋詳細（PDF p6, p7）
 # --------------------------------------------------------------------------- #
 def test_compare_columns_are_self_peers_then_average(tmp_path):
+    """最後の列は平均。指定競合モードでは母数が選択競合なので「競合平均」。"""
     b = _bundle(tmp_path, n_peers=4)
     labels = [c[0] for c in slides.compare_columns(b)]
-    assert labels == ["自施設", "競合A", "競合B", "競合C", "競合D", "同業平均"]
+    assert labels == ["自施設", "競合A", "競合B", "競合C", "競合D", "競合平均"]
 
 
 def test_compare_columns_cap_peers_at_five(tmp_path):
@@ -542,3 +543,104 @@ def test_slide4_survives_no_reviews_with_dates(tmp_path):
     html = slides.slide4_timeline(b)
     assert "推移を出せるデータがありません" in html
     assert "評価が大きく動いた月は検出されませんでした" in html
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 5「空間・体験分析」＋詳細（PDF p9, p10）
+# --------------------------------------------------------------------------- #
+def test_space_topics_are_the_ten_axes():
+    """PDF のレーダー10軸。19指標のうち空間・体験に関わるものだけ。"""
+    assert len(topic_score.SPACE_TOPICS) == 10
+    assert set(topic_score.SPACE_TOPICS) <= set(topic_score.DRIVER_TOPICS)
+    # 運営側の変数（スタッフ・料金・立地・ブランド）は入れない
+    for ng in ("スタッフ対応", "料金の適正さ", "立地・アクセス", "ブランド信頼感"):
+        assert ng not in topic_score.SPACE_TOPICS
+
+
+def test_slide5_renders_radar_tables_and_summary(tmp_path):
+    b = _bundle(tmp_path, n_peers=4)
+    html = slides.slide5_space_experience(b)
+    assert "空間・体験分析" in html
+    assert "乃村独自の空間分析指標" in html and "本ページの要約" in html
+    assert "confidential" in html
+    assert "空間と体験の質を10の観点で評価し、改善の優先ポイントを可視化します。" in html
+    assert "※ スコアは5点満点（高いほど評価が高いことを示します）" in html
+    for i, t in enumerate(topic_score.SPACE_TOPICS, 1):
+        assert f"{i}. {t}" in html
+    for no in ("01", "02", "03", "04"):
+        assert f">{no}</div>" in html
+
+
+def test_slide5_detail_has_ten_rows_with_trend_badges(tmp_path):
+    b = _bundle(tmp_path, n_peers=4)
+    html = slides.slide5_space_detail(b)
+    assert "空間体験分析" in html and "（詳細）" in html
+    assert "施設別スコアヒートマップ（10項目）" in html
+    assert "傾向" in html and "ポイント" in html
+    assert "総合サマリー" in html and "スコアの見方（5点満点）" in html
+    for t in topic_score.SPACE_TOPICS:
+        assert t in html
+    # 傾向バッジは3種のいずれか
+    assert any(x in html for x in ("強み", "課題", "良好"))
+
+
+def test_competitor_mode_does_not_duplicate_peer_and_industry_average(tmp_path):
+    """指定競合モードでは母数＝選択競合なので、同じ平均を2本描かない。"""
+    b = _bundle(tmp_path, n_peers=4)
+    assert b["comparison_scope"] == "competitor"
+    names = [nm for nm, _sc, _c, _d in slides._space_series(b)]
+    assert names == ["当施設", "競合平均"]
+    assert "同業平均" not in slides.slide5_space_experience(b)
+
+
+def test_market_mode_keeps_both_averages(tmp_path):
+    """マーケット比較では競合平均と同業平均は別物なので両方出す。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    names = ["target"] + [f"f{i}" for i in range(5)]
+    for i, nm in enumerate(names):
+        db.upsert_facility(conn, nm, ftype="comparison" if i < 3 else "target")
+    conn.commit()
+    matrix = {nm: _result(0.4 + 0.05 * i) for i, nm in enumerate(names)}
+    b = preview.build_bundle(conn, "target", matrix, None, None)   # peers_override なし
+    assert b["comparison_scope"] == "market"
+    labels = [nm for nm, _sc, _c, _d in slides._space_series(b)]
+    assert "同業平均" in labels
+
+
+def test_average_column_is_named_for_the_mode(tmp_path):
+    """指定競合モードの平均列は「競合平均」と名乗る（同業平均だと誤解を招く）。"""
+    b = _bundle(tmp_path, n_peers=3)
+    labels = [c[0] for c in slides.compare_columns(b)]
+    assert labels[-1] == "競合平均"
+    assert "同業平均" not in labels
+
+
+def test_space_findings_counts_axes_above_the_baseline(tmp_path):
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    for nm in ("target", "peer1"):
+        db.upsert_facility(conn, nm, ftype="comparison")
+    conn.commit()
+    b = preview.build_bundle(conn, "target", {"target": _result(0.7),
+                                              "peer1": _result(0.5)},
+                             None, None, peers_override=["peer1"])
+    f = slides.space_findings(b)
+    assert f["n_axes"] == 10
+    assert f["n_above"] == 10                 # 全軸で上回る
+    assert f["base_label"] == "競合平均"
+    assert all(abs(v - 1.0) < 1e-6 for v in f["diffs"].values())   # (70-50)/100*5
+
+
+def test_trend_badge_thresholds():
+    assert slides._trend_badge(0.30)[0] == "強み"
+    assert slides._trend_badge(0.15)[0] == "強み"
+    assert slides._trend_badge(0.05)[0] == "良好"
+    assert slides._trend_badge(-0.05)[0] == "良好"
+    assert slides._trend_badge(-0.15)[0] == "課題"
+
+
+def test_slide5_survives_no_peers(tmp_path):
+    b = _bundle(tmp_path, n_peers=0)
+    assert slides.slide5_space_experience(b)
+    assert slides.slide5_space_detail(b)
