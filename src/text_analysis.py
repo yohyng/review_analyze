@@ -9,6 +9,7 @@ For each facility:
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 from collections import Counter
@@ -28,6 +29,45 @@ _tokenizer_cache = None
 # 形態素解析は CPU 律速で GIL によりどのみち並列にならないため、
 # 1インスタンス＋ロックの方が総メモリを抑えられる。
 _tok_lock = threading.Lock()
+
+# 同じ本文を何度もトークナイズしないためのキャッシュ。
+# 1回の分析で、同じ口コミが少なくとも2回トークナイズされていた:
+#   - build_profile → _tfidf_df が TF-IDF のコーパスとして全施設の本文を解析
+#   - analyze_facility が施設ごとに自分の本文を解析（全施設ぶん回るので合計は同じ）
+# 実測（46施設・6,083件）で analyze_facility の 69% がトークナイズだったため、
+# ここを消すだけで全体が大きく縮む。口コミ本文は取り込み後に変わらないので、
+# 本文そのものをキーにしてよい。
+# 本文そのものではなくハッシュをキーにする（メモリとDB容量のため）。
+_token_cache: dict[str, list[str]] = {}
+_token_cache_new: dict[str, list[str]] = {}   # 今回新たに解析したぶん（DB保存用）
+_TOKEN_CACHE_MAX = 200_000
+
+
+def _key(text: str) -> str:
+    return hashlib.blake2b(text.encode("utf-8"), digest_size=8).hexdigest()
+
+
+def clear_token_cache() -> None:
+    """トークンキャッシュを空にする（テスト用・メモリを戻したいとき）。"""
+    _token_cache.clear()
+    _token_cache_new.clear()
+
+
+def load_token_cache(conn) -> int:
+    """DBのトークンキャッシュをメモリへ読み込む。分析開始時に1回だけ呼ぶ。"""
+    from . import db as _db
+    loaded = _db.load_token_cache(conn)
+    _token_cache.update(loaded)
+    _token_cache_new.clear()
+    return len(loaded)
+
+
+def flush_token_cache(conn) -> int:
+    """今回新たに解析したぶんをDBへ書き戻す。分析の終わりに1回だけ呼ぶ。"""
+    from . import db as _db
+    n = _db.save_token_cache(conn, _token_cache_new)
+    _token_cache_new.clear()
+    return n
 
 
 def _tok():
@@ -58,6 +98,13 @@ def tokenize(text: str) -> list[str]:
     janome の Tokenizer がスレッドセーフでないため、解析中はロックを保持する。
     tokenize() はジェネレータを返すので、消費し終えるまで手放してはいけない。
     """
+    if not text:
+        return []
+    k = _key(text)
+    hit = _token_cache.get(k)
+    if hit is not None:
+        return list(hit)          # 呼び出し側が壊さないようコピーを返す
+
     out = []
     with _tok_lock:
         tokenizer = _tok()
@@ -70,7 +117,11 @@ def tokenize(text: str) -> list[str]:
             if len(base) < 2 or base in _STOPWORDS:
                 continue
             out.append(base)
-    return out
+
+    if len(_token_cache) < _TOKEN_CACHE_MAX:
+        _token_cache[k] = out
+        _token_cache_new[k] = out
+    return list(out)
 
 
 def symbolic_ranking(reviews, tfidf_keywords, top_k: int = 5) -> list[dict]:

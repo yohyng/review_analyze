@@ -310,6 +310,12 @@ CREATE TABLE IF NOT EXISTS text_profile_cache (
     PRIMARY KEY (facility_id, n_reviews)
 );
 
+CREATE TABLE IF NOT EXISTS token_cache (
+    h          TEXT PRIMARY KEY,       -- 本文のハッシュ（blake2b 8バイトの16進）
+    tokens     TEXT NOT NULL,          -- 空白区切りの分かち書き結果
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_review_facility ON review(facility_id);
 CREATE INDEX IF NOT EXISTS idx_subscore_review ON review_subscore(review_db_id);
 CREATE INDEX IF NOT EXISTS idx_score_facility ON score(facility_id);
@@ -448,6 +454,42 @@ def set_text_profile_cache(
          high_rated_json, low_rated_json),
     )
     conn.commit()
+
+
+# --------------------------------------------------------------------------- #
+# 形態素解析のキャッシュ（本文は取り込み後に変わらないので失効しない）
+# --------------------------------------------------------------------------- #
+def load_token_cache(conn) -> dict[str, list[str]]:
+    """トークンキャッシュを一括で読む。
+
+    Turso は1クエリ＝1HTTPリクエストなので、1件ずつ引くと壊滅的に遅い。
+    分析の開始時にまとめて読み、終了時にまとめて書く。
+    """
+    try:
+        rows = conn.execute("SELECT h, tokens FROM token_cache").fetchall()
+    except Exception:
+        return {}
+    return {r[0]: (r[1].split(" ") if r[1] else []) for r in rows}
+
+
+def save_token_cache(conn, items: dict[str, list[str]]) -> int:
+    """新しく解析したぶんだけを一括で書く。失敗しても分析は続行する。"""
+    if not items:
+        return 0
+    rows = [(h, " ".join(toks)) for h, toks in items.items()]
+    sql = "INSERT OR REPLACE INTO token_cache(h, tokens) VALUES (?, ?)"
+    try:
+        if hasattr(conn, "execute_pipeline"):
+            _CHUNK = 200
+            for i in range(0, len(rows), _CHUNK):
+                conn.execute_pipeline([(sql, r) for r in rows[i:i + _CHUNK]])
+        else:
+            for r in rows:
+                conn.execute(sql, r)
+        conn.commit()
+    except Exception:
+        return 0
+    return len(rows)
 
 
 # --------------------------------------------------------------------------- #

@@ -279,6 +279,7 @@ else:
             ("💬 テキスト分析", "text"),
             ("📑 レポート出力", "report"),
             None,
+            ("⚡ 分析の事前計算", "warmup"),
             ("🧪 ダミーデータ", "dummy"),
             ("🔬 CSVプロファイラ", "profiler"),
             ("📡 KAIZODE連携", "kaizode"),

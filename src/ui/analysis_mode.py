@@ -485,6 +485,12 @@ def _analysis_worker(prog: dict) -> None:
         ss_out["an_specific_name"]  = spn
         ss_out["an_peers_used"]     = _sel_peers   # PPTX再生成でも同じ比較軸を使う
 
+        # 新しく解析したぶんを書き戻す（次回以降このぶんは計算不要になる）
+        try:
+            text_analysis.flush_token_cache(tconn)
+        except Exception:
+            pass
+
         prog["step"]   = 6
         prog["detail"] = "完了しました"
         prog["result"] = ss_out
@@ -492,6 +498,11 @@ def _analysis_worker(prog: dict) -> None:
 
     except Exception:
         prog["error"] = traceback.format_exc()
+        # 途中まででも解析済みの語彙は残す（次回の助けになる）
+        try:
+            text_analysis.flush_token_cache(db.get_conn(prog.get("_db_path")))
+        except Exception:
+            pass
 
 
 def render():

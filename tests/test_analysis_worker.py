@@ -288,3 +288,89 @@ def _worker_source_for_cancel() -> str:
     start = text.index("def _analysis_worker(")
     end = text.index("\ndef ", start + 1)
     return text[start:end]
+
+
+# --------------------------------------------------------------------------- #
+# 形態素解析キャッシュ — 同じ本文を二度解析しない
+# --------------------------------------------------------------------------- #
+def test_token_cache_returns_the_same_tokens(tmp_path):
+    from src import text_analysis
+    text_analysis.clear_token_cache()
+    text = "スタッフの接客がとても丁寧で、笑顔の対応が気持ちよかったです。"
+    first = text_analysis.tokenize(text)
+    second = text_analysis.tokenize(text)
+    assert first == second and first
+
+
+def test_token_cache_returns_a_copy_so_callers_cannot_corrupt_it():
+    """呼び出し側が返り値を壊してもキャッシュが汚れないこと。"""
+    from src import text_analysis
+    text_analysis.clear_token_cache()
+    text = "展示のクオリティが高く、完成度に驚きました。"
+    got = text_analysis.tokenize(text)
+    got.append("よごし")
+    assert "よごし" not in text_analysis.tokenize(text)
+
+
+def test_token_cache_round_trips_through_the_database(tmp_path):
+    """DBに保存して読み直しても同じ結果になる。"""
+    from src import text_analysis
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+
+    text_analysis.clear_token_cache()
+    text = "駅から近く立地が便利で、アクセスが良好です。"
+    expected = text_analysis.tokenize(text)
+    saved = text_analysis.flush_token_cache(conn)
+    assert saved >= 1
+
+    text_analysis.clear_token_cache()
+    loaded = text_analysis.load_token_cache(conn)
+    assert loaded >= 1
+    # 読み込み済みなので、トークナイザを呼ばずに同じ結果が返る
+    assert text_analysis.tokenize(text) == expected
+
+
+def test_flush_only_writes_newly_analysed_entries(tmp_path):
+    from src import text_analysis
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    text_analysis.clear_token_cache()
+
+    text_analysis.tokenize("静かで落ち着く空間で、ゆったり快適に過ごせました。")
+    assert text_analysis.flush_token_cache(conn) >= 1
+    # 2回目は新規が無いので何も書かない
+    assert text_analysis.flush_token_cache(conn) == 0
+
+
+def test_worker_loads_and_saves_the_token_cache(db_path):
+    """ワーカーが分析の前後でキャッシュを読み書きする。"""
+    from src import text_analysis
+    conn = db.get_conn(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0] == 0
+
+    text_analysis.clear_token_cache()
+    analysis_mode._analysis_worker(_prog(db_path))
+    n1 = conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0]
+    assert n1 > 0, "解析結果がDBに保存されていない"
+
+    # 2回目は新たに解析するものが無いので件数が増えない
+    text_analysis.clear_token_cache()
+    analysis_mode._analysis_worker(_prog(db_path))
+    assert conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0] == n1
+
+
+def test_token_cache_survives_a_failed_analysis(db_path):
+    """途中で失敗しても、そこまでに解析したぶんは保存される。"""
+    from src import text_analysis
+    conn = db.get_conn(db_path)
+    text_analysis.clear_token_cache()
+
+    prog = _prog(db_path)
+    # 形態素解析が終わったあとで落ちるキーを外す
+    # （_all_names は解析前に読まれるので、そこで落とすと何も解析されない）
+    del prog["_matrix_ss_key"]
+    analysis_mode._analysis_worker(prog)
+
+    assert prog["error"]
+    assert conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0] > 0

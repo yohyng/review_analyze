@@ -9,6 +9,7 @@ lives in app.py and runs before this.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import tempfile
@@ -879,6 +880,86 @@ def render():
     # ══════════════════════════════════════════════════════════════════════ #
     # CSVプロファイラ
     # ══════════════════════════════════════════════════════════════════════ #
+    elif _page == "warmup":
+        st.markdown('<div class="vb-step">運用</div>', unsafe_allow_html=True)
+        st.markdown('<h1 class="vb-h1">分析の事前計算</h1>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="vb-sub">分析で使う重い計算をここで済ませておきます。'
+            "利用者が分析を実行したときに待たされなくなります。"
+            "データを取り込んだあとに一度実行してください。</p>",
+            unsafe_allow_html=True,
+        )
+
+        _wc = conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0]
+        _sc = conn.execute("SELECT COUNT(*) FROM topic_score_cache").fetchone()[0]
+        _pc = conn.execute("SELECT COUNT(*) FROM text_profile_cache").fetchone()[0]
+        _nf = conn.execute(
+            "SELECT COUNT(DISTINCT f.id) FROM facility f JOIN review r "
+            "ON r.facility_id = f.id").fetchone()[0]
+
+        _w1, _w2, _w3 = st.columns(3)
+        _w1.metric("形態素解析キャッシュ", f"{_wc:,}")
+        _w2.metric("感情スコア", f"{_sc} / {_nf} 施設")
+        _w3.metric("キーワード", f"{_pc} 施設")
+
+        st.info(
+            "**何をするか**\n\n"
+            "1. 全施設の口コミを形態素解析してキャッシュに保存\n"
+            "2. 全施設の感情スコアを計算してDBに保存\n\n"
+            "口コミ本文は取り込み後に変わらないので、1のキャッシュは失効しません。"
+            "2は口コミ件数が変わった施設だけ再計算されます。"
+        )
+
+        if st.button("⚡ 事前計算を実行", type="primary", width="stretch",
+                     key="warmup_run"):
+            _names = [r["name"] for r in conn.execute(
+                "SELECT f.name FROM facility f JOIN review r ON r.facility_id = f.id "
+                "GROUP BY f.id ORDER BY f.name").fetchall()]
+            _bar = st.progress(0.0, text="準備中…")
+            text_analysis.load_token_cache(conn)
+
+            _done = 0
+            for _i, _nm in enumerate(_names, 1):
+                _bar.progress(_i / max(len(_names), 1),
+                              text=f"{_i}/{len(_names)} 施設: {_nm}")
+                _row = conn.execute(
+                    "SELECT f.id, COUNT(r.id) nr FROM facility f "
+                    "LEFT JOIN review r ON r.facility_id = f.id "
+                    "WHERE f.name = ? GROUP BY f.id", (_nm,)).fetchone()
+                if not _row:
+                    continue
+                if db.get_topic_score_cache(conn, _row["id"], _row["nr"]):
+                    continue                     # 既に計算済み
+                _res = topic_score.analyze_facility(conn, _nm)
+                if not _res.empty:
+                    db.set_topic_score_cache(
+                        conn, _row["id"], _row["nr"],
+                        json.dumps([
+                            {"name": x.name, "weight": x.weight,
+                             "avg_score": x.avg_score, "total_score": x.total_score,
+                             "salience": x.salience, "sentiment": x.sentiment}
+                            for x in _res.topics]),
+                        _res.overall_score, _res.n_sentences)
+                    _done += 1
+
+            _bar.progress(1.0, text="形態素解析の結果を保存中…")
+            _saved = text_analysis.flush_token_cache(conn)
+            data.clear_list_caches()
+            data.topic_matrix_cached.clear()
+            _bar.empty()
+            st.success(
+                f"完了しました。感情スコア {_done} 施設を計算、"
+                f"形態素解析 {_saved:,} 件を保存しました。"
+            )
+            st.rerun()
+
+        st.divider()
+        st.caption(
+            "実測（46施設・6,083件・ローカル）: 事前計算なしの初回が約45秒、"
+            "事前計算済みなら約2秒。Streamlit Cloud は CPU が絞られるため"
+            "差はさらに大きくなります。"
+        )
+
     elif _page == "dummy":
         st.markdown('<div class="vb-step">検証</div>', unsafe_allow_html=True)
         st.markdown('<h1 class="vb-h1">ダミーデータ</h1>', unsafe_allow_html=True)
