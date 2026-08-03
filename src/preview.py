@@ -13,7 +13,8 @@ from datetime import date
 from html import escape
 from typing import Optional
 
-from . import analysis, config, db, text_analysis, timeline, topic_score, voices
+from . import (analysis, config, db, discussion, text_analysis, timeline,
+               topic_score, voices)
 
 # palette (VoiceBAUM)
 ACCENT = "#B0338A"
@@ -56,6 +57,8 @@ def build_bundle(
     peers_override: list | None = None,  # 指定競合モード: 明示的な比較施設リスト
     change_points: list | None = None,   # LLMで説明文を入れた変化点（SLIDE 4）
     voices_result: list | None = None,   # LLMが選んだ代表口コミ（SLIDE 6）
+    discussion_result=None,              # SLIDE 7: LLMの出力 dict、または
+                                         # 課題リストを受け取って dict を返す callable
 ) -> dict:
     frow = conn.execute(
         "SELECT id, category, general_rating, floor_area FROM facility WHERE name = ?", (target,)
@@ -172,6 +175,11 @@ def build_bundle(
         for ym, cnt in db.monthly_review_counts(conn, fid):
             cum += cnt
             review_trend.append((ym, cum))
+
+    # SLIDE 7「ディスカッションポイント」— 課題の抽出と優先度づけ。
+    # 文章は LLM が書くが、課題そのもの・スコア・差・優先度はここで決める。
+    _issues: list = []
+    _actions: list = []
 
     def _topic_diff_label(entry):
         return f"{entry[0]}（{entry[3]:+.1f}pt）" if entry else "—"
@@ -310,6 +318,20 @@ def build_bundle(
     period_label = _period_of([target])
     period_label_scope = _period_of([target] + peer_valid) or period_label
 
+    _bundle_for_issues = {
+        "topic_names": topic_names, "topic_values": topic_values,
+        "overall_topic": overall_topic, "baseline_label": baseline_label,
+    }
+    _issues = discussion.pick_issues(_bundle_for_issues)
+    # callable を渡せる。課題はここで確定するので、LLM 呼び出しのためだけに
+    # build_bundle を2回走らせずに済む。
+    if callable(discussion_result) and _issues:
+        discussion_result = discussion_result(_issues)
+    if discussion_result is not None and _issues:
+        _actions = discussion.apply_llm_result(_issues, discussion_result) or []
+    if not _actions and _issues:
+        _actions = discussion.fallback_actions(_issues)
+
     return {
         "target": target,
         "category": category,
@@ -354,6 +376,8 @@ def build_bundle(
         "monthly_series": monthly_series,
         "change_points": change_points,
         "voices": voices_result,
+        "issues": _issues,
+        "actions": _actions,
         # SLIDE 1（施設・基本情報）— 比較対象カード（同カテゴリ優先・写真つき最大5件）
         "peer_display": peer_display,
         "peer_display_same_category": bool(same_cat),

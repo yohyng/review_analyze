@@ -313,6 +313,61 @@ def pick_voice_quadrants(facility_name: str, reviews: list, api_key: str):
     return data, ""
 
 
+# --------------------------------------------------------------------------- #
+# SLIDE 7「ディスカッションポイント」— 企画仮説と打ち手を書かせる
+# --------------------------------------------------------------------------- #
+def build_discussion_points(facility_name: str, issues: list, api_key: str,
+                            samples: list | None = None):
+    """課題ごとの根拠・企画仮説・対応領域と、打ち手アクションを生成させる。
+
+    issues は discussion.Issue のリスト（スコアと差は算出済み）。
+    返り値は (data, error)。data は discussion.apply_llm_result() に渡す形式。
+
+    **数値・優先度・インパクトは渡すだけで生成させない。**
+    LLM が担うのは文章と「実現しやすさ」の見立てだけ。
+    """
+    if not issues:
+        return None, "課題がありません"
+
+    listing = "\n".join(
+        f"[{i}] {iss.topic}: 自施設 {iss.score5:.2f} / "
+        f"{iss.base_label} {iss.base5:.2f}（差 {iss.gap5:+.2f}pt・優先度 {iss.priority}）"
+        for i, iss in enumerate(issues)
+    )
+    voice = ""
+    if samples:
+        voice = "\n参考（実際の口コミ抜粋）:\n" + "\n".join(
+            f"  - ★{r if r is not None else '-'}: {str(txt)[:110]}"
+            for r, txt in samples[:20]
+        )
+
+    prompt = f"""あなたは商業・文化施設の企画コンサルタントです。
+「{facility_name}」の口コミ分析から、次の課題が抽出されました。
+これをもとに、企画会議で議論するための材料を作ってください。
+
+課題（スコアは5点満点。数値はこちらで算出済み）:
+{listing}
+{voice}
+
+制約:
+- **新しい数値（pt・件数・％・順位）を書かないこと。** 数値はこちらで付与する。
+- evidence は、その課題を裏づける定性的な事実を口コミから1文で。
+  口コミから読み取れない場合は「口コミからは要因を特定できず」と書く。
+- hypothesis は、なぜそうなっているかの企画仮説を2文以内で。断定を避ける。
+- domains は対応領域のタグを2つ（例:「体験設計・演出」「価格・チケット設計」
+  「再訪施策・CRM」「コンテンツ・ストーリー」「情報提供・サイン」）。
+- actions は課題と同じ数・同じ順序。title は12字以内の施策名、
+  bullets は具体的な打ち手を3つ（各30字以内）。
+- feasibility は実現しやすさを 0.0〜1.0 で。大型投資が要るものほど小さく。
+
+出力は次の形式のJSONのみ（説明文やコードフェンスは不要）:
+{{"issues": [{{"evidence": "...", "hypothesis": "...", "domains": ["...", "..."]}}],
+  "actions": [{{"title": "...", "bullets": ["...", "...", "..."],
+                "feasibility": 0.7}}]}}
+"""
+    return call_json(prompt, api_key, max_tokens=2000)
+
+
 def _extract_api_error(resp: requests.Response) -> str:
     try:
         return resp.json().get("error", {}).get("message", resp.text[:200])

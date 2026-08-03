@@ -769,3 +769,149 @@ def test_slide6_survives_no_reviews(tmp_path):
                              peers_override=[])
     html = slides.slide6_voices(b)
     assert "この観点に該当する口コミは見つかりませんでした" in html
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 7「ディスカッションポイント」（PDF p12・構成上は 7）
+# --------------------------------------------------------------------------- #
+def _disc_bundle(tmp_path):
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    for nm in ("target", "peer1", "peer2"):
+        fid = db.upsert_facility(conn, nm, ftype="comparison")
+        conn.execute(
+            "INSERT INTO review(facility_id, review_id, rating, text, review_date) "
+            "VALUES (?, ?, ?, ?, ?)", (fid, f"{nm}-1", 4, "普通に良い", "2024-04-01"))
+    conn.commit()
+    matrix = {"target": _result(0.50), "peer1": _result(0.62), "peer2": _result(0.66)}
+    return conn, matrix
+
+
+def test_issues_are_the_weakest_topics_with_computed_scores(tmp_path):
+    conn, matrix = _disc_bundle(tmp_path)
+    b = preview.build_bundle(conn, "target", matrix, None, None,
+                             peers_override=["peer1", "peer2"])
+    issues = b["issues"]
+    assert len(issues) == 3
+    # 自施設 50 → 2.50、競合平均 64 → 3.20、差 -0.70
+    for iss in issues:
+        assert iss.score5 == 2.50
+        assert iss.base5 == 3.20
+        assert iss.gap5 == -0.70
+        assert iss.impact == 1.0            # 差0.6以上は上限
+    assert issues[0].priority == "高"
+    assert [i.priority for i in issues[1:]] == ["中", "中"]
+
+
+def test_issue_score_line_states_the_measured_values(tmp_path):
+    conn, matrix = _disc_bundle(tmp_path)
+    b = preview.build_bundle(conn, "target", matrix, None, None,
+                             peers_override=["peer1", "peer2"])
+    line = b["issues"][0].score_line
+    assert "2.50" in line and "3.20" in line
+    assert "競合平均" in line
+
+
+def test_discussion_llm_cannot_override_the_numbers(tmp_path):
+    """LLM がインパクトを返しても、実測から算出した値を使う。"""
+    from src import discussion
+    conn, matrix = _disc_bundle(tmp_path)
+    b = preview.build_bundle(conn, "target", matrix, None, None,
+                             peers_override=["peer1", "peer2"])
+    issues = b["issues"]
+    data = {
+        "issues": [{"evidence": "混雑への言及が多い", "hypothesis": "動線設計の問題",
+                    "domains": ["体験設計", "運営"]}] * 3,
+        # impact を送りつけても無視されること
+        "actions": [{"title": "動線改善", "bullets": ["A", "B", "C"],
+                     "feasibility": 0.9, "impact": 0.01}] * 3,
+    }
+    actions = discussion.apply_llm_result(issues, data)
+    assert actions and len(actions) == 3
+    assert all(a.impact == 1.0 for a in actions)       # 実測由来（LLMの0.01ではない）
+    assert actions[0].feasibility == 0.9               # 実現しやすさはLLMの値
+    assert actions[0].priority == "高"                  # 優先度はコード側
+
+
+def test_discussion_llm_result_rejects_malformed_shapes(tmp_path):
+    from src import discussion
+    conn, matrix = _disc_bundle(tmp_path)
+    issues = preview.build_bundle(conn, "target", matrix, None, None,
+                                  peers_override=["peer1", "peer2"])["issues"]
+    assert discussion.apply_llm_result(issues, "nope") is None
+    assert discussion.apply_llm_result(issues, {"issues": [], "actions": []}) is None
+    assert discussion.apply_llm_result(
+        issues, {"issues": [{}], "actions": [{}]}) is None      # 件数不足
+
+
+def test_discussion_result_can_be_a_callback(tmp_path):
+    """課題が確定した時点で呼ばれる callable を渡せる（build_bundle は1回だけ）。"""
+    conn, matrix = _disc_bundle(tmp_path)
+    seen = {}
+
+    def cb(issues):
+        seen["n"] = len(issues)
+        return {"issues": [{"evidence": "e", "hypothesis": "h",
+                            "domains": ["d1", "d2"]}] * 3,
+                "actions": [{"title": "施策", "bullets": ["x"],
+                             "feasibility": 0.4}] * 3}
+
+    b = preview.build_bundle(conn, "target", matrix, None, None,
+                             peers_override=["peer1", "peer2"],
+                             discussion_result=cb)
+    assert seen["n"] == 3
+    assert b["actions"][0].title == "施策"
+    assert b["issues"][0].hypothesis == "h"
+
+
+def test_slide7_renders_table_matrix_and_actions(tmp_path):
+    conn, matrix = _disc_bundle(tmp_path)
+    b = preview.build_bundle(conn, "target", matrix, None, None,
+                             peers_override=["peer1", "peer2"])
+    html = slides.slide7_discussion(b)
+    assert "ディスカッションポイント" in html
+    for h in ("課題", "根拠", "企画仮説", "対応領域"):
+        assert h in html
+    assert "優先度マトリクス（インパクト × 実現しやすさ）" in html
+    assert "打ち手アクション（優先施策）" in html
+    for q in ("中期で検討", "優先的に着手", "検討優先度 低", "短期で着手"):
+        assert q in html
+    assert "優先度：高" in html and "優先度：中" in html
+    assert "実現しやすさ" in html
+
+
+def test_slide7_marks_llm_generated_content(tmp_path):
+    """企画仮説を生成AIが書いたときは、その旨をフッタに出す。"""
+    conn, matrix = _disc_bundle(tmp_path)
+    b = preview.build_bundle(conn, "target", matrix, None, None,
+                             peers_override=["peer1", "peer2"])
+    assert "企画仮説・打ち手は生成AIによる提案です" not in slides.slide7_discussion(b)
+
+    b2 = preview.build_bundle(
+        conn, "target", matrix, None, None, peers_override=["peer1", "peer2"],
+        discussion_result={"issues": [{"evidence": "e", "hypothesis": "仮説",
+                                       "domains": ["a", "b"]}] * 3,
+                           "actions": [{"title": "t", "bullets": ["b"],
+                                        "feasibility": .5}] * 3})
+    assert "企画仮説・打ち手は生成AIによる提案です" in slides.slide7_discussion(b2)
+
+
+def test_slide7_fallback_does_not_invent_measures(tmp_path):
+    """LLM 無しでは施策を創作せず、要因特定が先だと述べる。"""
+    from src import discussion
+    conn, matrix = _disc_bundle(tmp_path)
+    b = preview.build_bundle(conn, "target", matrix, None, None,
+                             peers_override=["peer1", "peer2"])
+    html = slides.slide7_discussion(b)
+    assert "要因は未検証" in html
+    assert "打ち手は要因を特定してから検討する" in html
+
+
+def test_slide7_survives_without_topics(tmp_path):
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    db.upsert_facility(conn, "target", ftype="target")
+    conn.commit()
+    b = preview.build_bundle(conn, "target", {}, None, None, peers_override=[])
+    assert b["issues"] == []
+    assert "課題を抽出できるデータがありません" in slides.slide7_discussion(b)

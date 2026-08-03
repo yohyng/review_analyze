@@ -1739,3 +1739,201 @@ def slide6_voices(b: dict) -> str:
         f'{grid}'
     )
     return canvas(slide_header("6", "特徴的な口コミ", meta) + body + footer(note))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 7「ディスカッションポイント」— docs/design/slide_p12.png
+#   （PDF のページ番号は 8 だが、構成上は 7 が正）
+# ═══════════════════════════════════════════════════════════════════════════
+def _prio_badge(p: str) -> str:
+    col = T.ACCENT if p == "高" else "#E07A22"
+    return (
+        f'<span style="display:inline-block;background:{col};color:#fff;'
+        'border-radius:.7cqw;padding:.12cqw .7cqw;font-size:.62cqw;'
+        f'font-weight:800;white-space:nowrap;">優先度：{escape(p)}</span>'
+    )
+
+
+def _issue_table(issues: list) -> str:
+    from . import discussion as _d
+    if not issues:
+        return (f'<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.SUB};font-size:.9cqw;">'
+                '課題を抽出できるデータがありません</div>')
+    cell = "padding:.55cqw .7cqw;font-size:.74cqw;"
+    head = (
+        f'<div style="display:flex;background:{T.NAVY};color:#fff;font-weight:800;">'
+        + "".join(
+            f'<div style="flex:{w};{cell}text-align:center;font-size:.85cqw;">'
+            f'{escape(h)}</div>'
+            for h, w in (("課題", "1.5"), ("根拠", "2"), ("企画仮説", "2"),
+                         ("対応領域", "1.5"))
+        )
+        + '</div>'
+    )
+    rows = ""
+    for i, iss in enumerate(issues, 1):
+        ev, hyp, doms = (iss.evidence, iss.hypothesis, iss.domains)
+        if not hyp:
+            ev, hyp, doms = _d.fallback_texts(iss)
+        tags = "".join(
+            f'<div style="display:flex;align-items:center;gap:.35cqw;'
+            f'color:{T.ACCENT_DEEP};font-size:.74cqw;font-weight:700;'
+            'margin-bottom:.3cqw;">'
+            f'<span style="font-size:.8cqw;">◆</span>{escape(d)}</div>'
+            for d in (doms or ["—"])
+        )
+        rows += (
+            f'<div style="flex:1;display:flex;border-top:1px solid {T.LINE};">'
+            # 課題
+            f'<div style="flex:1.5;{cell}display:flex;flex-direction:column;'
+            'gap:.35cqw;justify-content:center;">'
+            '<div style="display:flex;align-items:center;gap:.5cqw;">'
+            f'<span style="flex:none;width:1.5cqw;height:1.5cqw;border-radius:50%;'
+            f'background:{T.ACCENT};color:#fff;font-size:.72cqw;font-weight:800;'
+            f'display:flex;align-items:center;justify-content:center;">{i}</span>'
+            f'<span style="font-size:.92cqw;font-weight:800;color:{T.INK};">'
+            f'{escape(iss.title)}</span></div>'
+            f'<div>{_prio_badge(iss.priority)}</div></div>'
+            # 根拠（1行目は必ず実測スコア）
+            f'<div style="flex:2;{cell}display:flex;flex-direction:column;'
+            f'gap:.25cqw;justify-content:center;color:{T.INK};line-height:1.5;">'
+            f'<div>・{escape(iss.score_line)}</div>'
+            + (f'<div>・{escape(ev)}</div>' if ev else "")
+            + '</div>'
+            # 企画仮説
+            f'<div style="flex:2;{cell}display:flex;align-items:center;'
+            f'color:{T.INK};line-height:1.55;">{escape(hyp)}</div>'
+            # 対応領域
+            f'<div style="flex:1.5;{cell}display:flex;flex-direction:column;'
+            f'justify-content:center;">{tags}</div></div>'
+        )
+    return (
+        f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;'
+        f'border:1px solid {T.CARD_LINE};border-radius:.7cqw;overflow:hidden;">'
+        f'{head}{rows}</div>'
+    )
+
+
+def _priority_matrix(actions: list) -> str:
+    """インパクト × 実現しやすさ の4象限。"""
+    if not actions:
+        return (f'<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.SUB};font-size:.85cqw;">'
+                '打ち手がありません</div>')
+    # (ラベル, 左半分か, 上半分か, 背景)
+    quads = (
+        ("中期で検討", True, True, "#fff"),
+        ("優先的に着手", False, True, T.HEAT_HIGH_W),
+        ("検討優先度 低", True, False, T.HEAT_LOW_W),
+        ("短期で着手", False, False, "#fff"),
+    )
+    zones = "".join(
+        f'<div style="position:absolute;left:{2 if left else 50}%;'
+        f'top:{2 if top else 50}%;width:48%;height:48%;background:{bg};"></div>'
+        for _lab, left, top, bg in quads
+    )
+    # ラベルは各象限の外側の角へ。中央付近はプロット点が来るので空けておく。
+    labels = "".join(
+        '<div style="position:absolute;'
+        + (f'left:3%;' if left else 'right:3%;')
+        + (f'top:3%;' if top else 'bottom:3%;')
+        + f'font-size:.66cqw;font-weight:800;white-space:nowrap;'
+        f'color:{T.ACCENT_DEEP if lab == "優先的に着手" else T.SUB};">'
+        f'{escape(lab)}</div>'
+        for lab, left, top, _bg in quads
+    )
+    # 近い位置に重なるとラベルが読めなくなるので、既に置いた点から離す
+    placed: list[tuple[float, float]] = []
+    dots = ""
+    for i, a in enumerate(actions, 1):
+        px = 6 + a.feasibility * 86
+        py = 92 - a.impact * 80
+        # 上限に達したら諦める（回数を切らないと py が下限で止まって無限ループする）
+        for _ in range(len(actions)):
+            if not any(abs(px - qx) < 12 and abs(py - qy) < 7 for qx, qy in placed):
+                break
+            py -= 7.5
+            if py < 6.0:
+                py = 6.0
+                break
+        placed.append((px, py))
+        dots += (
+            f'<div style="position:absolute;left:{px:.1f}%;top:{py:.1f}%;'
+            'transform:translate(-50%,-50%);display:flex;align-items:center;'
+            'gap:.35cqw;white-space:nowrap;">'
+            f'<span style="flex:none;width:1.2cqw;height:1.2cqw;border-radius:50%;'
+            f'border:1.6px solid {T.ACCENT};background:#fff;color:{T.ACCENT_DEEP};'
+            'font-size:.6cqw;font-weight:800;display:flex;align-items:center;'
+            f'justify-content:center;">{i}</span>'
+            f'<span style="font-size:.66cqw;font-weight:700;color:{T.INK};">'
+            f'{escape(_clip_name(a.title, 10))}</span></div>'
+        )
+    return (
+        '<div style="flex:1;display:flex;min-height:0;">'
+        f'<div style="flex:none;width:1.6cqw;display:flex;align-items:center;">'
+        + vertical_text("インパクト", size=.62, weight=700) + '</div>'
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;">'
+        f'<div style="flex:1;position:relative;min-height:0;border-left:1px solid '
+        f'{T.INK};border-bottom:1px solid {T.INK};">{zones}{labels}{dots}</div>'
+        '<div style="flex:none;display:flex;justify-content:space-between;'
+        f'font-size:.62cqw;color:{T.INK};margin-top:.2cqw;">'
+        '<span>低</span><span style="font-weight:700;">実現しやすさ</span>'
+        '<span>高</span></div></div></div>'
+    )
+
+
+def _action_cards(actions: list) -> str:
+    if not actions:
+        return (f'<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.SUB};font-size:.85cqw;">'
+                '打ち手がありません</div>')
+    items = "".join(
+        f'<div style="flex:1;min-height:0;display:flex;gap:.7cqw;'
+        f'border-bottom:1px solid {T.LINE};padding:.4cqw 0;">'
+        '<div style="flex:none;display:flex;flex-direction:column;'
+        'align-items:flex-start;gap:.3cqw;width:8.4cqw;">'
+        '<div style="display:flex;align-items:center;gap:.35cqw;">'
+        f'<span style="width:1.4cqw;height:1.4cqw;border-radius:50%;'
+        f'background:{T.ACCENT};color:#fff;font-size:.68cqw;font-weight:800;'
+        f'display:flex;align-items:center;justify-content:center;">{i}</span>'
+        f'<span style="font-size:.76cqw;font-weight:800;color:{T.INK};'
+        f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+        f'max-width:6.2cqw;">{escape(_clip_name(a.title, 9))}</span></div>'
+        f'{_prio_badge(a.priority)}</div>'
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
+        'justify-content:center;gap:.15cqw;">'
+        + "".join(
+            f'<div style="font-size:.68cqw;color:{T.INK};overflow:hidden;'
+            f'text-overflow:ellipsis;white-space:nowrap;">・{escape(bl)}</div>'
+            for bl in (a.bullets or ["—"])
+        )
+        + '</div></div>'
+        for i, a in enumerate(actions, 1)
+    )
+    return f'<div style="flex:1;display:flex;flex-direction:column;">{items}</div>'
+
+
+def slide7_discussion(b: dict) -> str:
+    """SLIDE 7「ディスカッションポイント」。docs/design/slide_p12.png。"""
+    from . import discussion as _d
+    issues = b.get("issues") or []
+    actions = b.get("actions") or (_d.fallback_actions(issues) if issues else [])
+    period = b.get("period_label") or ""
+    meta = f"分析期間：{period}" if period else ""
+    generated = any(getattr(i, "hypothesis", "") for i in issues)
+
+    body = (
+        '<div style="flex:1;display:flex;flex-direction:column;min-height:0;'
+        'padding:1cqw 1.8cqw 0;gap:.9cqw;">'
+        f'<div style="flex:1.15;min-height:0;display:flex;">{_issue_table(issues)}</div>'
+        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;">'
+        + panel("優先度マトリクス（インパクト × 実現しやすさ）",
+                _priority_matrix(actions))
+        + panel("打ち手アクション（優先施策）", _action_cards(actions))
+        + '</div></div>'
+    )
+    note = "※スコアは5点満点。優先度とインパクトは実測の差から算出しています"
+    if generated:
+        note += "／企画仮説・打ち手は生成AIによる提案です"
+    return canvas(slide_header("7", "ディスカッションポイント", meta) + body + footer(note))

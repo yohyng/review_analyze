@@ -21,7 +21,7 @@ import streamlit as st
 from src import (
     analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
     llm, preview, report, review_csv, score_excel, scoring, search,
-    text_analysis, timeline, topic_score, topics, voices,
+    discussion, text_analysis, timeline, topic_score, topics, voices,
 )
 from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
@@ -436,6 +436,16 @@ def _analysis_worker(prog: dict) -> None:
             _vdata, _verr = llm.pick_voice_quadrants(tgt, revs, akey)
             if not _verr:
                 _voices = voices.apply_llm_result(revs, _vdata)   # 不正なら None
+
+        # ⑤-d  SLIDE 7 の企画仮説・打ち手。課題とスコアはコード側で確定済みで、
+        #      LLM には文章と「実現しやすさ」の見立てだけを書かせる。
+        def _disc(_iss):
+            """build_bundle が課題を確定した時点で呼ばれる。失敗時は None。"""
+            prog["detail"] = f"抽出した {len(_iss)} 課題の企画仮説を作成中"
+            _ddata, _derr = llm.build_discussion_points(
+                tgt, _iss, akey, samples=revs[:20]
+            )
+            return None if _derr else _ddata
 
         # ⑥  レポート生成
         prog["step"]   = 5
