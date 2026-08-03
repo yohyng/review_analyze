@@ -325,6 +325,8 @@ def _analysis_worker(prog: dict) -> None:
             matrix = {}
             n_cached, n_computed = 0, 0
             for i, fname in enumerate(all_names):
+                if prog.get("cancelled"):
+                    return          # 別の分析が始まったので、ここで手を引く
                 fid_n = fac_info.get(fname)
                 cached_row = (
                     db.get_topic_score_cache(tconn, fid_n[0], fid_n[1])
@@ -374,6 +376,9 @@ def _analysis_worker(prog: dict) -> None:
             ss_out[prog["_matrix_ss_key"]] = matrix
 
         _ts_result = matrix.get(tgt) or topic_score.analyze_facility(tconn, tgt)
+
+        if prog.get("cancelled"):
+            return
 
         # ④  TF-IDF トピック抽出
         prog["step"]   = 3
@@ -849,7 +854,21 @@ def render():
             "_matrix_ss_key": _matrix_ss_key,
             "_peers_for_bundle": _peers_for_bundle,
             "_db_path": None,   # None → 既定のDB/Turso（テストから差し替え可能）
+            "cancelled": False,
         }
+
+        # 別施設の分析が走ったままだと、ワーカーが2本同時に動いて CPU を食い合ううえ、
+        # janome のトークナイザを取り合って解析が壊れる原因にもなる。
+        # Python のスレッドは外から止められないので、中止フラグを立てて
+        # 次の区切りで自分から抜けてもらう。
+        for _k in [k for k in st.session_state if k.startswith("_vb_prog_")]:
+            if _k == _PROG_KEY:
+                continue
+            _old = st.session_state.get(_k)
+            if isinstance(_old, dict) and _old.get("running") and not _old.get("done"):
+                _old["cancelled"] = True
+            st.session_state.pop(_k, None)
+
         st.session_state[_PROG_KEY] = _new_prog
 
         _thread = threading.Thread(

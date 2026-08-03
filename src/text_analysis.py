@@ -10,12 +10,24 @@ For each facility:
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections import Counter
 from dataclasses import dataclass, field
 
 import pandas as pd
 
 _tokenizer_cache = None
+
+# janome の Tokenizer はスレッドセーフではない。共有インスタンスを複数スレッドから
+# 同時に呼ぶと内部の格子（Lattice）が壊れ、
+#     IndexError: list index out of range  (janome/lattice.py: enodes[...].append)
+# で落ちる。分析はバックグラウンドスレッドで走り、別施設の分析を続けて始めると
+# ワーカーが同時に動きうるので、トークナイズ全体をロックで直列化する。
+#
+# スレッドごとに Tokenizer を持つ手もあるが、1個あたり +10MB かかるうえ、
+# 形態素解析は CPU 律速で GIL によりどのみち並列にならないため、
+# 1インスタンス＋ロックの方が総メモリを抑えられる。
+_tok_lock = threading.Lock()
 
 
 def _tok():
@@ -41,16 +53,23 @@ _KEEP_POS = frozenset({"名詞", "動詞", "形容詞", "形容動詞"})
 
 
 def tokenize(text: str) -> list[str]:
-    """Return base-form content words from Japanese text."""
+    """Return base-form content words from Japanese text.
+
+    janome の Tokenizer がスレッドセーフでないため、解析中はロックを保持する。
+    tokenize() はジェネレータを返すので、消費し終えるまで手放してはいけない。
+    """
     out = []
-    for token in _tok().tokenize(text):
-        pos = token.part_of_speech.split(",")[0]
-        if pos not in _KEEP_POS:
-            continue
-        base = token.base_form if token.base_form and token.base_form != "*" else token.surface
-        if len(base) < 2 or base in _STOPWORDS:
-            continue
-        out.append(base)
+    with _tok_lock:
+        tokenizer = _tok()
+        for token in tokenizer.tokenize(text):
+            pos = token.part_of_speech.split(",")[0]
+            if pos not in _KEEP_POS:
+                continue
+            base = (token.base_form
+                    if token.base_form and token.base_form != "*" else token.surface)
+            if len(base) < 2 or base in _STOPWORDS:
+                continue
+            out.append(base)
     return out
 
 

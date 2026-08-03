@@ -9,11 +9,15 @@
 from __future__ import annotations
 
 import threading
+import traceback
 
 import pytest
+from pathlib import Path
 
 from src import db, review_csv
 from src.ui import analysis_mode
+
+SRC = Path(analysis_mode.__file__)
 
 
 def _mk_review(i: int, rating: int, text: str) -> review_csv.ParsedReview:
@@ -179,3 +183,108 @@ def test_worker_survives_being_run_in_a_bare_thread(db_path):
     assert prog["error"] is None, prog["error"]
     assert prog["done"] is True
     assert isinstance(prog["result"], dict)
+
+
+# --------------------------------------------------------------------------- #
+# トークナイザのスレッド安全性 — janome の Tokenizer は共有できない
+# --------------------------------------------------------------------------- #
+def test_tokenize_is_safe_from_multiple_threads():
+    """共有トークナイザを並行で叩いても壊れないこと。
+
+    janome 0.5.0 の Tokenizer はスレッドセーフではなく、共有インスタンスを
+    複数スレッドから同時に呼ぶと内部の格子が壊れて
+        IndexError: list index out of range (janome/lattice.py)
+    で落ちる。分析はバックグラウンドスレッドで走り、別施設の分析を続けて
+    始めるとワーカーが2本同時に動きうるため、実際に本番で発生した。
+    """
+    from src import text_analysis
+
+    texts = [
+        "スタッフの接客がとても丁寧で、笑顔の対応が気持ちよかったです。"
+        "展示のクオリティが高く、完成度に驚きました。",
+        "混雑していて騒がしく、落ち着かない空間でした。"
+        "料金が高く、値段に見合わない妥当性のなさでした。",
+        "駅から近く立地が便利で、アクセスが良好です。"
+        "圧巻の世界観で没入でき、非日常の感動がありました。",
+    ] * 40
+
+    text_analysis._tok()          # 本番と同じく1インスタンスを共有させる
+    errors: list = []
+    counts: list = []
+
+    def work(offset: int) -> None:
+        try:
+            counts.append(sum(len(text_analysis.tokenize(t))
+                              for t in texts[offset::4]))
+        except Exception:
+            errors.append(traceback.format_exc())
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=120)
+
+    assert not errors, errors[0]
+    assert sum(counts) > 0
+
+
+def test_tokenize_returns_the_same_result_under_contention():
+    """直列でも並行でも結果が変わらないこと。"""
+    from src import text_analysis
+
+    text = ("展示の種類が豊富で、選択肢の幅広さが良かったです。"
+            "デザインが洗練されていて美しく、映える眺めでした。")
+    expected = text_analysis.tokenize(text)
+
+    results: list = []
+
+    def work() -> None:
+        results.append(text_analysis.tokenize(text))
+
+    threads = [threading.Thread(target=work) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert len(results) == 6
+    assert all(r == expected for r in results)
+
+
+# --------------------------------------------------------------------------- #
+# 中止フラグ — 別の分析が始まったら古いワーカーは手を引く
+# --------------------------------------------------------------------------- #
+def test_worker_stops_when_cancelled(db_path):
+    """cancelled が立っていたら、施設ループの途中で抜けて結果を残さない。"""
+    prog = _prog(db_path)
+    prog["cancelled"] = True
+    analysis_mode._analysis_worker(prog)
+
+    assert prog["error"] is None
+    assert prog.get("done") is not True
+    assert "result" not in prog
+
+
+def test_worker_completes_when_not_cancelled(db_path):
+    prog = _prog(db_path)
+    assert prog.get("cancelled") is None
+    analysis_mode._analysis_worker(prog)
+    assert prog["done"] is True
+
+
+def test_running_screen_cancels_other_analyses():
+    """新しい分析を始めるとき、走っている別施設のワーカーに中止を伝える。"""
+    src = SRC.read_text(encoding="utf-8")
+    assert '_old["cancelled"] = True' in src
+    assert 'k.startswith("_vb_prog_")' in src
+    # ワーカー側にも確認箇所がある
+    body = _worker_source_for_cancel()
+    assert body.count('prog.get("cancelled")') >= 2
+
+
+def _worker_source_for_cancel() -> str:
+    text = SRC.read_text(encoding="utf-8")
+    start = text.index("def _analysis_worker(")
+    end = text.index("\ndef ", start + 1)
+    return text[start:end]
