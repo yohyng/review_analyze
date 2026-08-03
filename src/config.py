@@ -1,9 +1,15 @@
 """Shared paths and constants."""
 from pathlib import Path
 
+import os
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "reviews.db"
+
+# 既定は data/reviews.db。環境変数 VOICEBAUM_DB で差し替えられる。
+# ダミーデータで動作確認するときに本番DBを汚さずに済む:
+#     VOICEBAUM_DB=data/dummy.db streamlit run app.py
+DB_PATH = Path(os.environ.get("VOICEBAUM_DB") or (DATA_DIR / "reviews.db"))
 
 APP_VERSION = "0.35.0"
 
