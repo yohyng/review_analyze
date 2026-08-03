@@ -1662,3 +1662,80 @@ def slide5_space_detail(b: dict) -> str:
         '（詳細）</span></div>' + _planner_badge() + '</div>'
     )
     return canvas(header + body + footer("※スコアは5点満点です"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 6「特徴的な口コミ」— docs/design/slide_p11.png
+# ═══════════════════════════════════════════════════════════════════════════
+def _voice_card(v, style: dict) -> str:
+    """4象限カード1枚。大きな引用符つきで口コミを載せる。"""
+    if not v.quote:
+        inner = (f'<div style="flex:1;display:flex;align-items:center;'
+                 f'color:{T.SUB};font-size:.85cqw;">'
+                 'この観点に該当する口コミは見つかりませんでした</div>')
+    else:
+        chips = "".join(
+            f'<span style="display:inline-flex;align-items:center;gap:.3cqw;'
+            f'background:{style["bg"]};color:{style["fg"]};border-radius:.4cqw;'
+            'padding:.25cqw .8cqw;font-size:.72cqw;font-weight:700;'
+            f'margin-right:.5cqw;">{icon} {escape(c)}</span>'
+            for icon, c in zip(("👤", "👥"), v.chips)
+        )
+        inner = (
+            f'<div style="flex:1;min-height:0;display:flex;align-items:center;'
+            f'font-size:1.05cqw;font-weight:700;line-height:1.6;color:{T.INK};'
+            'overflow:hidden;"><div>'
+            f'<span style="color:{style["fg"]};font-size:1.5cqw;'
+            'vertical-align:-.15em;">“</span>'
+            f'{escape(v.quote)}'
+            f'<span style="color:{style["fg"]};font-size:1.5cqw;'
+            'vertical-align:-.35em;">”</span></div></div>'
+            + (f'<div style="flex:none;border-top:1px dashed {T.LINE};'
+               f'padding-top:.5cqw;">{chips}</div>' if chips else "")
+        )
+    return (
+        f'<div style="flex:1;min-width:0;background:{style["bg"]};'
+        'border-radius:1.1cqw;padding:1cqw 1.2cqw;display:flex;gap:1cqw;">'
+        f'<div style="flex:none;width:3.4cqw;height:3.4cqw;border-radius:50%;'
+        'background:#fff;display:flex;align-items:center;justify-content:center;'
+        f'font-size:1.5cqw;">{style["icon"]}</div>'
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
+        'gap:.55cqw;">'
+        f'<div style="flex:none;font-size:1.25cqw;font-weight:800;'
+        f'color:{style["fg"]};">{escape(v.quadrant)}</div>'
+        f'{inner}</div></div>'
+    )
+
+
+def slide6_voices(b: dict) -> str:
+    """SLIDE 6「特徴的な口コミ」。docs/design/slide_p11.png。"""
+    from . import voices as _v
+    vs = b.get("voices") or _v.pick_fallback([])
+    period = b.get("period_label") or ""
+    meta = f"分析期間：{period}" if period else ""
+
+    cards = [
+        _voice_card(v, T.QUADRANT_CARDS.get(v.quadrant, T.QUADRANT_CARDS["維持すべき価値"]))
+        for v in vs
+    ]
+    grid = (
+        '<div style="flex:1;display:flex;flex-direction:column;gap:1cqw;'
+        'min-height:0;padding:0 1.8cqw;">'
+        f'<div style="flex:1;display:flex;gap:1cqw;min-height:0;">'
+        f'{cards[0]}{cards[1]}</div>'
+        f'<div style="flex:1;display:flex;gap:1cqw;min-height:0;">'
+        f'{cards[2]}{cards[3]}</div></div>'
+    )
+    # 属性が推定値のときは、その旨を必ず添える（口コミに書かれた事実ではない）
+    estimated = any(getattr(v, "estimated", False) and v.chips for v in vs)
+    note = "※上記は代表的なご意見（N=1）の抜粋です"
+    if estimated:
+        note += "／属性は口コミ本文からの推定です"
+    body = (
+        f'<div style="flex:none;font-size:{T.FS["slide_lead"]}cqw;'
+        f'color:{T.INK};padding:.9cqw 1.8cqw .8cqw;">'
+        '実際の来場者のリアルな声から、維持すべき価値や改善のヒント、'
+        '未来の企画につながる声を整理しました。</div>'
+        f'{grid}'
+    )
+    return canvas(slide_header("6", "特徴的な口コミ", meta) + body + footer(note))

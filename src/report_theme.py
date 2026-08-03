@@ -67,10 +67,10 @@ SUMMARY_CARDS = [
 
 # 4象限カード（p11「特徴的な口コミ」）
 QUADRANT_CARDS = {
-    "維持すべき価値":      {"bg": "#FEF4F5", "fg": ACCENT_DEEP, "icon": "♥"},
-    "重大な不満":         {"bg": "#FEF2F0", "fg": "#E0342A",   "icon": "⚠"},
+    "維持すべき価値":      {"bg": "#FEF4F5", "fg": ACCENT_DEEP, "icon": "❤️"},
+    "重大な不満":         {"bg": "#FEF2F0", "fg": "#E0342A",   "icon": "⚠️"},
     "潜在的なニーズ":      {"bg": "#FDF9F0", "fg": "#E0A020",   "icon": "💡"},
-    "未来の企画につながる声": {"bg": "#F5F8FD", "fg": "#1B4DA8", "icon": "★"},
+    "未来の企画につながる声": {"bg": "#F5F8FD", "fg": "#1B4DA8", "icon": "⭐"},
 }
 
 # 傾向バッジ（p10「傾向」列）

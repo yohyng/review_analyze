@@ -21,7 +21,7 @@ import streamlit as st
 from src import (
     analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
     llm, preview, report, review_csv, score_excel, scoring, search,
-    text_analysis, timeline, topic_score, topics,
+    text_analysis, timeline, topic_score, topics, voices,
 )
 from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
@@ -426,6 +426,16 @@ def _analysis_worker(prog: dict) -> None:
                         tconn, _tgt_fid_row["id"], _cp.ym
                     )
                 llm.explain_change_points(tgt, _cps, akey)   # 失敗時は空のまま
+
+        # ⑤-c  SLIDE 6 の4象限に載せる代表口コミを選ばせる。
+        #      引用は逐語でなければならないので、返ってきた抜粋が実在するかを
+        #      voices.apply_llm_result 側で必ず検証する。
+        _voices = None
+        if akey and revs:
+            prog["detail"] = "特徴的な口コミを4つの観点で抽出中"
+            _vdata, _verr = llm.pick_voice_quadrants(tgt, revs, akey)
+            if not _verr:
+                _voices = voices.apply_llm_result(revs, _vdata)   # 不正なら None
 
         # ⑥  レポート生成
         prog["step"]   = 5

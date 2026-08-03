@@ -255,6 +255,64 @@ def explain_change_points(facility_name: str, points: list, api_key: str) -> str
     return ""
 
 
+# --------------------------------------------------------------------------- #
+# SLIDE 6「特徴的な口コミ」— 4象限の代表口コミを選ばせ、属性を推定させる
+# --------------------------------------------------------------------------- #
+def pick_voice_quadrants(facility_name: str, reviews: list, api_key: str):
+    """4象限それぞれの代表口コミを LLM に選ばせる。
+
+    reviews は [(rating, text), ...]。返り値は (data, error)。
+    data は voices.apply_llm_result() に渡す形式。
+
+    **引用文を創作させない。** 選ぶのは口コミの index で、quote はその本文
+    からの逐語抜粋に限る（呼び出し側で実在を検証する）。属性は口コミの書きぶり
+    からの推定であり、書かれていなければ空にさせる。
+    """
+    from . import voices  # noqa: PLC0415
+
+    pool = [(i, r, str(t).strip()) for i, (r, t) in enumerate(reviews)
+            if t and str(t).strip()][:60]
+    if not pool:
+        return None, "本文のある口コミがありません"
+
+    listing = "\n".join(
+        f"[{i}] ★{r if r is not None else '-'} {t[:160]}" for i, r, t in pool
+    )
+    quads = "\n".join(f"- {name}: {desc}" for name, desc in voices.QUADRANTS)
+
+    prompt = f"""あなたは施設の口コミを分析するアナリストです。
+「{facility_name}」の口コミから、次の4つの観点それぞれを最もよく表す口コミを
+1件ずつ選んでください。
+
+観点（この順序で返すこと）:
+{quads}
+
+制約:
+- 選ぶのは番号（index）です。**引用文を創作してはいけません。**
+- quote は選んだ口コミの本文から、そのまま抜き出した連続する一節にすること
+  （語順を変えたり要約したりしない）。60字以内。
+- age / gender / companion は口コミの書きぶりから推定できる場合だけ書く。
+  推定できない場合は必ず空文字 "" にすること。憶測で埋めない。
+  age は「20代」「30代」など、gender は「男性」「女性」、
+  companion は「ファミリー」「カップル」「友人」「ひとり」など。
+- 同じ口コミを複数の観点に使わないこと。
+- 該当する口コミが無い観点は index を -1 にすること。
+
+出力は次の形式のJSONのみ（説明文やコードフェンスは不要）:
+[{{"index": 0, "quote": "...", "age": "", "gender": "", "companion": ""}}, ...]
+
+口コミ一覧:
+{listing}
+"""
+    data, err = call_json(prompt, api_key, max_tokens=1200)
+    if err:
+        return None, err
+
+    # listing は元の reviews の index をそのまま出しているので変換は不要。
+    # （voices.apply_llm_result 側で範囲外の index は空カードに落とす）
+    return data, ""
+
+
 def _extract_api_error(resp: requests.Response) -> str:
     try:
         return resp.json().get("error", {}).get("message", resp.text[:200])

@@ -13,7 +13,7 @@ from datetime import date
 from html import escape
 from typing import Optional
 
-from . import analysis, config, db, text_analysis, timeline, topic_score
+from . import analysis, config, db, text_analysis, timeline, topic_score, voices
 
 # palette (VoiceBAUM)
 ACCENT = "#B0338A"
@@ -55,6 +55,7 @@ def build_bundle(
     insights,                 # llm.InsightResult | None
     peers_override: list | None = None,  # 指定競合モード: 明示的な比較施設リスト
     change_points: list | None = None,   # LLMで説明文を入れた変化点（SLIDE 4）
+    voices_result: list | None = None,   # LLMが選んだ代表口コミ（SLIDE 6）
 ) -> dict:
     frow = conn.execute(
         "SELECT id, category, general_rating, floor_area FROM facility WHERE name = ?", (target,)
@@ -276,6 +277,14 @@ def build_bundle(
     if change_points is None:
         change_points = timeline.detect_change_points(monthly_series)
 
+    # SLIDE 6「特徴的な口コミ」— LLM が選んでいなければキーワードで決定論的に選ぶ
+    if voices_result is None:
+        _vrows = conn.execute(
+            "SELECT rating, text FROM review WHERE facility_id = ? "
+            "AND text IS NOT NULL AND text != ''", (fid,)
+        ).fetchall() if fid else []
+        voices_result = voices.pick_fallback([(r[0], r[1]) for r in _vrows])
+
     # ── 分析期間 ────────────────────────────────────────────────────── #
     # 固定値ではなく、その施設の口コミが実際にカバーしている範囲から出す。
     # スライドによって対象が違うので2種類返す:
@@ -344,6 +353,7 @@ def build_bundle(
         "monthly_pos_neg": monthly_pos_neg,
         "monthly_series": monthly_series,
         "change_points": change_points,
+        "voices": voices_result,
         # SLIDE 1（施設・基本情報）— 比較対象カード（同カテゴリ優先・写真つき最大5件）
         "peer_display": peer_display,
         "peer_display_same_category": bool(same_cat),

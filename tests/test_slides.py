@@ -644,3 +644,128 @@ def test_slide5_survives_no_peers(tmp_path):
     b = _bundle(tmp_path, n_peers=0)
     assert slides.slide5_space_experience(b)
     assert slides.slide5_space_detail(b)
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 6「特徴的な口コミ」（PDF p11）
+# --------------------------------------------------------------------------- #
+def _voice_conn(tmp_path):
+    from src import voices
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    fid = db.upsert_facility(conn, "target", ftype="target")
+    rows = [
+        (5, "映像体験が圧倒的に素晴らしく、何度でも来たくなる展示でした。演出の作り込みが丁寧で、家族全員が最後まで飽きずに楽しめました。"),
+        (2, "混雑時は待ち時間が長く、子どもがぐずってしまった。案内も不足。"),
+        (4, "雨の日でも安心して楽しめる屋内のキッズスペースがほしいと感じました。"),
+        (5, "季節ごとのイベントがもっと増えると、何度でも訪れたくなると思います。"),
+        (3, "普通でした。"),
+    ]
+    for i, (r, txt) in enumerate(rows):
+        conn.execute(
+            "INSERT INTO review(facility_id, review_id, rating, text, review_date) "
+            "VALUES (?, ?, ?, ?, ?)", (fid, f"v{i}", r, txt, "2024-05-01"))
+    conn.commit()
+    return conn, rows
+
+
+def test_voice_fallback_fills_four_quadrants_without_repeating(tmp_path):
+    from src import voices
+    _conn, rows = _voice_conn(tmp_path)
+    vs = voices.pick_fallback(rows)
+    assert [v.quadrant for v in vs] == [q for q, _d in voices.QUADRANTS]
+    quotes = [v.quote for v in vs if v.quote]
+    assert len(quotes) == len(set(quotes)), "同じ口コミを複数の象限に使っている"
+    assert vs[0].rating >= 4          # 維持すべき価値は高評価から
+    assert vs[1].rating <= 3          # 重大な不満は低評価から
+
+
+def test_voice_fallback_adds_no_attributes(tmp_path):
+    """口コミからは属性が分からないので、fallback では付けない。"""
+    from src import voices
+    _conn, rows = _voice_conn(tmp_path)
+    for v in voices.pick_fallback(rows):
+        assert v.chips == []
+        assert v.estimated is False
+
+
+def test_llm_quote_must_actually_exist_in_the_review(tmp_path):
+    """生成された引用が本文に無ければ捏造なので、本文で置き換える。"""
+    from src import voices
+    _conn, rows = _voice_conn(tmp_path)
+    data = [
+        {"index": 0, "quote": "映像体験が圧倒的に素晴らしく", "age": "40代",
+         "gender": "女性", "companion": "ファミリー"},
+        {"index": 1, "quote": "スタッフが最高でした", "age": "", "gender": "",
+         "companion": ""},                                   # 本文に無い＝捏造
+        {"index": 2, "quote": "", "age": "", "gender": "", "companion": ""},
+        {"index": 3, "quote": "季節ごとのイベントがもっと増える", "age": "",
+         "gender": "", "companion": ""},
+    ]
+    vs = voices.apply_llm_result(rows, data)
+    assert vs[0].quote.startswith("映像体験が圧倒的に素晴らしく")
+    assert vs[0].chips == ["40代・女性", "ファミリー"]
+    # 捏造された引用は採用せず、その口コミの本文に差し替わる
+    assert "スタッフが最高" not in vs[1].quote
+    assert vs[1].quote.startswith("混雑時は待ち時間")
+    assert vs[2].quote.startswith("雨の日でも安心して")   # 空なら本文
+    assert vs[3].quote.startswith("季節ごとのイベントが")
+
+
+def test_llm_result_rejects_malformed_shapes(tmp_path):
+    from src import voices
+    _conn, rows = _voice_conn(tmp_path)
+    assert voices.apply_llm_result(rows, "nope") is None
+    assert voices.apply_llm_result(rows, [{"index": 0}]) is None       # 件数不足
+    assert voices.apply_llm_result(rows, [1, 2, 3, 4]) is None         # dict でない
+
+
+def test_llm_out_of_range_index_becomes_an_empty_card(tmp_path):
+    from src import voices
+    _conn, rows = _voice_conn(tmp_path)
+    data = [{"index": -1, "quote": "", "age": "", "gender": "", "companion": ""}] * 4
+    vs = voices.apply_llm_result(rows, data)
+    assert all(v.quote == "" for v in vs)
+
+
+def test_slide6_renders_four_cards(tmp_path):
+    conn, _rows = _voice_conn(tmp_path)
+    b = preview.build_bundle(conn, "target", {"target": _result(0.6)}, None, None,
+                             peers_override=[])
+    html = slides.slide6_voices(b)
+    assert "特徴的な口コミ" in html
+    assert ("実際の来場者のリアルな声から、維持すべき価値や改善のヒント、"
+            "未来の企画につながる声を整理しました。") in html
+    for q, _d in __import__("src.voices", fromlist=["voices"]).QUADRANTS:
+        assert q in html
+    assert "※上記は代表的なご意見（N=1）の抜粋です" in html
+    assert "映像体験" in html and "混雑時は待ち時間" in html
+
+
+def test_slide6_notes_that_attributes_are_estimated(tmp_path):
+    """属性を出すときは推定である旨を必ず添える。"""
+    from src import voices
+    conn, rows = _voice_conn(tmp_path)
+    data = [{"index": i, "quote": "", "age": "30代", "gender": "男性",
+             "companion": "ファミリー"} for i in range(4)]
+    b = preview.build_bundle(conn, "target", {"target": _result(0.6)}, None, None,
+                             peers_override=[],
+                             voices_result=voices.apply_llm_result(rows, data))
+    html = slides.slide6_voices(b)
+    assert "属性は口コミ本文からの推定です" in html
+
+    # 属性が無いときは余計な注記を出さない
+    b2 = preview.build_bundle(conn, "target", {"target": _result(0.6)}, None, None,
+                              peers_override=[])
+    assert "属性は口コミ本文からの推定です" not in slides.slide6_voices(b2)
+
+
+def test_slide6_survives_no_reviews(tmp_path):
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    db.upsert_facility(conn, "target", ftype="target")
+    conn.commit()
+    b = preview.build_bundle(conn, "target", {"target": _result(0.5)}, None, None,
+                             peers_override=[])
+    html = slides.slide6_voices(b)
+    assert "この観点に該当する口コミは見つかりませんでした" in html
