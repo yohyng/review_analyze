@@ -21,9 +21,9 @@ import plotly.express as px
 import streamlit as st
 
 from src import (
-    analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
-    llm, preview, report, review_csv, score_excel, scoring, search,
-    text_analysis, topic_score, topics,
+    analysis, auth, charts, config, csv_profiler, db, dummy_data, geocode,
+    images, kaizode, llm, preview, report, review_csv, score_excel, scoring,
+    search, text_analysis, topic_score, topics,
 )
 from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
@@ -879,6 +879,108 @@ def render():
     # ══════════════════════════════════════════════════════════════════════ #
     # CSVプロファイラ
     # ══════════════════════════════════════════════════════════════════════ #
+    elif _page == "dummy":
+        st.markdown('<div class="vb-step">検証</div>', unsafe_allow_html=True)
+        st.markdown('<h1 class="vb-h1">ダミーデータ</h1>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="vb-sub">分析が意図どおり動いているかを確かめるための'
+            'ダミー施設を投入します。施設ごとに「正解の強み・弱み」を決めて'
+            'から、その通りの口コミを生成しているので、分析結果が正解を'
+            "再現できるかで判定できます。</p>",
+            unsafe_allow_html=True,
+        )
+
+        _n_fac = len(dummy_data.FACILITIES)
+        _n_rev = sum(f["n"] for f in dummy_data.FACILITIES)
+        _existing = [
+            r["name"] for r in conn.execute(
+                "SELECT name FROM facility WHERE name IN ({})".format(
+                    ",".join("?" * _n_fac)),
+                dummy_data.facility_names(),
+            ).fetchall()
+        ]
+
+        st.info(
+            f"投入するのは **{_n_fac}施設 / 口コミ {_n_rev:,}件** です。\n\n"
+            f"- 対象: {dummy_data.target_name()}\n"
+            f"- 指定競合: {'、'.join(dummy_data.peer_names())}\n"
+            "- 市場施設01〜06（市場比較とスコア較正の母集団）\n\n"
+            "既存のデータには触れません。投入したぶんだけを後から削除できます。"
+        )
+        if _existing:
+            st.success(f"✅ 投入済み（{len(_existing)} 施設）")
+
+        _d1, _d2 = st.columns(2)
+        with _d1:
+            if st.button("🧪 ダミーデータを投入", type="primary", width="stretch",
+                         key="dummy_build"):
+                with st.spinner("生成中…"):
+                    dummy_data.build(conn)
+                data.clear_list_caches()
+                data.topic_matrix_cached.clear()
+                st.success(f"{_n_fac}施設・{_n_rev:,}件を投入しました。")
+                st.rerun()
+        with _d2:
+            if st.button("🗑️ ダミーデータを削除", width="stretch",
+                         disabled=not _existing, key="dummy_remove"):
+                _removed = dummy_data.remove(conn)
+                data.clear_list_caches()
+                data.topic_matrix_cached.clear()
+                st.success(f"{_removed} 施設を削除しました。")
+                st.rerun()
+
+        st.divider()
+        st.markdown("#### 答え合わせ")
+        st.caption(
+            "分析を実行して、仕込んだ強み・弱み・出来事が検出できるかを確かめます。"
+        )
+        if st.button("🔍 分析して答え合わせ", width="stretch",
+                     disabled=not _existing, key="dummy_verify"):
+            with st.spinner("分析中…（全施設を解析するので少し時間がかかります）"):
+                _r = dummy_data.verify(conn)
+            st.session_state["dummy_verify_result"] = _r
+
+        _r = st.session_state.get("dummy_verify_result")
+        if _r:
+            if _r["ok"]:
+                st.success("OK — 仕込んだ特徴を再現できています")
+            else:
+                st.error("NG — 再現できていません")
+
+            _m1, _m2, _m3 = st.columns(3)
+            _m1.metric("順位", f"{_r['rank']} / {_r['total']}")
+            _m2.metric("総合スコア", f"{_r['overall5']:.2f}")
+            _m3.metric("スコア較正", "有効" if _r["calibrated"] else "無効")
+
+            st.markdown(
+                f"**強み** 仕込み {len(_r['want_strong'])} 件中 "
+                f"**{len(_r['hit_strong'])} 件**を検出"
+            )
+            st.caption(f"仕込んだ: {'、'.join(_r['want_strong'])}")
+            st.caption(f"検出TOP5: {'、'.join(_r['got_strong'])}")
+
+            st.markdown(
+                f"**弱み** 仕込み {len(_r['want_weak'])} 件中 "
+                f"**{len(_r['hit_weak'])} 件**を検出"
+            )
+            st.caption(f"仕込んだ: {'、'.join(_r['want_weak'])}")
+            st.caption(f"検出TOP5: {'、'.join(_r['got_weak'])}")
+
+            st.markdown(
+                f"**変化点** {_r['event_month']} に評価を下げる出来事を仕込み → "
+                + ("**検出できた**" if _r["event_detected"] else "**検出できず**")
+            )
+            st.caption(
+                "検出: " + "、".join(f"{ym}（{d:+.2f}pt）"
+                                   for ym, d in _r["change_points"])
+            )
+
+        st.divider()
+        st.caption(
+            "分析画面で「" + dummy_data.target_name() + "」を選び、"
+            "指定競合比較で 競合A〜E を選ぶとレポートが見られます。"
+        )
+
     elif _page == "profiler":
         st.markdown(
             '<div class="vb-step">ツール</div>'
