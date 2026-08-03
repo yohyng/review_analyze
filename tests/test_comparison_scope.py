@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from src import analysis, db, preview, topic_score
+from src import analysis, db, preview, slides, topic_score
 
 TOPICS = topic_score.TOPIC_ORDER
 
@@ -92,10 +92,11 @@ def test_scope_labels_switch_in_slides(tmp_path):
         conn, "target", matrix, None, None, peers_override=["peer1", "peer2"]
     )
 
-    assert "市場内ポジション" in preview.html_market_position(market)
-    assert "選択競合内ポジション" in preview.html_market_position(comp)
-    assert "市場の強み傾向" in preview.html_market_detail(market)
-    assert "選択競合の強み傾向" in preview.html_market_detail(comp)
+    assert "市場内ポジション" in slides.slide2_market_position(market)
+    assert "選択競合内ポジション" in slides.slide2_market_position(comp)
+    # マーケット傾向の見出しは PDF 準拠の文言。母数のスコープはヘッダ側で示す。
+    assert "この市場で評価されやすい指標" in slides.slide2_market_detail(market)
+    assert "この市場で課題になりやすい指標" in slides.slide2_market_detail(comp)
 
     # analysis_rows の見出しもモードに合わせて変わる
     assert any("市場内順位" == k for k, _ in market["analysis_rows"])
@@ -108,12 +109,12 @@ def test_competitor_mode_radar_does_not_duplicate_peer_average(tmp_path):
     comp = preview.build_bundle(
         conn, "target", matrix, None, None, peers_override=["peer1", "peer2"]
     )
-    html = preview.html_space_experience(comp)
+    html = slides.slide5_space_experience(comp)
     assert "競合平均" in html
     assert "同業平均" not in html
 
     market = preview.build_bundle(conn, "target", matrix, None, None)
-    assert "同業平均" in preview.html_space_experience(market)
+    assert "同業平均" in slides.slide5_space_experience(market)
 
 
 def test_all_slides_render_in_both_modes(tmp_path):
@@ -121,11 +122,12 @@ def test_all_slides_render_in_both_modes(tmp_path):
     for peers in (None, ["peer1", "peer2"]):
         b = preview.build_bundle(conn, "target", matrix, None, None, peers_override=peers)
         for fn in (
-            preview.html_slide01, preview.html_slide02, preview.html_market_position,
-            preview.html_market_detail, preview.html_competitor_compare,
-            preview.html_competitor_detail, preview.html_timeline,
-            preview.html_space_experience, preview.html_slide04,
-            preview.html_facility_info, preview.html_disclaimer,
+            slides.slide0_disclaimer, slides.slide1_facility_info,
+            slides.slide2_market_position, slides.slide2_market_detail,
+            slides.slide3_competitor_compare, slides.slide3_competitor_detail,
+            slides.slide4_timeline, slides.slide5_space_experience,
+            slides.slide5_space_detail, slides.slide6_voices,
+            slides.slide7_discussion,
         ):
             assert fn(b), f"{fn.__name__} failed (peers={peers})"
 
@@ -175,7 +177,7 @@ def test_slide3_shows_only_driver_topics(tmp_path):
     b = preview.build_bundle(
         conn, "target", matrix, None, None, peers_override=["peer1", "peer2"]
     )
-    html = preview.html_competitor_compare(b)
+    html = slides.slide3_competitor_compare(b)
 
     for t in topic_score.DRIVER_TOPICS:
         assert t[:6] in html, f"19指標の {t} が出ていない"
@@ -189,20 +191,20 @@ def test_slide3_columns_are_self_peers_and_average(tmp_path):
         conn, "target", matrix, None, None,
         peers_override=["peer1", "peer2", "peer3"],
     )
-    html = preview.html_competitor_compare(b)
+    html = slides.slide3_competitor_compare(b)
 
     assert "主要19指標の比較（5点満点）" in html
     assert "施設別スコアヒートマップ（5点満点）" in html
     assert "自施設だけの強み" in html and "競合に負けている項目" in html
     assert "2〜5施設を横並びで比較し、自施設の立ち位置を把握します。" in html
-    for lbl in ("自施設", "競合A", "競合B", "競合C", "同業平均"):
+    for lbl in ("自施設", "競合A", "競合B", "競合C", "競合平均"):
         assert lbl in html, lbl
     assert "競合D" not in html          # ピアは3施設なのでDは出ない
     assert "分析対象：4施設" in html      # 自施設＋競合3（同業平均は施設数に数えない）
 
 
-def test_slide3_caps_peer_columns_at_four(tmp_path):
-    """競合は最大4列（競合A〜D）まで。"""
+def test_slide3_caps_peer_columns_at_five(tmp_path):
+    """競合は最大5列（競合A〜E）まで。PDF p10 のヒートマップが競合Eまで。"""
     conn = db.get_conn(tmp_path / "t.db")
     db.init_db(conn)
     names = ["target"] + [f"p{i}" for i in range(6)]
@@ -213,9 +215,9 @@ def test_slide3_caps_peer_columns_at_four(tmp_path):
     b = preview.build_bundle(
         conn, "target", matrix, None, None, peers_override=names[1:]
     )
-    html = preview.html_competitor_compare(b)
-    assert "競合D" in html
-    assert "競合E" not in html
+    html = slides.slide3_competitor_compare(b)
+    assert "競合E" in html
+    assert "競合F" not in html
 
 
 def test_slide3_scores_are_on_a_five_point_scale(tmp_path):
@@ -228,7 +230,7 @@ def test_slide3_scores_are_on_a_five_point_scale(tmp_path):
     matrix = {"target": _result(0.80), "peer1": _result(0.40)}
 
     b = preview.build_bundle(conn, "target", matrix, None, None, peers_override=["peer1"])
-    html = preview.html_competitor_compare(b)
+    html = slides.slide3_competitor_compare(b)
     assert "4.00" in html and "2.00" in html
     assert ">80.0<" not in html and ">80<" not in html
     # 差分も5点満点（80-40=40pt ではなく 4.00-2.00=+2.00）
@@ -239,4 +241,4 @@ def test_slide3_handles_no_peers(tmp_path):
     """競合未選択でも落ちない。"""
     conn, matrix = _setup(tmp_path)
     b = preview.build_bundle(conn, "target", matrix, None, None, peers_override=[])
-    assert preview.html_competitor_compare(b)
+    assert slides.slide3_competitor_compare(b)

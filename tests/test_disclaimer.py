@@ -1,15 +1,15 @@
-"""Tests for the disclaimer slide (preview HTML + PPTX first slide)."""
+"""Tests for the disclaimer slide (slides HTML + PPTX first slide)."""
 import tempfile
 from pathlib import Path
 
 from pptx import Presentation
 
-from src import config, db, preview, report
+from src import config, db, preview, report, slides
 from src.review_csv import ParsedReview
 
 
 def test_html_disclaimer_contains_all_points():
-    html = preview.html_disclaimer({"date": "2026年07月16日"})
+    html = slides.slide0_disclaimer({"date": "2026年07月16日"})
     assert config.DISCLAIMER_TITLE in html
     assert "免責事項" in html
     for p in config.DISCLAIMER_POINTS:

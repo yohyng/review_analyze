@@ -21,7 +21,7 @@ import streamlit as st
 from src import (
     analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
     llm, preview, report, review_csv, score_excel, scoring, search,
-    discussion, text_analysis, timeline, topic_score, topics, voices,
+    discussion, slides, text_analysis, timeline, topic_score, topics, voices,
 )
 from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
@@ -944,7 +944,7 @@ def render():
                     f"data:{_photo_mime};base64," + base64.b64encode(_photo_bytes).decode()
                 )
 
-            st.markdown(preview.html_disclaimer(_bundle), unsafe_allow_html=True)
+            st.markdown(slides.slide0_disclaimer(_bundle), unsafe_allow_html=True)
 
             # ── PROFILE：この場でインライン編集（写真アップ＋各項目の手入力）──── #
             _ekey = f"prof_editing_{_target}"
@@ -1066,7 +1066,7 @@ def render():
                             st.session_state[_ekey] = False
                             st.rerun()
             else:
-                st.markdown(preview.html_facility_info(_bundle), unsafe_allow_html=True)
+                st.markdown(slides.slide1_facility_info(_bundle), unsafe_allow_html=True)
                 _pe1, _pe2, _pe3 = st.columns([1, 1.4, 1])
                 with _pe2:
                     if st.button("✏️ PROFILEを編集（写真・住所など）", width="stretch",
@@ -1074,15 +1074,21 @@ def render():
                         st.session_state[_ekey] = True
                         st.rerun()
 
-            st.markdown(preview.html_slide01(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_slide02(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_market_position(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_market_detail(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_competitor_compare(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_competitor_detail(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_timeline(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_space_experience(_bundle), unsafe_allow_html=True)
-            st.markdown(preview.html_slide04(_bundle), unsafe_allow_html=True)
+            # ── 分析レポート本体（PDF「20260726_VoiceBAUM_v1」p3〜p12 準拠）──── #
+            #    SLIDE 1 は上の PROFILE 編集ブロック側で描いている（編集中は
+            #    フォームに差し替わるため）。ここは SLIDE 2 以降。
+            for _slide in (
+                slides.slide2_market_position,
+                slides.slide2_market_detail,
+                slides.slide3_competitor_compare,
+                slides.slide3_competitor_detail,
+                slides.slide4_timeline,
+                slides.slide5_space_experience,
+                slides.slide5_space_detail,
+                slides.slide6_voices,
+                slides.slide7_discussion,
+            ):
+                st.markdown(_slide(_bundle), unsafe_allow_html=True)
         else:
             st.warning("分析結果がありません。設定に戻って再実行してください。")
 

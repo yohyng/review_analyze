@@ -202,7 +202,7 @@ def test_slide1_header_uses_the_target_period_not_the_peers(tmp_path):
 
 def test_competitor_slide_header_uses_the_scope_period(tmp_path):
     b = _conn_with_periods(tmp_path)
-    html = preview.html_competitor_compare(b)
+    html = slides.slide3_competitor_compare(b)
     assert "分析期間：2021/1〜2026/5" in html
 
 

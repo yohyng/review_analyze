@@ -1937,3 +1937,38 @@ def slide7_discussion(b: dict) -> str:
     if generated:
         note += "／企画仮説・打ち手は生成AIによる提案です"
     return canvas(slide_header("7", "ディスカッションポイント", meta) + body + footer(note))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 冒頭「本レポートのご利用にあたって」— PDF には無いが、公開口コミを扱う以上
+# 免責は必ず先頭に置く。文面は config.DISCLAIMER_* を唯一の出典とする。
+# ═══════════════════════════════════════════════════════════════════════════
+def slide0_disclaimer(b: dict) -> str:
+    from . import config
+    rows = "".join(
+        '<div style="flex:1;display:flex;gap:1cqw;align-items:center;">'
+        f'<span style="flex:none;width:1.9cqw;height:1.9cqw;border-radius:50%;'
+        f'background:{T.HEAT_HIGH_W};color:{T.ACCENT_DEEP};font-weight:800;'
+        'font-size:.9cqw;display:flex;align-items:center;justify-content:center;">'
+        f'{i}</span>'
+        f'<span style="flex:1;font-size:.92cqw;line-height:1.55;color:{T.INK};">'
+        f'{escape(p)}</span></div>'
+        for i, p in enumerate(config.DISCLAIMER_POINTS, 1)
+    )
+    body = (
+        f'<div style="flex:none;font-size:{T.FS["slide_lead"]}cqw;color:{T.INK};'
+        'padding:.9cqw 1.8cqw .2cqw;">'
+        '本レポートをご覧いただく前に、以下をご確認ください。</div>'
+        '<div style="flex:1;display:flex;flex-direction:column;min-height:0;'
+        'padding:.4cqw 1.8cqw .4cqw;">'
+        f'<div style="flex:1;min-height:0;background:#FBFBF9;'
+        f'border:1px solid {T.CARD_LINE};border-radius:1cqw;'
+        f'padding:1.2cqw 1.8cqw;display:flex;flex-direction:column;">{rows}</div>'
+        f'<div style="flex:none;margin-top:.7cqw;font-size:{T.FS["note"]}cqw;'
+        f'color:{T.SUB};">データ基準日: {escape(b.get("date", ""))}'
+        '　／　本レポートは参考情報です（Voice BAUM）</div></div>'
+    )
+    return canvas(
+        slide_header("!", config.DISCLAIMER_TITLE, "免責事項")
+        + body + footer("")
+    )
