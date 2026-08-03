@@ -21,7 +21,7 @@ import streamlit as st
 from src import (
     analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
     llm, preview, report, review_csv, score_excel, scoring, search,
-    text_analysis, topic_score, topics,
+    text_analysis, timeline, topic_score, topics,
 )
 from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
@@ -408,6 +408,24 @@ def _analysis_worker(prog: dict) -> None:
             _res = llm.generate_insights(_prompt, akey)
             if not _res.error:
                 _insights = _res
+
+        # ⑤-b  SLIDE 4 の変化点に「何が起きたか」を書かせる。
+        #      影響ptは timeline 側で算出済みで、LLM には文章だけを任せる。
+        #      失敗しても timeline.fallback_description に落ちるので致命ではない。
+        _tgt_fid_row = tconn.execute(
+            "SELECT id FROM facility WHERE name = ?", (tgt,)
+        ).fetchone()
+        _cps = []          # build_bundle が後で detect し直すので、ここでは説明だけ作る
+        if akey and _tgt_fid_row:
+            _series = db.monthly_sentiment_series(tconn, _tgt_fid_row["id"])
+            _cps = timeline.detect_change_points(_series)
+            if _cps:
+                prog["detail"] = f"評価が動いた {len(_cps)} 時点の要因を口コミから抽出中"
+                for _cp in _cps:
+                    _cp._reviews = timeline.reviews_for_point(
+                        tconn, _tgt_fid_row["id"], _cp.ym
+                    )
+                llm.explain_change_points(tgt, _cps, akey)   # 失敗時は空のまま
 
         # ⑥  レポート生成
         prog["step"]   = 5

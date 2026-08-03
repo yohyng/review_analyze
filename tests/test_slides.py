@@ -411,3 +411,134 @@ def test_bubble_labels_stay_inside_the_plot(tmp_path):
     b = _bundle(tmp_path, n_peers=4)
     html = slides.experience_map(b, names=list(b["peer_topic_scores"]), label_points=True)
     assert "translate(0," in html or "translate(-100%," in html or "translate(-50%," in html
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 4「時間軸分析」（PDF p8）
+# --------------------------------------------------------------------------- #
+def _timeline_conn(tmp_path, monthly: dict):
+    """{ 'YYYY-MM': [rating, ...] } から施設を1つ作る。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    fid = db.upsert_facility(conn, "target", ftype="target")
+    i = 0
+    for ym, ratings in monthly.items():
+        for r in ratings:
+            i += 1
+            conn.execute(
+                "INSERT INTO review(facility_id, review_id, rating, text, review_date) "
+                "VALUES (?, ?, ?, ?, ?)", (fid, f"r{i}", r, "本文", f"{ym}-15"))
+    conn.commit()
+    return conn, fid
+
+
+def test_monthly_series_converts_stars_to_minus_one_to_plus_one(tmp_path):
+    """★5→+1.0 / ★3→0 / ★1→−1.0 に線形変換して集計する。"""
+    conn, fid = _timeline_conn(tmp_path, {"2024-01": [5, 5], "2024-02": [1, 1],
+                                          "2024-03": [3, 3], "2024-04": [5, 1]})
+    s = {row[0]: row for row in db.monthly_sentiment_series(conn, fid)}
+    assert s["2024-01"][2:5] == (1.0, 0.0, 1.0)        # pos, neg, diff
+    assert s["2024-02"][2:5] == (0.0, -1.0, -1.0)
+    assert s["2024-03"][2:5] == (0.0, 0.0, 0.0)
+    assert s["2024-04"][2:5] == (0.5, -0.5, 0.0)       # ★5と★1が相殺
+    assert s["2024-01"][5] == 5.0                      # 平均★
+
+
+def test_detect_change_points_finds_the_drop(tmp_path):
+    from src import timeline
+    monthly = {f"2024-{m:02d}": [5, 5, 5] for m in range(1, 6)}
+    monthly["2024-06"] = [2, 2, 2]                     # ここで急落
+    monthly.update({f"2024-{m:02d}": [5, 5, 5] for m in range(7, 10)})
+    conn, fid = _timeline_conn(tmp_path, monthly)
+
+    pts = timeline.detect_change_points(db.monthly_sentiment_series(conn, fid))
+    assert pts, "変化点が検出されていない"
+    assert pts[0].ym == "2024-06"
+    assert pts[0].direction == "down"
+    assert pts[0].delta_pt == -3.0                     # 5.0 → 2.0
+    assert pts[0].label == "'24/06"
+
+
+def test_detect_change_points_ignores_thin_months(tmp_path):
+    """口コミ1件だけの月は外れ値になるので変化点にしない。"""
+    from src import timeline
+    monthly = {f"2024-{m:02d}": [5, 5, 5] for m in range(1, 6)}
+    monthly["2024-06"] = [1]                           # 1件だけの激しい低評価
+    conn, fid = _timeline_conn(tmp_path, monthly)
+    pts = timeline.detect_change_points(db.monthly_sentiment_series(conn, fid))
+    assert all(p.ym != "2024-06" for p in pts)
+
+
+def test_detect_change_points_does_not_double_count_the_same_dip(tmp_path):
+    """隣り合う月で同じ谷を2回拾わない。"""
+    from src import timeline
+    monthly = {f"2024-{m:02d}": [5, 5, 5] for m in range(1, 6)}
+    monthly["2024-06"] = [2, 2, 2]
+    monthly["2024-07"] = [2, 2, 2]
+    monthly.update({f"2024-{m:02d}": [5, 5, 5] for m in range(8, 11)})
+    conn, fid = _timeline_conn(tmp_path, monthly)
+    pts = timeline.detect_change_points(db.monthly_sentiment_series(conn, fid))
+    assert len({p.ym for p in pts} & {"2024-06", "2024-07"}) <= 1
+
+
+def test_slide4_renders_chart_and_cards(tmp_path):
+    from src import timeline
+    monthly = {f"2024-{m:02d}": [5, 5, 5] for m in range(1, 6)}
+    monthly["2024-06"] = [2, 2, 2]
+    monthly.update({f"2024-{m:02d}": [5, 5, 5] for m in range(7, 11)})
+    conn, fid = _timeline_conn(tmp_path, monthly)
+    b = preview.build_bundle(conn, "target", {"target": _result(0.6)}, None, None,
+                             peers_override=[])
+    html = slides.slide4_timeline(b)
+
+    assert "時間軸分析" in html
+    assert "ポジティブ要因とネガティブ要因の推移" in html
+    assert "主な変化点と評価変動要因" in html
+    assert "ポジティブ要因スコア（+）" in html and "ネガティブ要因スコア（−）" in html
+    assert "差分（ポジ − ネガ）" in html
+    assert "※スコアは5点満点を−1〜+1のスケールに変換して集計" in html
+    assert "影響：-3.00pt" in html
+    assert "24/06" in html
+
+
+def test_slide4_marks_every_change_point_on_the_chart(tmp_path):
+    """検出した変化点は必ずグラフ上に番号バッジが出る（期間を切らない）。"""
+    from src import timeline
+    monthly = {f"2023-{m:02d}": [5, 5, 5] for m in range(1, 13)}
+    monthly["2023-06"] = [2, 2, 2]                     # 古い側の変化点
+    # （先頭3か月は「直前3か月」が取れないので変化点にはならない）
+    monthly.update({f"2024-{m:02d}": [5, 5, 5] for m in range(1, 13)})
+    monthly.update({f"2025-{m:02d}": [5, 5, 5] for m in range(1, 13)})
+    conn, fid = _timeline_conn(tmp_path, monthly)
+    b = preview.build_bundle(conn, "target", {"target": _result(0.6)}, None, None,
+                             peers_override=[])
+    assert len(b["monthly_series"]) == 36
+    pts = b["change_points"]
+    assert pts and pts[0].ym == "2023-06"
+    html = slides.slide4_timeline(b)
+    # 36か月ぶんの棒が描かれ、古い変化点のバッジも残っている
+    assert html.count("<rect") == 36 * 2
+    assert "23/06" in html
+
+
+def test_slide4_falls_back_when_llm_is_unavailable(tmp_path):
+    """LLM未使用でも、観測できた事実だけのカードを出す（憶測を書かない）。"""
+    from src import timeline
+    cp = timeline.ChangePoint(ym="2024-06", index=5, delta_pt=-0.42,
+                              n_reviews=8, direction="down")
+    title, body = timeline.fallback_description(cp)
+    assert title == "評価の低下"
+    assert "-0.42pt" in body and "8 件" in body
+    assert "特定していません" in body
+
+
+def test_slide4_survives_no_reviews_with_dates(tmp_path):
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    db.upsert_facility(conn, "target", ftype="target")
+    conn.commit()
+    b = preview.build_bundle(conn, "target", {"target": _result(0.5)}, None, None,
+                             peers_override=[])
+    html = slides.slide4_timeline(b)
+    assert "推移を出せるデータがありません" in html
+    assert "評価が大きく動いた月は検出されませんでした" in html

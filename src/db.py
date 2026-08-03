@@ -764,6 +764,44 @@ def monthly_rating_counts(
     return [(r["ym"], r["pos"], r["neg"], r["total"]) for r in rows if r["ym"]]
 
 
+def monthly_sentiment_series(
+    conn: sqlite3.Connection, facility_id: int
+) -> list[tuple[str, int, float, float, float, float]]:
+    """月別のポジ／ネガ要因スコア。SLIDE 4「時間軸分析」の素。
+
+    5点満点の星評価を −1〜+1 に線形変換して集計する（PDF の注記どおり）:
+        変換値 = (rating − 3) / 2      … ★5→+1.0 / ★3→0 / ★1→−1.0
+        ポジティブ要因スコア = 変換値の正の部分の平均（0〜+1）
+        ネガティブ要因スコア = 変換値の負の部分の平均（−1〜0）
+        差分 = ポジ ＋ ネガ（＝変換値そのものの平均）
+
+    Returns [(YYYY-MM, 件数, pos, neg, diff, 平均★), ...] 月順。
+    rating か review_date が無い行は除外。
+    """
+    rows = conn.execute(
+        "SELECT strftime('%Y-%m', review_date) as ym, rating "
+        "FROM review WHERE facility_id = ? AND rating IS NOT NULL "
+        "AND review_date IS NOT NULL AND review_date != ''",
+        (facility_id,),
+    ).fetchall()
+
+    buckets: dict[str, list[float]] = {}
+    for r in rows:
+        if r["ym"]:
+            buckets.setdefault(r["ym"], []).append(float(r["rating"]))
+
+    out = []
+    for ym in sorted(buckets):
+        stars = buckets[ym]
+        n = len(stars)
+        conv = [(s - 3.0) / 2.0 for s in stars]
+        pos = sum(c for c in conv if c > 0) / n
+        neg = sum(c for c in conv if c < 0) / n
+        out.append((ym, n, round(pos, 4), round(neg, 4),
+                    round(pos + neg, 4), round(sum(stars) / n, 4)))
+    return out
+
+
 def facility_overview(conn: sqlite3.Connection) -> list[dict]:
     """One row per facility with ingestion counts, for the dashboard."""
     out = []

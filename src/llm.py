@@ -155,6 +155,106 @@ def generate_insights(prompt: str, api_key: str) -> InsightResult:
     )
 
 
+# --------------------------------------------------------------------------- #
+# 汎用: Gemini に JSON を返させる
+# --------------------------------------------------------------------------- #
+def call_json(prompt: str, api_key: str, *, max_tokens: int = 1500,
+              temperature: float = 0.3):
+    """Gemini を呼び、JSON をパースして返す。失敗時は (None, エラー文字列)。
+
+    Returns (data, error)。data は dict か list。
+    """
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        },
+    }
+    try:
+        resp = requests.post(GEMINI_ENDPOINT, params={"key": api_key},
+                             json=payload, timeout=60)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError:
+        return None, f"API エラー ({resp.status_code}): {_extract_api_error(resp)}"
+    except requests.exceptions.RequestException as e:
+        return None, f"通信エラー: {e}"
+
+    try:
+        raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError) as e:
+        return None, f"レスポンスの解析に失敗: {e}"
+
+    m = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
+    try:
+        return json.loads(m.group(1).strip() if m else raw), ""
+    except json.JSONDecodeError:
+        return None, "JSONの解析に失敗しました"
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 4「時間軸分析」— 変化点で何が起きたかを口コミから説明させる
+# --------------------------------------------------------------------------- #
+def explain_change_points(facility_name: str, points: list, api_key: str) -> str:
+    """変化点の見出し・説明文を LLM に書かせて ChangePoint に埋める。
+
+    points は timeline.ChangePoint のリストで、各要素に `_reviews`
+    （[(rating, text), ...]）を持たせておくこと。成功時は cp.title / cp.body /
+    cp.keywords を埋めて "" を返し、失敗時はエラー文字列を返す（呼び出し側で
+    timeline.fallback_description に落とす）。
+
+    **影響の大きさ（delta_pt）は渡すだけで、生成させない。**
+    数値をモデルに作らせると根拠のない値がレポートに載るため。
+    """
+    if not points:
+        return ""
+
+    blocks = []
+    for i, cp in enumerate(points, 1):
+        revs = getattr(cp, "_reviews", [])[:25]
+        body = "\n".join(
+            f"  - ★{r if r is not None else '-'}: {str(txt)[:120]}" for r, txt in revs
+        ) or "  （本文のある口コミなし）"
+        move = "上昇" if cp.direction == "up" else "低下"
+        blocks.append(
+            f"[変化点{i}] {cp.ym}（口コミ {cp.n_reviews} 件・"
+            f"直前3か月比で平均評価が {cp.delta_pt:+.2f}pt {move}）\n{body}"
+        )
+
+    prompt = f"""あなたは施設の口コミを分析するアナリストです。
+「{facility_name}」について、評価が動いた月とその月の口コミを渡します。
+各変化点で「何が起きたか」を口コミの内容だけから読み取ってください。
+
+制約:
+- 口コミに書かれていないことを推測しない。読み取れない場合は
+  title を「要因は特定できず」とし、body にその旨を書く。
+- 数値（pt・件数・割合）は一切書かない。こちらで別途付与する。
+- title は8〜14字程度の体言止め（例:「混雑の増加」「新展示の導入」「価格改定」）。
+- body は60〜90字で、その月の口コミに現れた具体的な事象を書く。
+- keywords は口コミに実際に出てきた語を3つまで。
+
+出力は次の形式のJSONのみ（説明文やコードフェンスは不要）:
+[{{"title": "...", "body": "...", "keywords": ["...", "..."]}}, ...]
+要素数は変化点の数（{len(points)}件）と同じ順序で返すこと。
+
+{chr(10).join(blocks)}
+"""
+    data, err = call_json(prompt, api_key, max_tokens=1200)
+    if err:
+        return err
+    if not isinstance(data, list) or len(data) != len(points):
+        return "変化点の数と生成結果の数が一致しませんでした"
+
+    for cp, item in zip(points, data):
+        if not isinstance(item, dict):
+            return "生成結果の形式が不正です"
+        cp.title = str(item.get("title", "")).strip()
+        cp.body = str(item.get("body", "")).strip()
+        kw = item.get("keywords") or []
+        cp.keywords = [str(k) for k in kw][:3] if isinstance(kw, list) else []
+    return ""
+
+
 def _extract_api_error(resp: requests.Response) -> str:
     try:
         return resp.json().get("error", {}).get("message", resp.text[:200])

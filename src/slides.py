@@ -1107,3 +1107,193 @@ def slide3_competitor_detail(b: dict) -> str:
         + '</div>'
     )
     return canvas(_compare_header(b, True) + body + footer())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 4「時間軸分析」— docs/design/slide_p08.png
+# ═══════════════════════════════════════════════════════════════════════════
+def _pill(title: str) -> str:
+    """紺の角丸タグ見出し（SLIDE 4 のブロック見出し）。"""
+    return (
+        f'<div style="flex:none;align-self:flex-start;background:{T.NAVY};color:#fff;'
+        'border-radius:.5cqw .5cqw .5cqw 0;padding:.4cqw 1.1cqw;'
+        f'font-size:1cqw;font-weight:800;">{escape(title)}</div>'
+    )
+
+
+def _posneg_chart(series: list, points: list) -> str:
+    """月次のポジ／ネガ積み上げ棒＋差分の折れ線。軸は −1.0〜+1.0 固定。"""
+    if not series:
+        return (f'<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.SUB};font-size:.9cqw;">'
+                '推移を出せるデータがありません</div>')
+    # 変化点は系列全体から検出するので、グラフも全期間を描く。
+    # ここで直近Nか月に切ると、範囲外の変化点だけ番号バッジが消えてしまう。
+    pts = series
+    n = len(pts)
+    marked = {cp.ym: i + 1 for i, cp in enumerate(points)}
+
+    def y(v):                      # -1..+1 → 100..0
+        return (1 - (max(-1.0, min(1.0, v)) + 1) / 2) * 100
+
+    def x(i):
+        return (i + 0.5) / n * 100
+
+    grid = "".join(
+        f'<line x1="0" y1="{y(g):.2f}" x2="100" y2="{y(g):.2f}" '
+        f'stroke="{T.LINE if g else T.SUB}" stroke-width="{.8 if g == 0 else .45}" '
+        'vector-effect="non-scaling-stroke"/>'
+        for g in (1.0, 0.5, 0.0, -0.5, -1.0)
+    )
+    bw = 100 / n * 0.52
+    bars = ""
+    for i, (_ym, _n, pos, neg, _d, _a) in enumerate(pts):
+        cx = x(i)
+        bars += (
+            f'<rect x="{cx - bw / 2:.2f}" y="{y(pos):.2f}" width="{bw:.2f}" '
+            f'height="{y(0) - y(pos):.2f}" fill="{T.POS_BAR}"/>'
+            f'<rect x="{cx - bw / 2:.2f}" y="{y(0):.2f}" width="{bw:.2f}" '
+            f'height="{y(neg) - y(0):.2f}" fill="{T.NEG_BAR}"/>'
+        )
+    line = " ".join(f"{x(i):.2f},{y(r[4]):.2f}" for i, r in enumerate(pts))
+    dots = "".join(
+        f'<circle cx="{x(i):.2f}" cy="{y(r[4]):.2f}" r="1.3" fill="#fff" '
+        f'stroke="{T.DIFF_LINE}" stroke-width="1" vector-effect="non-scaling-stroke"/>'
+        for i, r in enumerate(pts)
+    )
+    ylabs = "".join(
+        f'<div style="position:absolute;top:{y(g):.2f}%;left:-3cqw;width:2.6cqw;'
+        'text-align:right;transform:translateY(-50%);font-size:.62cqw;'
+        f'color:{T.ACCENT_DEEP if g > 0 else ("#1B4DA8" if g < 0 else T.INK)};">'
+        f'{g:+.1f}</div>'.replace("+0.0", "0")
+        for g in (1.0, 0.5, 0.0, -0.5, -1.0)
+    )
+    badges = "".join(
+        f'<div style="position:absolute;left:{x(i):.2f}%;top:-2.2cqw;'
+        'transform:translateX(-50%);width:1.9cqw;height:1.9cqw;border-radius:50%;'
+        f'background:{T.ACCENT};color:#fff;font-size:.85cqw;font-weight:800;'
+        'display:flex;align-items:center;justify-content:center;">'
+        f'{marked[r[0]]}</div>'
+        for i, r in enumerate(pts) if r[0] in marked
+    )
+    xlabs = ""
+    for i, r in enumerate(pts):
+        y4, m2 = r[0].split("-")
+        show = (i == 0) or m2 == "01" or n <= 14
+        if not show:
+            continue
+        lab = f"'{y4[2:]}/{m2}" if (i == 0 or m2 == "01") else m2
+        xlabs += (
+            f'<div style="position:absolute;left:{x(i):.2f}%;top:.1cqw;'
+            'transform:translateX(-50%);'
+            f'font-size:.6cqw;color:{T.INK};white-space:nowrap;">'
+            f'{escape(lab)}</div>'
+        )
+    legend = (
+        '<div style="flex:none;display:flex;flex-direction:column;gap:.45cqw;'
+        'width:12.5cqw;padding-top:1.5cqw;">'
+        + "".join(
+            '<div style="display:flex;align-items:center;gap:.5cqw;'
+            f'font-size:.72cqw;color:{T.INK};">'
+            f'<span style="flex:none;width:1.5cqw;height:.75cqw;background:{c};'
+            'border-radius:.1cqw;"></span>' + escape(t) + '</div>'
+            for c, t in ((T.POS_BAR, "ポジティブ要因スコア（+）"),
+                         (T.NEG_BAR, "ネガティブ要因スコア（−）"))
+        )
+        + '<div style="display:flex;align-items:center;gap:.5cqw;'
+        f'font-size:.72cqw;color:{T.INK};">'
+        f'<span style="flex:none;color:{T.DIFF_LINE};font-weight:800;">─○─</span>'
+        '差分（ポジ − ネガ）</div>'
+        f'<div style="font-size:.66cqw;color:{T.SUB};margin-top:.2cqw;">（スコア）</div>'
+        '</div>'
+    )
+    return (
+        '<div style="flex:1;display:flex;gap:.8cqw;min-height:0;">'
+        f'{legend}'
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
+        'padding-top:2.4cqw;">'
+        '<div style="flex:1;position:relative;min-height:0;margin-left:3.2cqw;">'
+        f'{ylabs}{badges}'
+        '<svg viewBox="0 0 100 100" preserveAspectRatio="none" '
+        'style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;">'
+        f'{grid}{bars}'
+        f'<polyline points="{line}" fill="none" stroke="{T.DIFF_LINE}" '
+        'stroke-width="1.4" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
+        f'{dots}</svg></div>'
+        f'<div style="flex:none;position:relative;height:1.7cqw;margin-left:3.2cqw;">'
+        f'{xlabs}'
+        f'<div style="position:absolute;right:-1.6cqw;top:.1cqw;font-size:.6cqw;'
+        f'color:{T.SUB};">（月）</div></div>'
+        '</div></div>'
+    )
+
+
+def _change_point_cards(points: list) -> str:
+    from . import timeline as _tl
+    if not points:
+        return (f'<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.SUB};font-size:.9cqw;">'
+                '評価が大きく動いた月は検出されませんでした</div>')
+    cards = []
+    for i, cp in enumerate(points, 1):
+        title, body = (cp.title, cp.body) if cp.title else _tl.fallback_description(cp)
+        up = cp.direction == "up"
+        col = "#1B4DA8" if up else T.ACCENT_DEEP
+        cards.append(
+            f'<div style="flex:1;min-width:0;border:1px solid {T.CARD_LINE};'
+            'border-radius:.8cqw;background:#fff;padding:.75cqw .9cqw;'
+            'display:flex;flex-direction:column;gap:.4cqw;">'
+            '<div style="flex:none;display:flex;align-items:center;gap:.55cqw;">'
+            f'<span style="flex:none;width:1.7cqw;height:1.7cqw;border-radius:50%;'
+            f'background:{T.ACCENT};color:#fff;font-size:.85cqw;font-weight:800;'
+            f'display:flex;align-items:center;justify-content:center;">{i}</span>'
+            f'<span style="font-size:.9cqw;font-weight:800;color:{T.ACCENT_DEEP};">'
+            f'{escape(cp.label)}</span>'
+            f'<span style="font-size:1cqw;font-weight:800;color:{T.INK};'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+            f'{escape(title)}</span></div>'
+            f'<div style="flex:1;min-height:0;font-size:.76cqw;line-height:1.5;'
+            f'color:{T.INK};overflow:hidden;">{escape(body)}</div>'
+            f'<div style="flex:none;border-top:1px dashed {T.LINE};padding-top:.35cqw;'
+            'display:flex;align-items:center;gap:.45cqw;">'
+            f'<span style="color:{col};font-size:.95cqw;">{"↑" if up else "↓"}</span>'
+            f'<span style="font-size:.85cqw;font-weight:800;color:{col};">'
+            f'影響：{cp.delta_pt:+.2f}pt</span></div></div>'
+        )
+    arrow = (f'<div style="flex:none;align-self:center;color:{T.HEAT_HIGH};'
+             'font-size:1.3cqw;">▶</div>')
+    return ('<div style="flex:1;display:flex;gap:.7cqw;min-height:0;">'
+            + arrow.join(cards) + '</div>')
+
+
+def slide4_timeline(b: dict) -> str:
+    """SLIDE 4「時間軸分析」。docs/design/slide_p08.png。"""
+    series = b.get("monthly_series") or []
+    points = b.get("change_points") or []
+    period = b.get("period_label") or ""
+    n_months = len(series)
+    sub = (
+        '<div style="flex:none;display:flex;justify-content:flex-end;gap:1.6cqw;'
+        f'font-size:.78cqw;color:{T.INK};padding:.6cqw 1.8cqw .2cqw;">'
+        + (f'<span>📅 分析期間：{escape(period)}（{n_months}か月）</span>' if period else "")
+        + f'<span>💬 対象：口コミ {b.get("n_reviews", 0):,} 件</span></div>'
+    )
+    box = (
+        f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:.5cqw;'
+        f'border:1px solid {T.CARD_LINE};border-radius:.9cqw;padding:.7cqw 1cqw 1cqw;">'
+    )
+    body = (
+        sub
+        + '<div style="flex:1;display:flex;flex-direction:column;gap:.9cqw;'
+        'min-height:0;padding:.2cqw 1.8cqw 0;">'
+        + _pill("ポジティブ要因とネガティブ要因の推移")
+        + box + _posneg_chart(series, points) + '</div>'
+        + _pill("主な変化点と評価変動要因")
+        + '<div style="flex:none;height:12cqw;display:flex;">'
+        + _change_point_cards(points) + '</div></div>'
+    )
+    meta = f"分析期間：{period}" if period else ""
+    return canvas(
+        slide_header("4", "時間軸分析", meta) + body
+        + footer("※スコアは5点満点を−1〜+1のスケールに変換して集計")
+    )

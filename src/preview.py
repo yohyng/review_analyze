@@ -13,7 +13,7 @@ from datetime import date
 from html import escape
 from typing import Optional
 
-from . import analysis, config, db, text_analysis, topic_score
+from . import analysis, config, db, text_analysis, timeline, topic_score
 
 # palette (VoiceBAUM)
 ACCENT = "#B0338A"
@@ -54,6 +54,7 @@ def build_bundle(
     profile,                  # text_analysis.TextProfile
     insights,                 # llm.InsightResult | None
     peers_override: list | None = None,  # 指定競合モード: 明示的な比較施設リスト
+    change_points: list | None = None,   # LLMで説明文を入れた変化点（SLIDE 4）
 ) -> dict:
     frow = conn.execute(
         "SELECT id, category, general_rating, floor_area FROM facility WHERE name = ?", (target,)
@@ -268,6 +269,13 @@ def build_bundle(
     # 月別ポジ/ネガ件数
     monthly_pos_neg = db.monthly_rating_counts(conn, fid) if fid else []
 
+    # SLIDE 4「時間軸分析」— 月次のポジ/ネガ要因スコアと、評価が動いた月。
+    # 変化点の説明文は LLM が後から埋める（analysis_mode 側）。ここでは
+    # 検出と影響ptの算出だけを決定論的に行う。
+    monthly_series = db.monthly_sentiment_series(conn, fid) if fid else []
+    if change_points is None:
+        change_points = timeline.detect_change_points(monthly_series)
+
     # ── 分析期間 ────────────────────────────────────────────────────── #
     # 固定値ではなく、その施設の口コミが実際にカバーしている範囲から出す。
     # スライドによって対象が違うので2種類返す:
@@ -334,6 +342,8 @@ def build_bundle(
         "overall_topic": overall_topic,
         "peer_topic_scores": peer_topic_scores,
         "monthly_pos_neg": monthly_pos_neg,
+        "monthly_series": monthly_series,
+        "change_points": change_points,
         # SLIDE 1（施設・基本情報）— 比較対象カード（同カテゴリ優先・写真つき最大5件）
         "peer_display": peer_display,
         "peer_display_same_category": bool(same_cat),
