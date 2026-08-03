@@ -58,6 +58,13 @@ def build_bundle(
     pos_rate = round(100 * pr[0] / pr[1]) if pr and pr[1] else None
 
     # ── 感情・トピックモデルによる比較（SLIDE 01-03 の素） ──────────── #
+    # スコアの較正。基準は**母集団全体**（比較モードで絞る前の topic_results）に
+    # すること。指定競合で選んだ5施設を基準にすると、同じ施設のスコアが
+    # 「誰と比べたか」で変わってしまう。
+    score_calibrated = False
+    if config.SCORE_CALIBRATION:
+        topic_results, score_calibrated = topic_score.calibrate_matrix(topic_results)
+
     ts = topic_results.get(target)
     valid_all = {n: r for n, r in topic_results.items() if r is not None and not r.empty}
 
@@ -316,6 +323,7 @@ def build_bundle(
         "total_fac": total_fac,
         # 比較母数のスコープ（指定競合モードか市場全体か）— スライドの見出しに使う
         "comparison_scope": "competitor" if is_competitor_mode else "market",
+        "score_calibrated": score_calibrated,
         "scope_label": scope_label,   # 「選択競合内」/「市場内」
         "scope_noun": scope_noun,     # 「選択競合」/「市場」
         "period_label": period_label,              # 対象施設の口コミ期間

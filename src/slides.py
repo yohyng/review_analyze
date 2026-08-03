@@ -83,7 +83,7 @@ def panel(title: str, body: str, *, icon: str = "", note: str = "",
     )
 
 
-def footer(note: str = "※数値はサンプルです") -> str:
+def footer(note: str = "") -> str:
     """Voice BAUM のワードマーク＋ピンクの罫線。"""
     return (
         '<div style="flex:none;display:flex;align-items:center;gap:1cqw;'
@@ -118,6 +118,18 @@ def vertical_text(s: str, *, size: float, color: str | None = None,
         f'<div style="font-size:{size}cqw;color:{col};font-weight:{weight};'
         f'text-align:center;">{cells}</div>'
     )
+
+
+def score_note(b: dict) -> str:
+    """スコアが何を意味するかの注記。較正の有無で言い方を変える。
+
+    較正時は 3.00 が市場平均を指す相対値なので、絶対的な品質評価と
+    誤読されないよう必ずその旨を書く。
+    """
+    if b.get("score_calibrated"):
+        return ("※スコアは5点満点（3.00＝市場平均）。"
+                "同カテゴリ施設の分布内での相対位置を示します")
+    return "※スコアは5点満点。口コミ本文から算出した感情スコアです"
 
 
 def _photo(uri: str | None, ratio: str = "16/10", radius: str = ".7cqw") -> str:
@@ -339,7 +351,8 @@ def slide1_facility_info(b: dict) -> str:
         f'<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;">{summary}{trend}</div>'
         f'{peers}</div></div>'
     )
-    return canvas(slide_header("1", "施設・基本情報", meta) + body + footer())
+    return canvas(slide_header("1", "施設・基本情報", meta) + body
+                  + footer("※口コミ数・総合評価は収集した口コミの実測値です"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -555,7 +568,8 @@ def slide2_market_position(b: dict) -> str:
         'padding:1.2cqw 1.8cqw .4cqw;">'
         f'{left}{mid}{right}</div>'
     )
-    return canvas(slide_header("2", f"{scope}ポジション", meta) + body + footer())
+    return canvas(slide_header("2", f"{scope}ポジション", meta) + body
+                  + footer(score_note(b)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -791,7 +805,8 @@ def _outcome_boxes(b: dict) -> str:
     mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
     items = [("😊", "体験満足度"), ("👍", "推奨意向"), ("🔁", "再訪意向")]
     boxes = "".join(
-        f'<div style="flex:0 0 5.4cqw;border:1.4px solid {T.ACCENT};'
+        f'<div style="flex:1 1 0;min-height:0;max-height:5.6cqw;'
+        f'border:1.4px solid {T.ACCENT};'
         'border-radius:.7cqw;display:flex;align-items:center;justify-content:center;'
         'gap:.6cqw;padding:.3cqw;">'
         f'<span style="font-size:1.3cqw;">{icon}</span>'
@@ -804,7 +819,7 @@ def _outcome_boxes(b: dict) -> str:
     )
     return (
         '<div style="width:11cqw;flex:none;display:flex;flex-direction:column;'
-        'gap:.7cqw;min-height:0;justify-content:center;">'
+        'gap:.6cqw;min-height:0;overflow:hidden;justify-content:center;">'
         f'<div style="flex:none;font-size:.66cqw;font-weight:700;'
         f'color:{T.ACCENT_DEEP};">口コミから算出した主要スコア</div>'
         f'{boxes}</div>'
@@ -894,7 +909,7 @@ def slide2_market_detail(b: dict) -> str:
         '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;'
         f'padding:1.2cqw 1.8cqw .4cqw;">{left}{right}</div>'
     )
-    return canvas(header + body + footer())
+    return canvas(header + body + footer(score_note(b)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1094,7 +1109,7 @@ def slide3_competitor_compare(b: dict) -> str:
         + panel("競合に負けている項目", _diff_grid(lose, T.NAVY, 4))
         + '</div>'
     )
-    return canvas(_compare_header(b, False) + body + footer())
+    return canvas(_compare_header(b, False) + body + footer(score_note(b)))
 
 
 def slide3_competitor_detail(b: dict) -> str:
@@ -1110,7 +1125,7 @@ def slide3_competitor_detail(b: dict) -> str:
                 style="flex:1")
         + '</div>'
     )
-    return canvas(_compare_header(b, True) + body + footer())
+    return canvas(_compare_header(b, True) + body + footer(score_note(b)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1528,7 +1543,7 @@ def slide5_space_experience(b: dict) -> str:
         f'{left}' + panel("本ページの要約", _summary_cards(b), style="flex:1")
         + '</div>'
     )
-    return canvas(header + body + footer())
+    return canvas(header + body + footer(score_note(b)))
 
 
 def _trend_badge(diff5: float) -> tuple[str, str]:
@@ -1661,7 +1676,7 @@ def slide5_space_detail(b: dict) -> str:
         f'<span style="font-size:{T.FS["slide_title"] * 0.62:.2f}cqw;font-weight:700;">'
         '（詳細）</span></div>' + _planner_badge() + '</div>'
     )
-    return canvas(header + body + footer("※スコアは5点満点です"))
+    return canvas(header + body + footer(score_note(b)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

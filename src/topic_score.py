@@ -522,6 +522,93 @@ def analyze_facility(
     return analyze_reviews(reviews, topics=topics, backend=backend)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# スコアの較正（市場内の相対位置へ）
+# ═══════════════════════════════════════════════════════════════════════════
+# 感情スコアは 0-100 の絶対値だが、実データでは中立(50)付近に強く集まる。
+# 実測（40施設）では観点別スコアが 47.2〜71.5（平均53.1・sd 3.0）で、5点満点に
+# 素で直すと全施設が 2.4〜3.3 に潰れて差が読めない。さらに観点ごとの sd が
+# 1.12〜5.06 と4.5倍ばらつくため、「サービスの種類」のように何をやっても
+# 全施設 2.7 前後にしかならない軸が生まれる。
+#
+# そこで観点ごとに市場の分布で標準化し、5点満点へ写す:
+#     z = (score - 市場平均) / 市場sd
+#     5点 = 3.0 + z × 0.5   （1sd = 0.5点、1.0〜5.0でクリップ）
+#
+# 3.00 が「市場平均」を意味するようになる。絶対的な品質評価ではなく市場内の
+# 相対位置である点に注意（スライドにもその旨を明記すること）。
+CALIBRATION_CENTER = 3.0      # 市場平均に対応する5点満点上の値
+CALIBRATION_PER_SD = 0.5      # 1標準偏差あたり何点動かすか
+CALIBRATION_MIN_SD = 1.0      # sd の下限（小さすぎると z が暴れる）
+CALIBRATION_MIN_FACILITIES = 8  # これ未満では分布が不安定なので較正しない
+
+
+def calibration_stats(matrix: dict) -> Optional[dict]:
+    """{施設名: TopicScoreResult} から観点ごとの (平均, sd) を出す。
+
+    較正の基準は必ず**母集団全体**にすること。指定競合モードで選んだ5施設だけを
+    基準にすると、同じ施設のスコアが「誰と比べたか」で変わってしまう。
+    施設数が足りないときは None（＝較正しない）。
+    """
+    usable = [r for r in matrix.values() if r is not None and not r.empty]
+    if len(usable) < CALIBRATION_MIN_FACILITIES:
+        return None
+
+    per: dict[str, List[float]] = {}
+    for r in usable:
+        for t, v in r.sentiment_by_topic().items():
+            per.setdefault(t, []).append(v)
+
+    out = {}
+    for t, vals in per.items():
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals)
+        out[t] = (mean, max(var ** 0.5, CALIBRATION_MIN_SD))
+    return out
+
+
+def calibrated_sentiment(v100: float, stat: Optional[tuple]) -> float:
+    """観点スコア(0-100)を、市場内の相対位置にもとづく 0-100 に写す。
+
+    戻り値も 0-100 スケール（表示側が /20 して5点にする）なので、
+    呼び出し側の計算はそのまま使える。
+    """
+    if not stat:
+        return v100
+    mean, sd = stat
+    z = (v100 - mean) / sd
+    pt5 = CALIBRATION_CENTER + z * CALIBRATION_PER_SD
+    return min(5.0, max(1.0, pt5)) * 20.0
+
+
+def calibrate_result(result: "TopicScoreResult",
+                     stats: Optional[dict]) -> "TopicScoreResult":
+    """TopicScoreResult の各観点スコアを較正した新しい結果を返す（元は変更しない）。"""
+    if not stats or result is None or result.empty:
+        return result
+    topics = [
+        TopicScore(
+            name=t.name, weight=t.weight, avg_score=t.avg_score,
+            total_score=t.total_score, salience=t.salience,
+            sentiment=calibrated_sentiment(t.sentiment_100, stats.get(t.name)) / 100,
+        )
+        for t in result.topics
+    ]
+    return TopicScoreResult(
+        topics=topics, overall_score=result.overall_score,
+        n_reviews=result.n_reviews, n_sentences=result.n_sentences,
+        backend=result.backend + "+calibrated", empty=result.empty,
+    )
+
+
+def calibrate_matrix(matrix: dict) -> tuple[dict, bool]:
+    """行列全体を較正する。戻り値は (較正後の行列, 較正したか)。"""
+    stats = calibration_stats(matrix)
+    if not stats:
+        return matrix, False
+    return {n: calibrate_result(r, stats) for n, r in matrix.items()}, True
+
+
 def facility_topic_matrix(
     conn,
     names: Optional[List[str]] = None,

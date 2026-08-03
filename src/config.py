@@ -5,7 +5,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "reviews.db"
 
-APP_VERSION = "0.34.0"
+APP_VERSION = "0.35.0"
+
+# スコアの較正（市場内の相対位置へ写す）。詳細は topic_score の
+# calibration_stats を参照。False にすると素の感情スコアがそのまま出るが、
+# 実データでは全施設が5点満点の 2.4〜3.3 に潰れて差が読めなくなる。
+SCORE_CALIBRATION = True
 
 # Facility roles (step 1 / step 2)
 FACILITY_TYPES = {

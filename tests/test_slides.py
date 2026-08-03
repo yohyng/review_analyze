@@ -91,7 +91,10 @@ def test_slide1_has_all_four_panels(tmp_path):
     for val in ("東京都○○区", "2015年4月", "28,500㎡", "ファミリー向け商業施設"):
         assert val in html, val
     assert "総口コミ数" in html and "総合評価" in html
-    assert "Voice" in html and "※数値はサンプルです" in html
+    assert "Voice" in html
+    # PDF の「※数値はサンプルです」はモックの文言。実データなので出さない
+    assert "※数値はサンプルです" not in html
+    assert "実測値" in html
 
 
 def test_slide1_shows_review_count_and_rating(tmp_path):
@@ -915,3 +918,129 @@ def test_slide7_survives_without_topics(tmp_path):
     b = preview.build_bundle(conn, "target", {}, None, None, peers_override=[])
     assert b["issues"] == []
     assert "課題を抽出できるデータがありません" in slides.slide7_discussion(b)
+
+
+# --------------------------------------------------------------------------- #
+# スコアの較正（市場内の相対位置へ）
+# --------------------------------------------------------------------------- #
+def _matrix(n: int, spread: float = 0.02) -> dict:
+    """n施設ぶんの行列。i番目の感情スコアが 0.50 + i*spread。"""
+    return {f"f{i}": _result(0.50 + i * spread) for i in range(n)}
+
+
+def test_calibration_needs_enough_facilities():
+    """施設数が少ないと分布が不安定なので較正しない。"""
+    assert topic_score.calibration_stats(_matrix(3)) is None
+    assert topic_score.calibration_stats(
+        _matrix(topic_score.CALIBRATION_MIN_FACILITIES - 1)) is None
+    assert topic_score.calibration_stats(
+        _matrix(topic_score.CALIBRATION_MIN_FACILITIES)) is not None
+
+
+def test_calibration_maps_market_average_to_three():
+    """市場平均がちょうど 3.00 になる。"""
+    mat = _matrix(11)                      # 0.50〜0.70、平均 0.60
+    stats = topic_score.calibration_stats(mat)
+    mean, _sd = stats["スタッフ対応"]
+    assert abs(mean - 60.0) < 1e-6
+    assert abs(topic_score.calibrated_sentiment(mean, stats["スタッフ対応"]) / 20 - 3.0) < 1e-9
+
+
+def test_calibration_moves_half_a_point_per_standard_deviation():
+    mat = _matrix(11)
+    stats = topic_score.calibration_stats(mat)
+    mean, sd = stats["スタッフ対応"]
+    for z, expected in ((1, 3.5), (2, 4.0), (-1, 2.5), (-2, 2.0)):
+        got = topic_score.calibrated_sentiment(mean + z * sd, stats["スタッフ対応"]) / 20
+        assert abs(got - expected) < 1e-9, (z, got)
+
+
+def test_calibration_clips_to_the_five_point_range():
+    mat = _matrix(11)
+    stats = topic_score.calibration_stats(mat)
+    mean, sd = stats["スタッフ対応"]
+    assert topic_score.calibrated_sentiment(mean + 99 * sd, stats["スタッフ対応"]) == 100.0
+    assert topic_score.calibrated_sentiment(mean - 99 * sd, stats["スタッフ対応"]) == 20.0
+
+
+def test_calibration_preserves_ranking():
+    """順位は変えない（相対位置への写像なので単調）。"""
+    mat = _matrix(12)
+    cal, did = topic_score.calibrate_matrix(mat)
+    assert did
+    raw = sorted(mat, key=lambda n: -mat[n].sentiment_by_topic()["スタッフ対応"])
+    new = sorted(cal, key=lambda n: -cal[n].sentiment_by_topic()["スタッフ対応"])
+    assert raw == new
+
+
+def test_calibration_spreads_compressed_scores():
+    """潰れていたスコアが読める幅に広がる。"""
+    mat = _matrix(12, spread=0.004)        # 素だと 2.50〜2.72 に潰れる
+    raw = [v for r in mat.values() for v in r.sentiment_by_topic().values()]
+    cal, _ = topic_score.calibrate_matrix(mat)
+    new = [v for r in cal.values() for v in r.sentiment_by_topic().values()]
+
+    raw_span = (max(raw) - min(raw)) / 20
+    new_span = (max(new) - min(new)) / 20
+    assert raw_span < 0.3                          # 素はほぼ差が無い
+    assert new_span > 1.4                          # 較正後は読める幅になる
+    assert new_span / raw_span > 5                 # 5倍以上に広がる
+
+
+def test_calibration_does_not_mutate_the_original():
+    mat = _matrix(12)
+    before = mat["f0"].sentiment_by_topic()["スタッフ対応"]
+    topic_score.calibrate_matrix(mat)
+    assert mat["f0"].sentiment_by_topic()["スタッフ対応"] == before
+
+
+def test_bundle_calibrates_against_the_whole_population_not_the_peers(tmp_path):
+    """較正の基準は母集団全体。誰を競合に選んでもスコアは変わらない。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    names = [f"f{i}" for i in range(12)]
+    for nm in names:
+        db.upsert_facility(conn, nm, ftype="comparison")
+    conn.commit()
+    mat = {nm: _result(0.50 + i * 0.02) for i, nm in enumerate(names)}
+
+    a = preview.build_bundle(conn, "f5", mat, None, None, peers_override=names[0:3])
+    b = preview.build_bundle(conn, "f5", mat, None, None, peers_override=names[8:11])
+    assert a["score_calibrated"] and b["score_calibrated"]
+    # 競合の選び方が違っても、自施設のスコアそのものは同じ
+    assert a["topic_values"] == b["topic_values"]
+
+
+def test_bundle_reports_whether_scores_were_calibrated(tmp_path):
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    for nm in ("target", "peer1"):
+        db.upsert_facility(conn, nm, ftype="comparison")
+    conn.commit()
+    small = preview.build_bundle(conn, "target",
+                                 {"target": _result(0.5), "peer1": _result(0.6)},
+                                 None, None, peers_override=["peer1"])
+    assert small["score_calibrated"] is False      # 2施設では較正しない
+
+
+def test_slides_state_what_three_points_means(tmp_path):
+    """較正時は「3.00＝市場平均」と必ず書く（絶対評価と誤読されないように）。"""
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    names = [f"f{i}" for i in range(12)]
+    for nm in names:
+        db.upsert_facility(conn, nm, ftype="comparison")
+    conn.commit()
+    mat = {nm: _result(0.50 + i * 0.02) for i, nm in enumerate(names)}
+    b = preview.build_bundle(conn, "f5", mat, None, None, peers_override=names[0:4])
+
+    assert b["score_calibrated"]
+    note = slides.score_note(b)
+    assert "3.00＝市場平均" in note and "相対位置" in note
+    for fn in (slides.slide2_market_position, slides.slide2_market_detail,
+               slides.slide3_competitor_compare, slides.slide3_competitor_detail,
+               slides.slide5_space_experience, slides.slide5_space_detail):
+        assert "3.00＝市場平均" in fn(b), fn.__name__
+
+    b2 = dict(b, score_calibrated=False)
+    assert "3.00＝市場平均" not in slides.score_note(b2)
