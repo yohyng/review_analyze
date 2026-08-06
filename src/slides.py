@@ -1,11 +1,18 @@
 """分析レポートのスライド描画（HTML）。
 
-デザインの正は docs/design/slide_p03..p12.png（20260726_VoiceBAUM_v1.pdf の
-p3〜p12）。色・書体・寸法は src/report_theme.py のトークンを使い、値を直接
-書かない。サイズは cqw（コンテナ幅に対する%）で持つので、どの幅で描いても
-PDF と同じ比率になる。
+**デザインの正典は design_handoff_voicebaum**
+  - `README.md` §2〜§4（トークン・レイアウト・チャート仕様）
+  - `ReviewLens.dc.html`（動くリファレンス実装）
 
-キャンバスは 16:9（PDF が 960×540pt のため）。
+色・書体・寸法は src/report_theme.py のトークンを使い、値を直接書かない。
+サイズは cqw（コンテナ幅に対する%）で持つので、どの幅で描いても同じ比率になる。
+1枚は `canvas(header, body, foot)`：ヘッダーだけがフローに乗り、本文（body_area）と
+フッターは絶対配置。中身が増えてもフッター位置がずれない。
+
+番号タイルの数字は「章番号」であって通し番号ではない
+（1 / 2 / 2 / 3 / 3 / 4 / 5 / 5 / 6 / 7。正典も詳細ページは親と同じ番号を出す）。
+
+見た目の確認は `python3 scripts/render_slides.py` で PNG に書き出す。
 """
 from __future__ import annotations
 
@@ -17,28 +24,62 @@ from . import report_theme as T
 # ═══════════════════════════════════════════════════════════════════════════
 # プリミティブ
 # ═══════════════════════════════════════════════════════════════════════════
-def canvas(inner: str) -> str:
-    """1枚のスライド。container-type:inline-size で cqw を効かせる。"""
+def canvas(header: str, body: str, foot: str) -> str:
+    """1枚のスライド。container-type:inline-size で cqw を効かせる。
+
+    ヘッダーだけがフローに乗り、本文とフッターは絶対配置（正典の組み方）。
+    こうしておくと本文の中身が増えてもフッターの位置がずれない。
+    """
     return (
-        f'<div style="width:100%;aspect-ratio:{T.ASPECT_RATIO};background:{T.PAGE_BG};'
-        f'container-type:inline-size;font-family:{T.FONT_STACK};color:{T.INK};'
-        f'border:1px solid {T.CARD_LINE};border-radius:10px;overflow:hidden;'
-        'box-shadow:0 1px 2px rgba(20,30,40,.04),0 12px 30px rgba(20,30,40,.06);'
-        'margin:0 0 22px;display:flex;flex-direction:column;">'
+        f'<div style="position:relative;width:100%;aspect-ratio:{T.ASPECT_RATIO};'
+        f'background:{T.PAGE_BG};border:1px solid {T.CARD_LINE};'
+        f'border-radius:{T.SLIDE_RADIUS};overflow:hidden;container-type:inline-size;'
+        f'box-shadow:{T.SLIDE_SHADOW};font-family:{T.FONT_STACK};color:{T.INK};'
+        'font-variant-numeric:tabular-nums;text-wrap:pretty;margin:0 0 22px;">'
+        f'{header}{body}{foot}</div>'
+    )
+
+
+def body_area(inner: str, *, top: float = T.BODY_TOP, column: bool = False,
+              gap: float = 1.4) -> str:
+    """本文エリア。left/right:2cqw・top:6.9〜7.4cqw・bottom:4.6cqw（README §2）。"""
+    return (
+        f'<div style="position:absolute;left:{T.BODY_X}cqw;right:{T.BODY_X}cqw;'
+        f'top:{top}cqw;bottom:{T.BODY_BOTTOM}cqw;display:flex;'
+        f'flex-direction:{"column" if column else "row"};gap:{gap}cqw;">'
         f'{inner}</div>'
     )
 
 
-def slide_header(num: str, title: str, meta: str = "", sub_title: str = "") -> str:
-    """紺帯のヘッダ。左端にピンクの番号バッジ、右端に分析条件。
+def _pill(text: str) -> str:
+    """ヘッダー右のピンクの丸ピル（「プランナー起点」）。"""
+    return (
+        f'<span style="background:{T.ACCENT};color:#fff;font-size:1.1cqw;'
+        'font-weight:700;padding:.5cqw 1.4cqw;border-radius:999px;'
+        f'white-space:nowrap;">{escape(text)}</span>'
+    )
 
-    バッジと帯は上下いっぱいに詰める（PDF はヘッダ帯が天地いっぱい）。
+
+def _outline_tag(text: str) -> str:
+    """ヘッダー右の白抜きタグ（「confidential」）。"""
+    return (
+        f'<span style="border:1.5px solid {T.ACCENT};color:{T.ACCENT};background:#fff;'
+        'font-size:1.1cqw;font-weight:700;padding:.4cqw 1.2cqw;border-radius:.3cqw;'
+        f'white-space:nowrap;">{escape(text)}</span>'
+    )
+
+
+def slide_header(num: str, title: str, meta: str = "", sub_title: str = "",
+                 right: str = "") -> str:
+    """紺帯のヘッダー。左端にピンクの正方形タイル、右端に補足。
+
+    寸法は README §2：帯 6.3cqw ／ タイル 6.3cqw 正方・数字 2.7cqw/800 ／
+    タイトル 2.3cqw/800 ／ 右の補足 1.05cqw/600。
     """
-    meta_html = (
-        f'<div style="margin-left:auto;display:flex;align-items:center;'
-        f'padding-right:1.8cqw;color:#fff;font-size:{T.FS["slide_meta"]}cqw;'
-        f'font-weight:700;white-space:nowrap;">{escape(meta)}</div>'
-        if meta else ""
+    right_html = right or (
+        f'<span style="color:#fff;font-size:{T.FS["slide_meta"]}cqw;font-weight:600;'
+        f'white-space:nowrap;">{escape(meta)}</span>'
+        if meta else "<span></span>"
     )
     sub_html = (
         f'<span style="font-size:{T.FS["slide_title"] * 0.62:.2f}cqw;font-weight:700;">'
@@ -46,54 +87,73 @@ def slide_header(num: str, title: str, meta: str = "", sub_title: str = "") -> s
         if sub_title else ""
     )
     return (
-        f'<div style="flex:none;display:flex;align-items:stretch;background:{T.NAVY};'
-        'height:7.4cqw;">'
-        f'<div style="flex:none;width:6.6cqw;background:{T.ACCENT};color:#fff;'
-        f'display:flex;align-items:center;justify-content:center;'
-        f'font-size:3.1cqw;font-weight:800;">{escape(num)}</div>'
-        f'<div style="display:flex;align-items:center;padding-left:2.2cqw;color:#fff;'
-        f'font-size:{T.FS["slide_title"]}cqw;font-weight:800;letter-spacing:.02em;">'
-        f'{escape(title)}{sub_html}</div>'
-        f'{meta_html}</div>'
+        f'<div style="display:flex;align-items:stretch;height:{T.HEADER_H}cqw;'
+        f'background:{T.NAVY};">'
+        f'<div style="width:{T.TILE_W}cqw;flex:none;background:{T.ACCENT};'
+        'display:flex;align-items:center;justify-content:center;color:#fff;'
+        f'font-size:{T.FS["slide_num"]}cqw;font-weight:800;">{escape(num)}</div>'
+        '<div style="flex:1;display:flex;align-items:center;'
+        'justify-content:space-between;gap:1.4cqw;padding:0 2cqw;min-width:0;">'
+        f'<span style="color:#fff;font-size:{T.FS["slide_title"]}cqw;font-weight:800;'
+        'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+        f'{escape(title)}{sub_html}</span>'
+        f'{right_html}</div></div>'
     )
 
 
 def panel(title: str, body: str, *, icon: str = "", note: str = "",
-          style: str = "flex:1") -> str:
-    """紺の見出し帯＋白い本文のパネル。"""
-    icon_html = (
-        f'<span style="margin-right:.7cqw;font-size:1.2cqw;">{icon}</span>' if icon else ""
-    )
+          style: str = "flex:1", pad: str = "1cqw", gap: str = "0",
+          head_size: float | None = None) -> str:
+    """紺の見出し帯＋白い本文のカード。
+
+    見出しは README §2 の「高さ約3cqw・1.35cqw/700・背景 #17224B・白・中央寄せ」。
+    アイコンや注記を添えるときだけ左寄せにする（正典もその使い分け）。
+    """
+    fs = T.FS["panel_head"] if head_size is None else head_size
+    icon_html = f'<span style="font-size:1.2cqw;">{icon}</span>' if icon else ""
     note_html = (
         f'<span style="margin-left:auto;font-size:{T.FS["note"]}cqw;font-weight:400;'
-        f'opacity:.85;">{escape(note)}</span>'
+        f'opacity:.85;white-space:nowrap;">{escape(note)}</span>'
         if note else ""
+    )
+    head_layout = (
+        "display:flex;align-items:center;gap:.7cqw;"
+        if (icon_html or note_html) else "text-align:center;"
     )
     return (
         f'<div style="{style};min-width:0;display:flex;flex-direction:column;'
-        f'border:1px solid {T.CARD_LINE};border-radius:1cqw;overflow:hidden;'
-        'background:#fff;">'
-        f'<div style="flex:none;display:flex;align-items:center;background:{T.NAVY};'
-        f'color:#fff;font-size:{T.FS["panel_head"]}cqw;font-weight:800;'
-        'padding:.62cqw 1.1cqw;">'
+        f'border:1px solid {T.CARD_LINE};border-radius:{T.CARD_RADIUS};'
+        'overflow:hidden;background:#fff;">'
+        f'<div style="flex:none;background:{T.NAVY};color:#fff;font-size:{fs}cqw;'
+        f'font-weight:700;padding:.85cqw 1.2cqw;{head_layout}">'
         f'{icon_html}{escape(title)}{note_html}</div>'
         f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;'
-        'padding:1cqw 1.1cqw;">'
+        f'padding:{pad};gap:{gap};">'
         f'{body}</div></div>'
     )
 
 
-def footer(note: str = "") -> str:
-    """Voice BAUM のワードマーク＋ピンクの罫線。"""
+def footer(note: str = "", tagline: str = "") -> str:
+    """Voice(#E8386A) BAUM(#17224B) のワードマーク＋右に注記。
+
+    README §2：`1.5cqw/800`、上罫 `1px #EDEFF3`。スライド下端 1.1cqw に絶対配置。
+    """
+    tag = (
+        f'<span style="font-size:{T.FS["note"]}cqw;color:{T.INK_FAINT};'
+        f'white-space:nowrap;">{escape(tagline)}</span>'
+        if tagline else ""
+    )
     return (
-        '<div style="flex:none;display:flex;align-items:center;gap:1cqw;'
-        'padding:.5cqw 1.8cqw 1cqw;">'
-        f'<span style="font-size:1.35cqw;font-weight:800;color:{T.INK};'
-        'letter-spacing:.01em;white-space:nowrap;">'
-        f'Voice <span style="color:{T.INK};">BAUM</span></span>'
-        f'<span style="flex:1;height:1.5px;background:{T.ACCENT};"></span>'
-        f'<span style="font-size:{T.FS["note"]}cqw;color:{T.SUB};white-space:nowrap;">'
-        f'{escape(note)}</span></div>'
+        f'<div style="position:absolute;left:{T.BODY_X}cqw;right:{T.BODY_X}cqw;'
+        f'bottom:{T.FOOTER_BOTTOM}cqw;display:flex;align-items:center;'
+        f'justify-content:space-between;gap:1cqw;border-top:1px solid {T.LINE};'
+        'padding-top:.9cqw;">'
+        '<span style="display:flex;align-items:baseline;gap:1cqw;min-width:0;">'
+        f'<span style="font-size:{T.FS["footer_mark"]}cqw;font-weight:800;'
+        f'white-space:nowrap;"><span style="color:{T.ACCENT};">Voice</span> '
+        f'<span style="color:{T.NAVY};">BAUM</span></span>{tag}</span>'
+        f'<span style="font-size:{T.FS["note"]}cqw;color:{T.INK_FAINT};'
+        f'text-align:right;">{escape(note)}</span></div>'
     )
 
 
@@ -105,6 +165,9 @@ def vertical_text(s: str, *, size: float, color: str | None = None,
     メトリクスが無く漢字が同じ位置に重なってしまう（headless Chromium で再現）。
     レポートはどの環境でも同じ見えでなければならないので、フォント任せにせず
     自前で積む。長音符など横倒しが必要な字だけ回転させる。
+
+    ※ X軸ラベルには使わない（README §3 が -90°/-62° の回転を指定しているので
+       tilted_axis_labels を使う）。散布図の軸見出しなど、真の縦組みだけに使う。
     """
     rotate = {"ー", "－", "-", "〜", "～", "―", "‐"}
     col = color or T.INK
@@ -120,6 +183,26 @@ def vertical_text(s: str, *, size: float, color: str | None = None,
     )
 
 
+def tilted_axis_labels(labels: list[str], xs: list[float], *, deg: float,
+                       size: float, color: str | None = None,
+                       prefix: list[str] | None = None) -> str:
+    """X軸の傾いたラベル（README §3：独自指標 -90°／19指標比較 -62°）。
+
+    右端を軸の目盛りに合わせて、そこを支点に反時計回りへ倒す。
+    """
+    col = color or T.INK
+    out = ""
+    for i, (t, px) in enumerate(zip(labels, xs)):
+        head = (f'{prefix[i]} ' if prefix and i < len(prefix) else "")
+        out += (
+            f'<div style="position:absolute;left:{px:.2f}%;top:0;'
+            f'transform:translateX(-100%) rotate({-abs(deg):.0f}deg);'
+            f'transform-origin:100% 0;font-size:{size}cqw;color:{col};'
+            f'white-space:nowrap;">{escape(head + t)}</div>'
+        )
+    return out
+
+
 def score_note(b: dict) -> str:
     """スコアが何を意味するかの注記。較正の有無で言い方を変える。
 
@@ -132,18 +215,21 @@ def score_note(b: dict) -> str:
     return "※スコアは5点満点。口コミ本文から算出した感情スコアです"
 
 
-def _photo(uri: str | None, ratio: str = "16/10", radius: str = ".7cqw") -> str:
+def _photo(uri: str | None, ratio: str = "16/10", radius: str = ".7cqw",
+           height: str = "") -> str:
+    """写真スロット。height を渡すとその高さで固定する（正典は 15cqw 固定）。"""
+    box = (f"height:{height};flex:none;" if height else f"aspect-ratio:{ratio};")
     if uri:
         return (
-            f'<div style="width:100%;aspect-ratio:{ratio};border-radius:{radius};'
-            f'overflow:hidden;background:#F1F0EA;">'
+            f'<div style="width:100%;{box}border-radius:{radius};'
+            f'overflow:hidden;background:{T.TABLE_HEAD};">'
             f'<img src="{uri}" style="width:100%;height:100%;object-fit:cover;'
             'display:block;" /></div>'
         )
     return (
-        f'<div style="width:100%;aspect-ratio:{ratio};border-radius:{radius};'
-        f'background:#F1F0EA;display:flex;align-items:center;justify-content:center;'
-        f'color:{T.SUB};font-size:.8cqw;">写真なし</div>'
+        f'<div style="width:100%;{box}border-radius:{radius};'
+        f'background:{T.TABLE_HEAD};display:flex;align-items:center;'
+        f'justify-content:center;color:{T.INK_FAINT};font-size:1cqw;">写真なし</div>'
     )
 
 
@@ -151,8 +237,8 @@ def _stars(rating: float | None, size: float = 1.7) -> str:
     """★を5つ。評価値を四捨五入した数だけ金色にする。"""
     n = int(round(rating)) if rating is not None else 0
     return "".join(
-        f'<span style="font-size:{size}cqw;color:{"#F5B324" if i < n else "#D9D9D9"};'
-        'letter-spacing:.06em;">★</span>'
+        f'<span style="font-size:{size}cqw;color:{T.STAR if i < n else T.STAR_EMPTY};'
+        'letter-spacing:.1em;">★</span>'
         for i in range(5)
     )
 
@@ -161,26 +247,31 @@ def _stars(rating: float | None, size: float = 1.7) -> str:
 # SLIDE 1「施設・基本情報」— docs/design/slide_p03.png
 # ═══════════════════════════════════════════════════════════════════════════
 def _profile_rows(b: dict) -> str:
+    """施設プロフィールの4行。正典は罫線で囲った箱＋アクセント色の記号。"""
     rows = [
-        ("📍", "住所", b.get("address")),
-        ("📅", "開業日", b.get("open_year")),
-        ("🏢", "延床", b.get("floor_area")),
-        ("👥", "マーケットカテゴリ", b.get("category")),
+        ("◉", "住所", b.get("address")),
+        ("▤", "開業日", b.get("open_year")),
+        ("▥", "延床", b.get("floor_area")),
+        ("◍", "マーケットカテゴリ", b.get("category")),
     ]
     out = ""
-    for icon, label, val in rows:
+    for i, (icon, label, val) in enumerate(rows):
         v = val if val and val != "—" else "—"
+        border = (f"border-bottom:1px solid {T.LINE};" if i < len(rows) - 1 else "")
         out += (
-            f'<div style="flex:1;display:flex;align-items:center;gap:.7cqw;'
-            f'border-bottom:1px solid {T.LINE};">'
-            f'<span style="flex:none;font-size:.95cqw;">{icon}</span>'
-            f'<span style="flex:none;font-size:.92cqw;font-weight:700;color:{T.INK};">'
-            f'{escape(label)}</span>'
-            f'<span style="margin-left:auto;font-size:.92cqw;color:{T.INK};'
-            'text-align:right;overflow:hidden;text-overflow:ellipsis;'
-            f'white-space:nowrap;max-width:14cqw;">{escape(str(v))}</span></div>'
+            f'<div style="flex:1;display:flex;align-items:center;gap:.8cqw;'
+            f'padding:0 1cqw;{border}">'
+            f'<span style="color:{T.ACCENT};font-size:1.1cqw;flex:none;">{icon}</span>'
+            f'<span style="font-size:1.1cqw;color:{T.INK_SUB};width:10cqw;flex:none;'
+            f'white-space:nowrap;">{escape(label)}</span>'
+            f'<span style="font-size:1.15cqw;color:{T.INK};font-weight:600;'
+            'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+            f'{escape(str(v))}</span></div>'
         )
-    return out
+    return (
+        f'<div style="border:1px solid {T.LINE};border-radius:.5cqw;flex:1;'
+        f'display:flex;flex-direction:column;min-height:0;">{out}</div>'
+    )
 
 
 def _review_summary_body(b: dict) -> str:
@@ -188,37 +279,33 @@ def _review_summary_body(b: dict) -> str:
     avg = b.get("avg_rating")
     avg_txt = f"{avg:.1f}" if avg is not None else "—"
     half = (
-        'flex:1;min-width:0;display:flex;flex-direction:column;'
-        'align-items:center;justify-content:center;gap:.5cqw;'
+        'display:flex;flex-direction:column;align-items:center;gap:.6cqw;'
     )
     return (
-        '<div style="flex:1;display:flex;align-items:stretch;">'
+        '<div style="flex:1;display:flex;align-items:center;'
+        'justify-content:space-around;padding:1cqw;">'
         # 総口コミ数
         f'<div style="{half}">'
-        f'<div style="font-size:1.05cqw;font-weight:700;color:{T.INK};">総口コミ数</div>'
-        f'<div style="display:flex;align-items:baseline;gap:.2cqw;">'
-        f'<span style="font-size:3.4cqw;font-weight:800;color:{T.ACCENT_DEEP};'
-        f'line-height:1;">{n_rev:,}</span>'
-        f'<span style="font-size:1.2cqw;font-weight:700;color:{T.ACCENT_DEEP};">件</span>'
-        '</div>'
-        f'<div style="margin-top:.4cqw;width:4.4cqw;height:2.6cqw;border-radius:1.3cqw;'
-        f'background:{T.HEAT_HIGH_W};display:flex;align-items:center;'
-        'justify-content:center;gap:.35cqw;">'
-        + "".join(
-            f'<span style="width:.42cqw;height:.42cqw;border-radius:50%;'
-            f'background:{T.ACCENT};"></span>' for _ in range(3)
-        )
-        + '</div></div>'
-        # 区切り
-        f'<div style="flex:none;width:1px;background:{T.LINE};margin:.6cqw 0;"></div>'
+        f'<span style="font-size:1.15cqw;color:{T.INK_SUB};font-weight:600;">'
+        '総口コミ数</span>'
+        '<span style="display:flex;align-items:baseline;gap:.2cqw;">'
+        f'<span style="font-size:{T.FS["big_number"]}cqw;font-weight:800;'
+        f'color:{T.ACCENT};line-height:1;">{n_rev:,}</span>'
+        f'<span style="font-size:1.3cqw;color:{T.INK_MUTE};font-weight:600;">件</span>'
+        '</span>'
+        f'<span style="width:4cqw;height:4cqw;border-radius:50%;'
+        f'background:{T.ACCENT_SOFT};display:flex;align-items:center;'
+        f'justify-content:center;color:{T.ACCENT};font-size:1.5cqw;">•••</span></div>'
         # 総合評価
         f'<div style="{half}">'
-        f'<div style="font-size:1.05cqw;font-weight:700;color:{T.INK};">総合評価</div>'
-        '<div style="display:flex;align-items:baseline;gap:.3cqw;">'
-        f'<span style="font-size:3.4cqw;font-weight:800;color:{T.NAVY};line-height:1;">'
-        f'{avg_txt}</span>'
-        f'<span style="font-size:1.2cqw;font-weight:700;color:{T.SUB};">/ 5</span></div>'
-        f'<div style="margin-top:.3cqw;">{_stars(avg)}</div>'
+        f'<span style="font-size:1.15cqw;color:{T.INK_SUB};font-weight:600;">'
+        '総合評価</span>'
+        '<span style="display:flex;align-items:baseline;gap:.3cqw;">'
+        f'<span style="font-size:{T.FS["big_number"]}cqw;font-weight:800;'
+        f'color:{T.ACCENT};line-height:1;">{avg_txt}</span>'
+        f'<span style="font-size:1.3cqw;color:{T.INK_MUTE};font-weight:600;">/ 5</span>'
+        '</span>'
+        f'<span>{_stars(avg, size=1.5)}</span>'
         '</div></div>'
     )
 
@@ -307,15 +394,17 @@ def _peer_cards_body(b: dict) -> str:
             f'color:{T.SUB};font-size:.9cqw;">比較対象施設が選択されていません</div>'
         )
     cards = "".join(
-        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:.4cqw;">'
-        + _photo(p.get("photo_data_uri"), ratio="16/9", radius=".55cqw")
-        + f'<div style="background:{T.HEAT_HIGH_W};border-radius:.45cqw;'
-        'padding:.42cqw .3cqw;text-align:center;font-size:.78cqw;font-weight:700;'
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:.5cqw;">'
+        '<div style="flex:1;min-height:0;display:flex;">'
+        + _photo(p.get("photo_data_uri"), height="100%", radius=".4cqw")
+        + '</div>'
+        + f'<div style="background:{T.ACCENT_SOFT};border-radius:.4cqw;'
+        'padding:.45cqw;text-align:center;font-size:1cqw;font-weight:600;'
         f'color:{T.INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
         f'{escape(p.get("name", ""))}</div></div>'
         for p in peers
     )
-    return f'<div style="flex:1;display:flex;gap:.85cqw;min-height:0;">{cards}</div>'
+    return f'<div style="flex:1;display:flex;gap:1cqw;min-height:0;">{cards}</div>'
 
 
 def slide1_facility_info(b: dict) -> str:
@@ -325,34 +414,34 @@ def slide1_facility_info(b: dict) -> str:
 
     left = panel(
         "施設プロフィール",
-        _photo(b.get("photo_data_uri"), ratio="16/11")
-        + '<div style="flex:1;min-height:0;margin-top:.9cqw;display:flex;'
-        f'flex-direction:column;">{_profile_rows(b)}</div>',
-        icon="🏢", style="width:29cqw;flex:none",
+        _photo(b.get("photo_data_uri"), height="15cqw", radius=".5cqw")
+        + _profile_rows(b),
+        icon="▦", style="width:31cqw;flex:none",
+        pad="1.2cqw", gap="1cqw",
     )
     summary = panel("口コミサマリー", _review_summary_body(b),
-                    icon="💬", style="width:24cqw;flex:none")
+                    icon="◗", style="width:24cqw;flex:none", pad="0")
     trend = panel("口コミ数の推移", _trend_body(b.get("review_trend") or []),
-                  icon="📈", style="flex:1")
+                  icon="◪", style="flex:1", pad=".9cqw 1.2cqw")
     n_peers = len(b.get("peer_display") or [])
     peers = panel(
         "比較対象施設（同カテゴリの類似施設）",
         _peer_cards_body(b),
-        icon="👥",
+        icon="◫",
         note=f"※同カテゴリの{n_peers}施設を比較対象として設定" if n_peers else "",
-        style="flex:none;height:15.5cqw",
+        style="flex:none;height:16.5cqw", pad="1cqw 1.2cqw",
     )
 
-    body = (
-        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;'
-        'padding:1.2cqw 1.8cqw .4cqw;">'
+    body = body_area(
         f'{left}'
-        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1.1cqw;">'
-        f'<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;">{summary}{trend}</div>'
-        f'{peers}</div></div>'
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1.4cqw;">'
+        f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">{summary}{trend}</div>'
+        f'{peers}</div>'
     )
-    return canvas(slide_header("1", "施設・基本情報", meta) + body
-                  + footer("※口コミ数・総合評価は収集した口コミの実測値です"))
+    return canvas(
+        slide_header("1", "施設・基本情報", meta), body,
+        footer("※口コミ数・総合評価は収集した口コミの実測値です"),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -384,14 +473,17 @@ def _wreath_svg() -> str:
             rad = math.radians(a * side)
             x = cx + r * math.sin(rad)
             y = cy - r * math.cos(rad)
+            # README §3「王冠アウトライン＋月桂樹 #F8C4D5」。葉は淡いピンクで、
+            # 中央の順位を食わないようにする。
             leaves += (
                 f'<ellipse cx="{x:.1f}" cy="{y:.1f}" rx="7.6" ry="3.1" '
-                f'fill="{T.ACCENT}" opacity=".9" '
+                f'fill="{T.LAUREL}" '
                 f'transform="rotate({a * side - 90:.0f} {x:.1f} {y:.1f})"/>'
             )
     crown = (
         f'<path d="M42 15 L45.5 9.5 L50 14 L54.5 9.5 L58 15 L56.5 19 L43.5 19 Z" '
-        f'fill="{T.ACCENT}"/>'
+        f'fill="none" stroke="{T.ACCENT}" stroke-width="1.6" stroke-linejoin="round" '
+        'vector-effect="non-scaling-stroke"/>'
         f'<circle cx="45.5" cy="8" r="1.5" fill="{T.ACCENT}"/>'
         f'<circle cx="54.5" cy="8" r="1.5" fill="{T.ACCENT}"/>'
         f'<circle cx="50" cy="12.5" r="1.5" fill="{T.ACCENT}"/>'
@@ -433,7 +525,7 @@ def _ranking_body(b: dict) -> str:
         f'<span style="font-size:1.05cqw;font-weight:700;color:{T.SUB};">/ 5点</span></div>'
         # 上位X%
         + (
-            f'<div style="margin-top:.3cqw;background:#F4F4F1;border-radius:.5cqw;'
+            f'<div style="margin-top:.3cqw;background:{T.TABLE_HEAD};border-radius:.5cqw;'
             f'padding:.5cqw 1.8cqw;font-size:1.05cqw;font-weight:800;color:{T.INK};">'
             f'{scope}上位{pct}%</div>'
             if pct is not None else ""
@@ -453,7 +545,7 @@ def _distribution_body(b: dict) -> str:
         )
     lo, hi = min(dist), max(dist)
     span = (hi - lo) or 1
-    n_bin = 11
+    n_bin = 13                              # README §3「13本ヒストグラム」
     bins = [0] * n_bin
     for v in dist:
         bins[min(n_bin - 1, int((v - lo) / span * n_bin))] += 1
@@ -495,50 +587,47 @@ def _distribution_body(b: dict) -> str:
         '<div style="flex:none;display:flex;justify-content:space-between;'
         f'font-size:.85cqw;font-weight:700;color:{T.INK};margin-top:.35cqw;">'
         '<span>低評価</span><span>高評価</span></div>'
-        # 総合評価
-        '<div style="flex:none;margin:.9cqw auto 0;background:#F4F4F1;'
-        'border-radius:.5cqw;padding:.5cqw 2.2cqw;display:flex;align-items:baseline;'
-        'gap:.6cqw;">'
-        f'<span style="font-size:1.05cqw;font-weight:700;color:{T.INK};">総合評価</span>'
-        f'<span style="font-size:1.5cqw;font-weight:800;color:{T.ACCENT_DEEP};">'
-        f'{_pt5(me)}</span></div>'
+        # 総合評価（正典は白地＋カード罫線の1行ボックス）
+        f'<div style="flex:none;margin-top:.9cqw;border:1px solid {T.CARD_LINE};'
+        'border-radius:.5cqw;padding:.7cqw;text-align:center;font-size:1.25cqw;'
+        f'font-weight:700;color:{T.NAVY};">'
+        f'総合評価 <span style="color:{T.ACCENT};">{_pt5(me)}</span></div>'
         '</div>'
     )
 
 
 def _top3_card(title: str, rows: list, accent: str, icon: str) -> str:
     """強みTOP3 / 弱みTOP3 のカード。rows = [(指標名, 自施設100, 市場平均100), ...]"""
+    rule = T.ACCENT_BORDER if accent == T.ACCENT else T.BLUE_BORDER
     items = ""
     for i, (name, mine, base) in enumerate(rows[:3], 1):
         items += (
-            f'<div style="flex:1;display:flex;align-items:center;gap:.7cqw;'
-            + (f'border-bottom:1px dashed {T.LINE};' if i < min(3, len(rows)) else "")
-            + '">'
-            f'<span style="flex:none;width:1.5cqw;height:1.5cqw;border-radius:50%;'
-            f'background:{accent};color:#fff;font-size:.8cqw;font-weight:800;'
-            'display:flex;align-items:center;justify-content:center;">'
-            f'{i}</span>'
-            f'<span style="flex:1;min-width:0;font-size:1cqw;font-weight:700;'
-            f'color:{T.INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+            f'<div style="flex:1;display:flex;align-items:center;gap:.8cqw;'
+            f'border-top:1px solid {rule};min-height:0;">'
+            f'<span style="width:1.8cqw;height:1.8cqw;flex:none;border-radius:50%;'
+            f'background:{accent};color:#fff;display:flex;align-items:center;'
+            f'justify-content:center;font-size:1cqw;font-weight:700;">{i}</span>'
+            f'<span style="flex:1;min-width:0;font-size:1.25cqw;font-weight:600;'
+            f'color:{T.INK};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
             f'{escape(name)}</span>'
-            '<span style="flex:none;text-align:right;">'
-            f'<div style="font-size:1.55cqw;font-weight:800;color:{accent};'
-            f'line-height:1.05;">{_pt5(mine)}</div>'
-            f'<div style="font-size:.68cqw;color:{T.SUB};white-space:nowrap;">'
-            f'市場平均 {_pt5(base)}</div></span></div>'
+            '<span style="text-align:right;flex:none;">'
+            f'<span style="display:block;font-size:1.6cqw;font-weight:800;'
+            f'color:{accent};line-height:1.1;">{_pt5(mine)}</span>'
+            f'<span style="display:block;font-size:.9cqw;color:{T.MUTED};'
+            f'white-space:nowrap;">市場平均 {_pt5(base)}</span></span></div>'
         )
     if not rows:
-        items = f'<div style="color:{T.SUB};font-size:.85cqw;">該当なし</div>'
+        items = f'<div style="color:{T.SUB};font-size:.95cqw;">該当なし</div>'
     return (
-        f'<div style="flex:1;min-height:0;border:1.5px solid {accent};'
-        'border-radius:1cqw;background:#fff;padding:.75cqw 1cqw;display:flex;'
-        'flex-direction:column;">'
-        '<div style="flex:none;display:flex;align-items:center;gap:.55cqw;'
-        'margin-bottom:.35cqw;">'
-        f'<span style="width:1.9cqw;height:1.9cqw;border-radius:50%;background:{accent};'
+        f'<div style="flex:1;border:1.5px solid {accent};border-radius:{T.CARD_RADIUS};'
+        'padding:1cqw 1.2cqw;display:flex;flex-direction:column;min-height:0;'
+        'background:#fff;">'
+        '<div style="display:flex;align-items:center;gap:.7cqw;margin-bottom:.6cqw;'
+        'flex:none;">'
+        f'<span style="width:2.2cqw;height:2.2cqw;border-radius:50%;background:{accent};'
         'color:#fff;display:flex;align-items:center;justify-content:center;'
-        f'font-size:1cqw;">{icon}</span>'
-        f'<span style="font-size:1.25cqw;font-weight:800;color:{accent};">'
+        f'font-size:1.1cqw;">{icon}</span>'
+        f'<span style="font-size:1.6cqw;font-weight:800;color:{accent};">'
         f'{escape(title)}</span></div>'
         f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;">'
         f'{items}</div></div>'
@@ -554,22 +643,20 @@ def slide2_market_position(b: dict) -> str:
     st = [(t, mine, base) for t, mine, base, _d in (b.get("strengths") or [])]
     wk = [(t, mine, base) for t, mine, base, _d in (b.get("weaknesses") or [])]
 
-    left = panel("総合評価ランキング", _ranking_body(b), style="width:26cqw;flex:none")
-    mid = panel(f"同業施設内の総合評価分布", _distribution_body(b), style="flex:1")
+    left = panel("総合評価ランキング", _ranking_body(b), style="width:29cqw;flex:none")
+    mid = panel("同業施設内の総合評価分布", _distribution_body(b), style="width:27cqw;flex:none")
     right = (
-        '<div style="width:30cqw;flex:none;display:flex;flex-direction:column;'
-        'gap:1cqw;min-height:0;">'
-        + _top3_card("強み TOP3", st, T.ACCENT_DEEP, "👍")
-        + _top3_card("弱み TOP3", wk, "#1B4DA8", "👎")
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
+        'gap:1.2cqw;min-height:0;">'
+        + _top3_card("強み TOP3", st, T.ACCENT, "▲")
+        + _top3_card("弱み TOP3", wk, T.BLUE, "▼")
         + '</div>'
     )
-    body = (
-        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;'
-        'padding:1.2cqw 1.8cqw .4cqw;">'
-        f'{left}{mid}{right}</div>'
+    return canvas(
+        slide_header("2", f"{scope}ポジション", meta),
+        body_area(f'{left}{mid}{right}'),
+        footer(score_note(b)),
     )
-    return canvas(slide_header("2", f"{scope}ポジション", meta) + body
-                  + footer(score_note(b)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -610,7 +697,7 @@ def _indicator_chart(b: dict) -> str:
     series = ""
     for label, src, col, is_avg in (
         ("当施設", mine, T.ACCENT, False),
-        ("同業平均", avg, "#4A7DC4", True),
+        ("同業平均", avg, T.BLUE, True),
     ):
         pts = " ".join(f"{x(i):.2f},{y(src.get(t, 50.0)):.2f}" for i, t in enumerate(topics))
         series += (
@@ -630,25 +717,22 @@ def _indicator_chart(b: dict) -> str:
         f'{g}</div>'
         for g in (1, 2, 3, 4, 5)
     )
-    # x軸ラベルは PDF と同じく縦書き（丸番号＋指標名）
-    # 縦書きは flex アイテムにすると inline-size が潰れるので、素のブロックに
-    # 明示的な height（＝縦書きでの行の長さ）を与える。
-    xlabs = "".join(
-        f'<div style="position:absolute;left:{x(i):.2f}%;top:0;'
-        'transform:translateX(-50%);text-align:center;">'
-        f'<div style="font-size:.62cqw;color:{T.INK};line-height:1.2;'
-        f'margin-bottom:.15cqw;">{_CIRCLED[i]}</div>'
-        + vertical_text(t, size=.55) + '</div>'
-        for i, t in enumerate(topics)
+    # README §3「独自分析指標 … X軸ラベルは -90°」
+    xlabs = tilted_axis_labels(
+        topics, [x(i) for i in range(n)], deg=90, size=.8,
+        prefix=[_CIRCLED[i] if i < len(_CIRCLED) else str(i + 1) for i in range(n)],
     )
+    # 凡例は正典どおり「色の短い横棒＋名前」（線種の記号は使わない）
     legend = (
-        '<div style="flex:none;display:flex;align-items:center;gap:1.2cqw;'
-        'justify-content:flex-end;margin-bottom:.3cqw;">'
-        f'<span style="font-size:.68cqw;color:{T.SUB};margin-right:auto;">評価スコア（点）</span>'
-        f'<span style="font-size:.72cqw;color:{T.INK};">'
-        f'<span style="color:{T.ACCENT};font-weight:800;">─●─</span> 当施設</span>'
-        f'<span style="font-size:.72cqw;color:{T.INK};">'
-        '<span style="color:#4A7DC4;font-weight:800;">╌●╌</span> 同業平均</span></div>'
+        '<div style="flex:none;display:flex;align-items:center;gap:1.4cqw;'
+        f'font-size:1cqw;color:{T.INK_SUB};margin-bottom:.4cqw;">'
+        '<span>評価スコア（点）</span>'
+        '<span style="display:flex;align-items:center;gap:.4cqw;">'
+        f'<span style="width:1.6cqw;height:.28cqw;background:{T.ACCENT};'
+        'display:inline-block;"></span>当施設</span>'
+        '<span style="display:flex;align-items:center;gap:.4cqw;">'
+        f'<span style="width:1.6cqw;height:.28cqw;background:{T.BLUE};'
+        'display:inline-block;"></span>同業平均</span></div>'
     )
     return (
         legend
@@ -657,10 +741,8 @@ def _indicator_chart(b: dict) -> str:
         '<svg viewBox="0 0 100 100" preserveAspectRatio="none" '
         'style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;">'
         f'{grid}{series}</svg></div>'
-        f'<div style="flex:none;position:relative;height:11cqw;margin-left:2.4cqw;'
+        f'<div style="flex:none;position:relative;height:9cqw;margin-left:2.4cqw;'
         f'margin-top:.35cqw;">{xlabs}</div>'
-        f'<div style="flex:none;font-size:{T.FS["note"]}cqw;color:{T.SUB};'
-        'margin-top:.2cqw;">※ 各指標は1〜5点で評価</div>'
     )
 
 
@@ -668,44 +750,43 @@ def _indicator_table(b: dict) -> str:
     """指標（代表例）の表。強みTOP3＋弱みTOP3＋総合評価（PDFと同じ選び方）。"""
     rows = [(t, mine, base) for t, mine, base, _ in (b.get("strengths") or [])[:3]]
     rows += [(t, mine, base) for t, mine, base, _ in (b.get("weaknesses") or [])[:3]]
-    cell = "padding:.45cqw .5cqw;font-size:.78cqw;text-align:center;"
+    num = "width:4.4cqw;flex:none;padding:.55cqw;text-align:center;"
     head = (
-        '<div style="display:flex;">'
-        f'<div style="flex:1.7;{cell}text-align:left;background:#F4F3EE;'
-        f'font-weight:700;color:{T.SUB};">指標（代表例）</div>'
-        f'<div style="flex:1;{cell}background:{T.ACCENT};color:#fff;font-weight:800;">'
-        '当施設</div>'
-        f'<div style="flex:1;{cell}background:{T.NAVY};color:#fff;font-weight:800;">'
-        '同業平均</div></div>'
+        f'<div style="display:flex;background:{T.TABLE_HEAD};font-size:.95cqw;'
+        f'font-weight:700;color:{T.INK_SUB};flex:none;">'
+        '<div style="flex:1.5;padding:.55cqw .6cqw;">指標（代表例）</div>'
+        f'<div style="{num}background:{T.ACCENT};color:#fff;">当施設</div>'
+        f'<div style="{num}background:{T.TABLE_AVG};color:#fff;">同業平均</div></div>'
     )
     body = "".join(
         f'<div style="flex:1;display:flex;align-items:center;'
-        f'border-bottom:1px solid {T.LINE};">'
-        f'<div style="flex:1.7;{cell}text-align:left;color:{T.INK};overflow:hidden;'
-        f'text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</div>'
-        f'<div style="flex:1;{cell}color:{T.ACCENT_DEEP};font-weight:800;">'
-        f'{_pt5(m)}</div>'
-        f'<div style="flex:1;{cell}color:{T.INK};">{_pt5(a)}</div></div>'
+        f'border-top:1px solid {T.LINE};min-height:0;">'
+        f'<div style="flex:1.5;padding:0 .6cqw;font-size:1cqw;color:{T.INK};'
+        'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        f'{escape(t)}</div>'
+        f'<div style="width:4.4cqw;flex:none;text-align:center;font-size:1.05cqw;'
+        f'font-weight:700;color:{T.ACCENT};">{_pt5(m)}</div>'
+        f'<div style="width:4.4cqw;flex:none;text-align:center;font-size:1.05cqw;'
+        f'color:{T.INK_MUTE};">{_pt5(a)}</div></div>'
         for t, m, a in rows
     )
     tot_mine = b.get("overall_sentiment")
     _dist = b.get("ranking_dist") or []
     tot_avg = sum(_dist) / len(_dist) if _dist else None
     total = (
-        '<div style="flex:1;display:flex;align-items:center;border-top:1.5px solid '
-        f'{T.INK};">'
-        f'<div style="flex:1.7;{cell}text-align:left;font-weight:800;color:{T.INK};">'
-        '総合評価</div>'
-        f'<div style="flex:1;{cell}color:{T.ACCENT_DEEP};font-weight:800;">'
-        f'{_pt5(tot_mine)}</div>'
-        f'<div style="flex:1;{cell}font-weight:700;color:{T.INK};">'
-        f'{_pt5(tot_avg)}</div></div>'
+        f'<div style="flex:1;display:flex;align-items:center;min-height:0;'
+        f'border-top:1.5px solid {T.NAVY};">'
+        f'<div style="flex:1.5;padding:0 .6cqw;font-size:1cqw;font-weight:700;'
+        f'color:{T.INK};">総合評価</div>'
+        f'<div style="width:4.4cqw;flex:none;text-align:center;font-size:1.05cqw;'
+        f'font-weight:700;color:{T.ACCENT};">{_pt5(tot_mine)}</div>'
+        f'<div style="width:4.4cqw;flex:none;text-align:center;font-size:1.05cqw;'
+        f'font-weight:700;color:{T.INK_MUTE};">{_pt5(tot_avg)}</div></div>'
     )
     return (
-        f'<div style="width:19cqw;flex:none;display:flex;flex-direction:column;'
-        f'border:1px solid {T.CARD_LINE};border-radius:.6cqw;overflow:hidden;">'
-        f'{head}<div style="flex:1;display:flex;flex-direction:column;">'
-        f'{body}{total}</div></div>'
+        f'<div style="width:17cqw;flex:none;display:flex;flex-direction:column;'
+        f'border:1px solid {T.CARD_LINE};border-radius:.5cqw;overflow:hidden;">'
+        f'{head}{body}{total}</div>'
     )
 
 
@@ -745,7 +826,7 @@ def experience_map(b: dict, *, names: list[str] | None = None,
             dots += (f'<circle cx="{px:.2f}" cy="{py:.2f}" r="{rr * 1.7:.2f}" '
                      f'fill="{T.ACCENT}"/>')
         else:
-            col = T.SERIES_PEERS[i % len(T.SERIES_PEERS)] if label_points else "#3E76C4"
+            col = T.SERIES_PEERS[i % len(T.SERIES_PEERS)] if label_points else T.BLUE
             dots += (f'<circle cx="{px:.2f}" cy="{py:.2f}" r="{rr:.2f}" fill="{col}" '
                      f'opacity="{0.85 if label_points else 0.55}"/>')
         if is_me or label_points:
@@ -826,90 +907,102 @@ def _outcome_boxes(b: dict) -> str:
     )
 
 
-def market_trend(b: dict, note: str) -> str:
-    """マーケット傾向 A（評価されやすい）／B（課題になりやすい）。"""
+def market_trend(b: dict, note: str, *, large: bool = False) -> str:
+    """マーケット傾向 A（評価されやすい）／B（課題になりやすい）。
+
+    large=True は SLIDE 3 詳細の広いパネル用。項目を角丸タイル＋大きめの字にする。
+    """
     good = b.get("market_trend_good") or []
     bad = b.get("market_trend_bad") or []
+    fs_item = 1.15 if large else 1.0
+    fs_head = 1.05 if large else .95
 
-    def col(letter: str, title: str, items: list, accent: str, bg: str) -> str:
+    def col(letter: str, title: str, items: list, accent: str, bg: str,
+            border: str, arrow: str) -> str:
+        if large:
+            mark = (f'<span style="width:2.4cqw;height:2.4cqw;flex:none;'
+                    f'border:1px solid {border};border-radius:.4cqw;color:{accent};'
+                    'display:flex;align-items:center;justify-content:center;'
+                    'font-size:1.1cqw;">◈</span>')
+        else:
+            mark = f'<span style="color:{accent};font-size:1cqw;flex:none;">◈</span>'
         rows = "".join(
-            '<div style="flex:none;height:2.1cqw;display:flex;align-items:center;'
-            'gap:.5cqw;font-size:.78cqw;min-width:0;">'
-            f'<span style="flex:none;width:1.2cqw;height:1.2cqw;border-radius:50%;'
-            f'border:1.2px solid {accent};"></span>'
-            f'<span style="flex:1;min-width:0;color:{T.INK};overflow:hidden;'
-            f'text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</span></div>'
+            f'<div style="flex:1;display:flex;align-items:center;'
+            f'gap:{".8" if large else ".6"}cqw;min-height:0;min-width:0;">'
+            f'{mark}'
+            f'<span style="flex:1;min-width:0;font-size:{fs_item}cqw;color:{T.INK};'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+            f'{escape(t)}</span></div>'
             for t in items[:5]
         )
+        if large:
+            head = (
+                f'<div style="background:{bg};border-radius:.5cqw;padding:.6cqw .8cqw;'
+                'display:flex;align-items:center;gap:.6cqw;flex:none;">'
+                f'<span style="width:1.9cqw;height:1.9cqw;border-radius:50%;'
+                f'background:{accent};color:#fff;display:flex;align-items:center;'
+                f'justify-content:center;font-size:1cqw;flex:none;">{arrow}</span>'
+                f'<span style="font-size:{fs_head}cqw;font-weight:700;color:{accent};'
+                f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+                f'{escape(title)}</span></div>'
+            )
+        else:
+            head = (
+                f'<div style="background:{bg};border-radius:.4cqw;'
+                f'padding:.45cqw .7cqw;font-size:{fs_head}cqw;font-weight:700;'
+                f'color:{accent};flex:none;overflow:hidden;text-overflow:ellipsis;'
+                f'white-space:nowrap;">{letter}. {escape(title)}</div>'
+            )
         return (
-            '<div style="flex:1;min-width:0;display:flex;flex-direction:column;">'
-            f'<div style="flex:none;background:{bg};border-radius:.5cqw;'
-            'padding:.32cqw .6cqw;margin-bottom:.35cqw;font-size:.74cqw;'
-            f'font-weight:800;color:{accent};overflow:hidden;text-overflow:ellipsis;'
-            f'white-space:nowrap;"><b>{letter}.</b> {escape(title)}</div>'
-            f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;">'
-            f'{rows}</div></div>'
+            '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
+            f'gap:{".6" if large else ".4"}cqw;">{head}{rows}</div>'
         )
 
     return (
-        '<div style="flex:1;display:flex;gap:.9cqw;min-height:0;">'
-        + col("A", "この市場で評価されやすい指標", good, T.ACCENT_DEEP, T.HEAT_HIGH_W)
-        + col("B", "この市場で課題になりやすい指標", bad, "#1B4DA8", "#EDF2FC")
+        f'<div style="flex:1;display:flex;gap:{"1.2" if large else ".9"}cqw;'
+        'min-height:0;">'
+        + col("A", "この市場で評価されやすい指標", good, T.ACCENT,
+              T.ACCENT_SOFT, T.ACCENT_BORDER, "▲")
+        + col("B", "この市場で課題になりやすい指標", bad, T.BLUE,
+              T.BLUE_SOFT, T.BLUE_BORDER, "▼")
         + '</div>'
-        f'<div style="flex:none;font-size:{T.FS["note"]}cqw;color:{T.SUB};'
-        f'text-align:right;margin-top:.3cqw;">{escape(note)}</div>'
-    )
-
-
-def _planner_badge() -> str:
-    return (
-        f'<div style="margin-left:auto;display:flex;align-items:center;'
-        'padding-right:1.8cqw;"><span style="background:{};color:#fff;'
-        'border-radius:1.2cqw;padding:.3cqw 1.2cqw;font-size:.85cqw;'
-        'font-weight:800;white-space:nowrap;">プランナー起点</span></div>'.format(T.ACCENT)
+        f'<div style="flex:none;font-size:{T.FS["note"]}cqw;color:{T.INK_FAINT};'
+        f'text-align:right;padding-top:.5cqw;">{escape(note)}</div>'
     )
 
 
 def slide2_market_detail(b: dict) -> str:
-    """SLIDE 2 詳細「市場内ポジション（詳細）」。docs/design/slide_p05.png。"""
+    """SLIDE 2 詳細「市場内ポジション（詳細）」。"""
     scope = b.get("scope_label", "市場内")
     n_fac = b.get("total_fac") or 0
 
-    header = (
-        f'<div style="flex:none;display:flex;align-items:stretch;background:{T.NAVY};'
-        'height:7.4cqw;">'
-        f'<div style="flex:none;width:6.6cqw;background:{T.ACCENT};color:#fff;'
-        'display:flex;align-items:center;justify-content:center;'
-        'font-size:3.1cqw;font-weight:800;">2</div>'
-        f'<div style="display:flex;align-items:center;padding-left:2.2cqw;color:#fff;'
-        f'font-size:{T.FS["slide_title"]}cqw;font-weight:800;">'
-        f'{escape(scope)}ポジション'
-        f'<span style="font-size:{T.FS["slide_title"] * 0.62:.2f}cqw;font-weight:700;">'
-        '（詳細）</span></div>'
-        + _planner_badge() + '</div>'
-    )
     left = panel(
         "乃村独自の口コミ分析指標",
         '<div style="flex:1;display:flex;gap:1cqw;min-height:0;">'
         '<div style="flex:1;min-width:0;display:flex;flex-direction:column;">'
         f'{_indicator_chart(b)}</div>'
-        f'{_indicator_table(b)}</div>',
-        style="flex:1.35",
+        f'{_indicator_table(b)}</div>'
+        f'<div style="font-size:{T.FS["note"]}cqw;color:{T.INK_FAINT};'
+        'padding:0 1cqw 1cqw;flex:none;">※ 各指標は1〜5点で評価</div>',
+        style="flex:1", pad="1cqw 1cqw 0",
     )
     right = (
-        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1cqw;">'
+        '<div style="width:37cqw;flex:none;display:flex;flex-direction:column;'
+        'gap:1.2cqw;min-width:0;">'
         + panel("総合体験評価マッピング", experience_map(b),
-                note=f"※ マッピングは全{n_fac}施設を表示", style="flex:1.15")
+                note=f"※ マッピングは全{n_fac}施設を表示", style="flex:1",
+                pad=".9cqw")
         + panel("マーケット傾向",
                 market_trend(b, "※ 市場傾向は同カテゴリ施設の口コミ分析から算出"),
-                style="flex:1")
+                style="height:19cqw;flex:none", pad=".9cqw")
         + '</div>'
     )
-    body = (
-        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;'
-        f'padding:1.2cqw 1.8cqw .4cqw;">{left}{right}</div>'
+    return canvas(
+        slide_header("2", f"{scope}ポジション", sub_title="詳細",
+                     right=_pill("プランナー起点")),
+        body_area(f'{left}{right}'),
+        footer(score_note(b)),
     )
-    return canvas(header + body + footer(score_note(b)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -970,69 +1063,65 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
         f'{g}.0</div>'
         for g in (1, 2, 3, 4, 5)
     )
-    xlabs = "".join(
-        f'<div style="position:absolute;left:{x(i):.2f}%;top:0;'
-        'transform:translateX(-50%);">' + vertical_text(t, size=.5) + '</div>'
-        for i, t in enumerate(topics)
-    )
+    # README §3「19指標比較 … X軸 -62°」
+    xlabs = tilted_axis_labels(topics, [x(i) for i in range(n)], deg=62, size=.75)
     legend = "".join(
-        f'<span style="font-size:.68cqw;color:{T.INK};white-space:nowrap;">'
-        f'<span style="color:{col};font-weight:800;">'
-        f'{"╌╌" if lb.endswith("平均") else "─○─"}</span> {escape(lb)}</span>'
+        '<span style="display:flex;align-items:center;gap:.35cqw;">'
+        f'<span style="width:1.3cqw;height:.25cqw;background:{col};'
+        f'display:inline-block;"></span>{escape(lb)}</span>'
         for lb, _nm, _sc, col in cols
     )
     return (
-        '<div style="flex:none;display:flex;gap:.9cqw;flex-wrap:wrap;'
-        f'margin-bottom:.35cqw;">{legend}</div>'
+        '<div style="display:flex;gap:1cqw;flex-wrap:wrap;font-size:.9cqw;'
+        f'color:{T.INK_SUB};margin-bottom:.3cqw;flex:none;">{legend}</div>'
         '<div style="flex:1;position:relative;min-height:0;margin-left:2.6cqw;">'
         f'{ylabs}'
         '<svg viewBox="0 0 100 100" preserveAspectRatio="none" '
         'style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;">'
         f'{grid}{series}</svg></div>'
-        '<div style="flex:none;position:relative;height:8.6cqw;margin-left:2.6cqw;'
+        '<div style="flex:none;position:relative;height:7.6cqw;margin-left:2.6cqw;'
         f'margin-top:.35cqw;">{xlabs}</div>'
     )
 
 
 def _compare_heatmap(b: dict, topics: list[str]) -> str:
-    """施設別スコアヒートマップ。行=19指標 × 列=自施設/競合A〜D/同業平均。"""
+    """施設別スコアヒートマップ。行=19指標 × 列=自施設/競合A〜E/平均。
+
+    セルの地色は README §2 の5段階（4.2+ / 3.8+ / 3.4+ / 3.0+ / 〜2.9）。
+    """
     cols = compare_columns(b)
-    vals = [sc.get(t, 50.0) for _l, _n, sc, _c in cols for t in topics]
-    lo, hi = min(vals), max(vals)
-    mid = (lo + hi) / 2
-    half = max(hi - mid, mid - lo) or 1
-
-    def bg(v: float) -> str:
-        r = (v - mid) / half
-        if r >= 0:
-            return f"rgba(233,64,107,{0.05 + 0.30 * min(r, 1):.3f})"
-        return f"rgba(91,155,213,{0.05 + 0.30 * min(-r, 1):.3f})"
-
-    c = "padding:.24cqw .1cqw;text-align:center;font-size:.64cqw;"
     head = (
-        f'<div style="display:flex;background:#F4F3EE;font-weight:800;color:{T.SUB};">'
-        f'<div style="width:7.2cqw;flex:none;{c}text-align:left;padding-left:.4cqw;">'
-        '指標</div>'
+        f'<div style="display:flex;background:{T.TABLE_HEAD};font-size:.9cqw;'
+        f'font-weight:700;color:{T.INK_SUB};flex:none;'
+        f'border-bottom:1px solid {T.CARD_LINE};">'
+        '<div style="flex:2;padding:.5cqw .6cqw;">指標</div>'
         + "".join(
-            f'<div style="flex:1;{c}color:{col};">{escape(lb)}</div>'
-            for lb, _n, _s, col in cols
+            '<div style="flex:1;padding:.5cqw .2cqw;text-align:center;'
+            f'color:{T.ACCENT if i == 0 else T.INK_SUB};white-space:nowrap;">'
+            f'{escape(lb)}</div>'
+            for i, (lb, _n, _s, _col) in enumerate(cols)
         )
         + '</div>'
     )
     rows = "".join(
-        f'<div style="flex:1;display:flex;border-top:1px solid {T.LINE};">'
-        f'<div style="width:7.2cqw;flex:none;{c}text-align:left;padding-left:.4cqw;'
-        f'color:{T.INK};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        f'<div style="flex:1;display:flex;align-items:center;min-height:0;'
+        f'border-bottom:1px solid {T.TABLE_HEAD};">'
+        f'<div style="flex:2;padding:0 .6cqw;font-size:.88cqw;color:{T.INK};'
+        'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
         f'{escape(t)}</div>'
         + "".join(
-            f'<div style="flex:1;{c}background:{bg(sc.get(t, 50.0))};'
-            f'color:{T.INK};font-weight:700;">{_pt5(sc.get(t, 50.0))}</div>'
-            for _l, _n, sc, _c in cols
+            '<div style="flex:1;align-self:stretch;display:flex;align-items:center;'
+            'justify-content:center;font-size:.9cqw;'
+            f'background:{T.heat_bg(_score5(sc.get(t, 50.0)), is_self=i == 0)};'
+            f'color:{T.ACCENT if i == 0 else T.INK_SUB};'
+            f'font-weight:{800 if i == 0 else 500};">{_pt5(sc.get(t, 50.0))}</div>'
+            for i, (_l, _n, sc, _c) in enumerate(cols)
         )
         + '</div>'
         for t in topics
     )
-    return f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;">{head}{rows}</div>'
+    return ('<div style="flex:1;min-height:0;display:flex;flex-direction:column;">'
+            f'{head}{rows}</div>')
 
 
 def _vs_peer_lists(b: dict, topics: list[str]) -> tuple[list, list]:
@@ -1055,17 +1144,17 @@ def _vs_peer_lists(b: dict, topics: list[str]) -> tuple[list, list]:
 
 def _diff_grid(rows: list, color: str, cap: int) -> str:
     if not rows:
-        return f'<div style="color:{T.SUB};font-size:.8cqw;">該当なし</div>'
+        return f'<div style="color:{T.SUB};font-size:1cqw;">該当なし</div>'
+    mark = "●" if color == T.ACCENT else "◆"
     return (
         '<div style="flex:1;display:grid;grid-template-columns:1fr 1fr;'
-        'column-gap:1.4cqw;align-content:space-around;">'
+        'gap:.2cqw 1.4cqw;align-content:center;">'
         + "".join(
-            '<div style="display:flex;align-items:center;gap:.5cqw;font-size:.82cqw;">'
-            f'<span style="flex:none;width:.44cqw;height:.44cqw;border-radius:50%;'
-            f'background:{color};"></span>'
-            f'<span style="flex:1;min-width:0;color:{T.INK};overflow:hidden;'
+            '<div style="display:flex;align-items:center;gap:.5cqw;min-width:0;">'
+            f'<span style="color:{color};font-size:.9cqw;flex:none;">{mark}</span>'
+            f'<span style="flex:1;font-size:1cqw;color:{T.INK};overflow:hidden;'
             f'text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</span>'
-            f'<span style="flex:none;color:{color};font-weight:700;">'
+            f'<span style="font-size:1cqw;font-weight:700;color:{color};flex:none;">'
             f'（{d:+.2f}）</span></div>'
             for t, d in rows[:cap]
         )
@@ -1089,54 +1178,65 @@ def slide3_competitor_compare(b: dict) -> str:
     topics = _driver_topics(b)
     if not topics:
         return canvas(
-            _compare_header(b, False)
-            + f'<div style="flex:1;display:flex;align-items:center;'
-            f'justify-content:center;color:{T.SUB};font-size:1.1cqw;">'
-            '比較できるデータがありません。</div>' + footer()
+            _compare_header(b, False),
+            body_area(
+                '<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.SUB};font-size:1.1cqw;">'
+                '比較できるデータがありません。</div>'
+            ),
+            footer(),
         )
     win, lose = _vs_peer_lists(b, topics)
-    body = (
-        f'<div style="flex:none;font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
-        f'color:{T.INK};padding:.9cqw 1.8cqw .6cqw;">'
+    body = body_area(
+        f'<div style="font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
+        f'color:{T.INK};flex:none;">'
         '2〜5施設を横並びで比較し、自施設の立ち位置を把握します。</div>'
-        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;padding:0 1.8cqw;">'
-        + panel("主要19指標の比較（5点満点）", _compare_chart(b, topics))
-        + panel("施設別スコアヒートマップ（5点満点）", _compare_heatmap(b, topics))
+        '<div style="flex:1;display:flex;gap:1.2cqw;min-height:0;">'
+        + panel("主要19指標の比較（5点満点）", _compare_chart(b, topics),
+                head_size=1.3, pad=".9cqw")
+        + panel("施設別スコアヒートマップ（5点満点）", _compare_heatmap(b, topics),
+                style="width:50cqw;flex:none", head_size=1.3, pad="0")
         + '</div>'
-        '<div style="flex:none;display:flex;gap:1.1cqw;height:8.6cqw;'
-        'padding:.9cqw 1.8cqw 0;">'
-        + panel("自施設だけの強み", _diff_grid(win, T.ACCENT_DEEP, 6))
-        + panel("競合に負けている項目", _diff_grid(lose, T.NAVY, 4))
-        + '</div>'
+        '<div style="height:9.4cqw;flex:none;display:flex;gap:1.2cqw;">'
+        + panel("自施設だけの強み", _diff_grid(win, T.ACCENT, 6),
+                head_size=1.25, pad=".6cqw 1.2cqw")
+        + panel("競合に負けている項目", _diff_grid(lose, T.BLUE, 4),
+                head_size=1.25, pad=".6cqw 1.2cqw")
+        + '</div>',
+        top=T.BODY_TOP_TIGHT, column=True, gap=.9,
     )
-    return canvas(_compare_header(b, False) + body + footer(score_note(b)))
+    return canvas(_compare_header(b, False), body, footer(score_note(b)))
 
 
 def slide3_competitor_detail(b: dict) -> str:
-    """SLIDE 3「指定競合との比較（詳細）」。docs/design/slide_p07.png。"""
+    """SLIDE 3「指定競合との比較（詳細）」。"""
     peers = list((b.get("peer_topic_scores") or {}))[: len(T.SERIES_PEERS)]
-    body = (
-        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;'
-        'padding:1.2cqw 1.8cqw .4cqw;">'
-        + panel("総合体験評価マッピング",
-                experience_map(b, names=peers, label_points=True), style="flex:1")
+    body = body_area(
+        panel("総合体験評価マッピング",
+              experience_map(b, names=peers, label_points=True),
+              style="flex:1", head_size=1.45, pad="1.2cqw")
         + panel("指定競合の傾向",
-                market_trend(b, "※ 市場傾向は同カテゴリ施設の口コミ分析から算出"),
-                style="flex:1")
-        + '</div>'
+                market_trend(b, "※ 市場傾向は同カテゴリ施設の口コミ分析から算出",
+                             large=True),
+                style="flex:1", head_size=1.45, pad="1.2cqw")
     )
-    return canvas(_compare_header(b, True) + body + footer(score_note(b)))
+    return canvas(_compare_header(b, True), body, footer(score_note(b)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SLIDE 4「時間軸分析」— docs/design/slide_p08.png
 # ═══════════════════════════════════════════════════════════════════════════
-def _pill(title: str) -> str:
-    """紺の角丸タグ見出し（SLIDE 4 のブロック見出し）。"""
+def _tag_head(title: str, *, inset: bool = False) -> str:
+    """紺のタグ見出し（SLIDE 4 のブロック見出し）。
+
+    inset=True はカードの左上角に食い込ませる形（右下だけ角丸）。
+    """
+    radius = ("border-bottom-right-radius:.6cqw;" if inset
+              else "border-radius:.5cqw;")
     return (
         f'<div style="flex:none;align-self:flex-start;background:{T.NAVY};color:#fff;'
-        'border-radius:.5cqw .5cqw .5cqw 0;padding:.4cqw 1.1cqw;'
-        f'font-size:1cqw;font-weight:800;">{escape(title)}</div>'
+        f'font-size:1.3cqw;font-weight:700;padding:.6cqw 1.4cqw;{radius}">'
+        f'{escape(title)}</div>'
     )
 
 
@@ -1183,7 +1283,7 @@ def _posneg_chart(series: list, points: list) -> str:
     ylabs = "".join(
         f'<div style="position:absolute;top:{y(g):.2f}%;left:-3cqw;width:2.6cqw;'
         'text-align:right;transform:translateY(-50%);font-size:.62cqw;'
-        f'color:{T.ACCENT_DEEP if g > 0 else ("#1B4DA8" if g < 0 else T.INK)};">'
+        f'color:{T.ACCENT_DEEP if g > 0 else (T.BLUE if g < 0 else T.INK)};">'
         f'{g:+.1f}</div>'.replace("+0.0", "0")
         for g in (1.0, 0.5, 0.0, -0.5, -1.0)
     )
@@ -1257,7 +1357,7 @@ def _change_point_cards(points: list) -> str:
     for i, cp in enumerate(points, 1):
         title, body = (cp.title, cp.body) if cp.title else _tl.fallback_description(cp)
         up = cp.direction == "up"
-        col = "#1B4DA8" if up else T.ACCENT_DEEP
+        col = T.BLUE if up else T.ACCENT_DEEP
         cards.append(
             f'<div style="flex:1;min-width:0;border:1px solid {T.CARD_LINE};'
             'border-radius:.8cqw;background:#fff;padding:.75cqw .9cqw;'
@@ -1292,29 +1392,33 @@ def slide4_timeline(b: dict) -> str:
     period = b.get("period_label") or ""
     n_months = len(series)
     sub = (
-        '<div style="flex:none;display:flex;justify-content:flex-end;gap:1.6cqw;'
-        f'font-size:.78cqw;color:{T.INK};padding:.6cqw 1.8cqw .2cqw;">'
-        + (f'<span>📅 分析期間：{escape(period)}（{n_months}か月）</span>' if period else "")
-        + f'<span>💬 対象：口コミ {b.get("n_reviews", 0):,} 件</span></div>'
+        '<div style="display:flex;align-items:center;justify-content:flex-end;'
+        f'gap:1.6cqw;font-size:1cqw;color:{T.INK_SUB};flex:none;">'
+        + (f'<span>分析期間：{escape(period)}（{n_months}か月）</span>' if period else "")
+        + f'<span>対象：口コミ {b.get("n_reviews", 0):,} 件</span></div>'
     )
-    box = (
-        f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:.5cqw;'
-        f'border:1px solid {T.CARD_LINE};border-radius:.9cqw;padding:.7cqw 1cqw 1cqw;">'
+    chart_card = (
+        '<div style="flex:1;border:1px solid ' + T.CARD_LINE
+        + f';border-radius:{T.CARD_RADIUS};overflow:hidden;display:flex;'
+        'flex-direction:column;min-height:0;">'
+        + _tag_head("ポジティブ要因とネガティブ要因の推移", inset=True)
+        + '<div style="flex:1;display:flex;padding:1cqw;min-height:0;">'
+        + _posneg_chart(series, points) + '</div></div>'
     )
-    body = (
-        sub
-        + '<div style="flex:1;display:flex;flex-direction:column;gap:.9cqw;'
-        'min-height:0;padding:.2cqw 1.8cqw 0;">'
-        + _pill("ポジティブ要因とネガティブ要因の推移")
-        + box + _posneg_chart(series, points) + '</div>'
-        + _pill("主な変化点と評価変動要因")
-        + '<div style="flex:none;height:12cqw;display:flex;">'
+    cp_block = (
+        '<div style="height:17cqw;flex:none;display:flex;flex-direction:column;'
+        'gap:.7cqw;">'
+        + _tag_head("主な変化点と評価変動要因")
+        + '<div style="flex:1;display:flex;min-height:0;">'
         + _change_point_cards(points) + '</div></div>'
     )
     meta = f"分析期間：{period}" if period else ""
     return canvas(
-        slide_header("4", "時間軸分析", meta) + body
-        + footer("※スコアは5点満点を−1〜+1のスケールに変換して集計")
+        slide_header("4", "時間軸分析", meta),
+        body_area(sub + chart_card + cp_block,
+                  top=T.BODY_TOP_TIGHT, column=True, gap=.9),
+        footer("※スコアは5点満点を−1〜+1のスケールに変換して集計",
+               tagline="顧客の声を、戦略と成長へ。"),
     )
 
 
@@ -1333,7 +1437,7 @@ def _space_series(b: dict) -> list[tuple[str, dict, str, bool]]:
             peer_avg[t] = sum(vals) / len(vals)
     out = [("当施設", mine, T.ACCENT, False)]
     if peer_avg:
-        out.append(("競合平均", peer_avg, "#2D6FD0", True))
+        out.append(("競合平均", peer_avg, T.BLUE, True))
     # 指定競合モードでは母数＝選択競合なので overall_topic は競合平均と一致する。
     # 同じ系列を2本描いても情報が増えないので、市場比較のときだけ足す。
     if b.get("overall_topic") and b.get("comparison_scope") != "competitor":
@@ -1377,9 +1481,12 @@ def _radar(b: dict) -> str:
             f"{x:.2f},{y:.2f}"
             for x, y in (pos(i, _score5(sc.get(t, 50.0)) or 0) for i, t in enumerate(axes))
         )
-        dash = 'stroke-dasharray="2.5 1.8"' if dashed else ""
+        # README §3：自施設だけ塗り10%、他系列は破線の線のみ
+        dash = f'stroke-dasharray="{T.DASH_IND}"' if dashed else ""
+        fill = "none" if dashed else col
         polys += (
-            f'<polygon points="{pts}" fill="none" stroke="{col}" stroke-width="1.3" '
+            f'<polygon points="{pts}" fill="{fill}" fill-opacity="{0 if dashed else .1}" '
+            f'stroke="{col}" stroke-width="1.3" '
             f'{dash} stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
         )
         polys += "".join(
@@ -1387,8 +1494,8 @@ def _radar(b: dict) -> str:
             for x, y in (pos(i, _score5(sc.get(t, 50.0)) or 0) for i, t in enumerate(axes))
         )
     ring_labels = "".join(
-        f'<text x="{CX + 1:.1f}" y="{CY - R * g / 5 + 1:.1f}" font-size="2.4" '
-        f'fill="{T.SUB}">{g}</text>'
+        f'<text x="{CX - 1.2:.1f}" y="{CY - R * g / 5 + 1:.1f}" font-size="2.4" '
+        f'fill="{T.SERIES_AVG}" text-anchor="end">{g}</text>'
         for g in (0, 1, 2, 3, 4, 5)
     )
     labels = ""
@@ -1430,7 +1537,7 @@ def _space_table(b: dict, lo: int, hi: int) -> str:
     axes = [t for t in topic_score.SPACE_TOPICS if t in (b.get("topic_names") or [])]
     cell = "padding:.22cqw .15cqw;font-size:.62cqw;text-align:center;"
     head = (
-        f'<div style="display:flex;background:#F4F3EE;font-weight:800;color:{T.SUB};">'
+        f'<div style="display:flex;background:{T.TABLE_HEAD};font-weight:800;color:{T.SUB};">'
         f'<div style="width:1.7cqw;flex:none;{cell}">No.</div>'
         f'<div style="flex:2.3;{cell}">評価軸</div>'
         + "".join(
@@ -1495,55 +1602,47 @@ def _summary_cards(b: dict) -> str:
          else f'{f["base_label"]}を下回る軸が<br>半数を超え<br>底上げが課題'),
     ]
     cards = "".join(
-        f'<div style="flex:1;min-height:0;background:{c["bg"]};border-radius:.9cqw;'
-        'display:flex;flex-direction:column;align-items:center;justify-content:center;'
-        'gap:.5cqw;padding:.8cqw .5cqw;text-align:center;">'
-        f'<div style="font-size:2.2cqw;font-weight:800;color:{c["fg"]};'
-        f'line-height:1;">{c["no"]}</div>'
-        f'<div style="width:2.2cqw;height:2px;background:{c["fg"]};"></div>'
-        f'<div style="font-size:.78cqw;font-weight:700;color:{T.INK};'
-        f'line-height:1.5;">{txt}</div></div>'
+        f'<div style="flex:1;border:1px solid {c["border"]};background:{c["bg"]};'
+        'border-radius:.7cqw;padding:1cqw .8cqw;display:flex;flex-direction:column;'
+        'align-items:center;gap:.8cqw;min-width:0;">'
+        f'<span style="font-size:2.6cqw;color:{c["fg"]};line-height:1;">'
+        f'{c["icon"]}</span>'
+        f'<span style="font-size:2.4cqw;font-weight:800;color:{c["fg"]};'
+        f'line-height:1;">{c["no"]}</span>'
+        f'<p style="margin:0;font-size:1.05cqw;line-height:1.5;color:{T.INK};'
+        f'text-align:center;font-weight:600;">{txt}</p></div>'
         for c, txt in zip(T.SUMMARY_CARDS, texts)
     )
-    return f'<div style="flex:1;display:flex;gap:.8cqw;min-height:0;">{cards}</div>'
+    return f'<div style="flex:1;display:flex;gap:1cqw;min-height:0;">{cards}</div>'
 
 
 def slide5_space_experience(b: dict) -> str:
-    """SLIDE 5「空間・体験分析」。docs/design/slide_p09.png。"""
-    conf = (
-        '<div style="margin-left:auto;display:flex;align-items:center;'
-        'padding-right:1.8cqw;"><span style="border:1.5px solid #E0342A;'
-        'color:#E0342A;background:#fff;border-radius:.4cqw;padding:.25cqw 1cqw;'
-        'font-size:.85cqw;font-weight:800;">confidential</span></div>'
-    )
-    header = (
-        f'<div style="flex:none;display:flex;align-items:stretch;background:{T.NAVY};'
-        'height:7.4cqw;">'
-        f'<div style="flex:none;width:6.6cqw;background:{T.ACCENT};color:#fff;'
-        'display:flex;align-items:center;justify-content:center;'
-        'font-size:3.1cqw;font-weight:800;">5</div>'
-        f'<div style="display:flex;align-items:center;padding-left:2.2cqw;color:#fff;'
-        f'font-size:{T.FS["slide_title"]}cqw;font-weight:800;">空間・体験分析</div>'
-        f'{conf}</div>'
-    )
+    """SLIDE 5「空間・体験分析」。"""
     left = panel(
         "乃村独自の空間分析指標",
         _radar(b)
-        + '<div style="flex:none;display:flex;gap:.6cqw;margin-top:.5cqw;">'
+        + '<div style="flex:none;display:flex;gap:.6cqw;">'
         + _space_table(b, 1, 5) + _space_table(b, 6, 10) + '</div>'
-        + f'<div style="flex:none;font-size:{T.FS["note"]}cqw;color:{T.SUB};'
-        'margin-top:.3cqw;">※ スコアは5点満点（高いほど評価が高いことを示します）</div>',
-        style="flex:1.25",
+        + f'<div style="flex:none;font-size:.88cqw;color:{T.INK_FAINT};'
+        'text-align:right;padding-top:.4cqw;">'
+        '※ スコアは5点満点（高いほど評価が高いことを示します）</div>',
+        style="flex:1", pad=".8cqw",
     )
-    body = (
-        f'<div style="flex:none;font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
-        f'color:{T.INK};padding:.9cqw 1.8cqw .6cqw;">'
+    body = body_area(
+        f'<div style="font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
+        f'color:{T.INK};flex:none;">'
         '空間と体験の質を10の観点で評価し、改善の優先ポイントを可視化します。</div>'
-        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;padding:0 1.8cqw;">'
-        f'{left}' + panel("本ページの要約", _summary_cards(b), style="flex:1")
-        + '</div>'
+        '<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">'
+        f'{left}'
+        + panel("本ページの要約", _summary_cards(b),
+                style="width:44cqw;flex:none", pad="1.2cqw")
+        + '</div>',
+        top=T.BODY_TOP_TIGHT, column=True, gap=.9,
     )
-    return canvas(header + body + footer(score_note(b)))
+    return canvas(
+        slide_header("5", "空間・体験分析", right=_outline_tag("confidential")),
+        body, footer(score_note(b)),
+    )
 
 
 def _trend_badge(diff5: float) -> tuple[str, str]:
@@ -1563,17 +1662,22 @@ def slide5_space_detail(b: dict) -> str:
     cols = compare_columns(b)
     mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
 
-    cell = "padding:.3cqw .15cqw;font-size:.68cqw;text-align:center;"
+    cell = "padding:.5cqw .15cqw;font-size:.95cqw;text-align:center;"
     head = (
-        f'<div style="display:flex;background:#F4F3EE;font-weight:800;color:{T.SUB};">'
-        f'<div style="width:2cqw;flex:none;{cell}">No.</div>'
-        f'<div style="width:11cqw;flex:none;{cell}text-align:left;">評価項目</div>'
+        f'<div style="display:flex;background:{T.TABLE_HEAD};flex:none;'
+        f'border-bottom:1px solid {T.CARD_LINE};font-size:.95cqw;font-weight:700;'
+        f'color:{T.INK_SUB};">'
+        f'<div style="width:3cqw;flex:none;{cell}">No.</div>'
+        f'<div style="flex:1.8;{cell}text-align:left;padding-left:.7cqw;">評価項目</div>'
         + "".join(
-            f'<div style="flex:1;{cell}color:{col};">{escape(lb)}</div>'
-            for lb, _n, _s, col in cols
+            f'<div style="flex:1;{cell}'
+            f'color:{T.ACCENT if i == 0 else T.INK_SUB};white-space:nowrap;">'
+            f'{escape(lb)}</div>'
+            for i, (lb, _n, _s, _col) in enumerate(cols)
         )
-        + f'<div style="width:5cqw;flex:none;{cell}">傾向</div>'
-        f'<div style="flex:2.6;{cell}text-align:left;">ポイント</div></div>'
+        + f'<div style="width:5.4cqw;flex:none;{cell}">傾向</div>'
+        f'<div style="flex:2.4;{cell}text-align:left;padding-left:.7cqw;">'
+        'ポイント</div></div>'
     )
     rows = ""
     for i, t in enumerate(axes, 1):
@@ -1588,95 +1692,100 @@ def slide5_space_detail(b: dict) -> str:
             f'{f["base_label"]}と同水準（差 {d5:+.2f}pt）'
         )
         rows += (
-            f'<div style="flex:1;display:flex;align-items:center;'
-            f'border-top:1px solid {T.LINE};">'
-            f'<div style="width:2cqw;flex:none;{cell}">'
-            f'<span style="display:inline-flex;width:1.3cqw;height:1.3cqw;'
-            f'border-radius:50%;background:{T.ACCENT};color:#fff;font-size:.58cqw;'
-            'font-weight:800;align-items:center;justify-content:center;">'
+            f'<div style="flex:1;display:flex;align-items:stretch;min-height:0;'
+            f'border-bottom:1px solid {T.TABLE_HEAD};">'
+            '<div style="width:3cqw;flex:none;display:flex;align-items:center;'
+            'justify-content:center;">'
+            f'<span style="width:1.7cqw;height:1.7cqw;'
+            f'border-radius:50%;background:{T.ACCENT};color:#fff;font-size:.9cqw;'
+            'font-weight:700;display:flex;align-items:center;justify-content:center;">'
             f'{i}</span></div>'
-            f'<div style="width:11cqw;flex:none;{cell}text-align:left;color:{T.INK};'
-            f'font-weight:700;overflow:hidden;text-overflow:ellipsis;'
-            f'white-space:nowrap;">{escape(t)}</div>'
+            f'<div style="flex:1.8;padding:0 .7cqw;display:flex;align-items:center;'
+            f'font-size:1cqw;font-weight:600;color:{T.INK};overflow:hidden;'
+            f'text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</div>'
             + "".join(
-                f'<div style="flex:1;{cell}color:{T.INK};'
-                f'font-weight:{"800" if lb == "自施設" else "400"};'
-                + (f'background:{T.HEAT_HIGH_W};' if lb == "自施設" else "")
-                + f'">{_pt5(sc.get(t, 50.0))}</div>'
-                for lb, _n, sc, _c in cols
+                '<div style="flex:1;display:flex;align-items:center;'
+                'justify-content:center;'
+                f'background:{T.heat_bg(_score5(sc.get(t, 50.0)), is_self=k == 0)};'
+                f'color:{T.ACCENT if k == 0 else T.INK_SUB};'
+                f'font-size:{"1.05" if k == 0 else ".98"}cqw;'
+                f'font-weight:{800 if k == 0 else 400};">'
+                f'{_pt5(sc.get(t, 50.0))}</div>'
+                for k, (lb, _n, sc, _c) in enumerate(cols)
             )
-            + f'<div style="width:5cqw;flex:none;{cell}">'
-            f'<span style="display:inline-block;background:{style["bg"]};'
+            + '<div style="width:5.4cqw;flex:none;display:flex;align-items:center;'
+            'justify-content:center;">'
+            f'<span style="background:{style["bg"]};'
             f'color:{style["fg"]};border:1px solid {style["border"]};'
-            'border-radius:.35cqw;padding:.1cqw .6cqw;font-size:.62cqw;'
-            f'font-weight:800;">{badge}</span></div>'
-            f'<div style="flex:2.6;{cell}text-align:left;color:{T.INK};'
+            'border-radius:.3cqw;padding:.2cqw .6cqw;font-size:.9cqw;'
+            f'font-weight:700;">{badge}</span></div>'
+            f'<div style="flex:2.4;padding:0 .7cqw;display:flex;align-items:center;'
+            f'font-size:.95cqw;color:{T.INK_SUB};'
             f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
             f'{escape(point)}</div></div>'
         )
 
     legend = "".join(
-        '<span style="display:inline-flex;align-items:center;gap:.25cqw;'
-        f'font-size:.62cqw;color:{T.INK};margin-right:.7cqw;">'
-        f'<span style="width:.5cqw;height:.5cqw;border-radius:50%;background:{col};">'
+        '<span style="display:flex;align-items:center;gap:.35cqw;'
+        f'font-size:.92cqw;color:{T.INK_SUB};">'
+        f'<span style="width:.8cqw;height:.8cqw;border-radius:50%;background:{col};">'
         f'</span>{lo:.1f}〜{hi:.1f}</span>'
         for lo, hi, col in T.SCORE_BANDS
     )
     strong = "」「".join(f["strong"][:3]) or "—"
     weak = "」「".join(f["weak"][:3]) or "—"
     summary = (
-        f'<div style="flex:1;min-width:0;background:#F5F8FD;border-radius:.7cqw;'
-        'padding:.7cqw 1cqw;display:flex;align-items:center;gap:.8cqw;">'
-        '<span style="flex:none;font-size:1.2cqw;">💡</span>'
-        f'<span style="font-size:.8cqw;line-height:1.6;color:{T.INK};">'
-        f'<b style="color:#1B4DA8;">総合サマリー</b>　自施設は'
-        f'<b style="color:{T.ACCENT_DEEP};">「{escape(strong)}」</b>で優位性があります。'
-        f'一方で<b style="color:#1B4DA8;">「{escape(weak)}」</b>に改善の余地が'
-        '견られます。</span></div>'
-    ).replace("견られます", "見られます")
+        f'<div style="flex:1;min-width:0;border:1px solid {T.BLUE_BORDER};'
+        f'background:{T.BLUE_SOFT_3};border-radius:.7cqw;padding:.8cqw 1.1cqw;'
+        'display:flex;gap:.9cqw;align-items:flex-start;">'
+        f'<span style="width:2.2cqw;height:2.2cqw;flex:none;border-radius:50%;'
+        f'background:{T.BLUE};color:#fff;display:flex;align-items:center;'
+        'justify-content:center;font-size:1.1cqw;">◉</span>'
+        '<div style="flex:1;min-width:0;">'
+        f'<div style="font-size:1.15cqw;font-weight:800;color:{T.NAVY};'
+        'margin-bottom:.35cqw;">総合サマリー</div>'
+        f'<p style="margin:0;font-size:1cqw;line-height:1.6;color:{T.INK};">自施設は'
+        f'<b style="color:{T.ACCENT};">「{escape(strong)}」</b>で優位性があります。'
+        f'一方で<b style="color:{T.BLUE};">「{escape(weak)}」</b>に'
+        '改善の余地が見られます。</p></div></div>'
+    )
 
     n_fac = sum(1 for lb, _n, _s, _c in cols if not lb.endswith("平均"))
     period = b.get("period_label_scope") or b.get("period_label") or ""
     lead = (
-        '<div style="flex:none;display:flex;align-items:baseline;'
-        'padding:.9cqw 1.8cqw .6cqw;">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;'
+        'gap:1.4cqw;flex:none;">'
         f'<span style="font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
         f'color:{T.INK};">空間と体験の質を10の視点で評価し、'
         '改善の優先ポイントを可視化します。</span>'
-        f'<span style="margin-left:auto;font-size:.8cqw;color:{T.SUB};">'
+        f'<span style="font-size:1cqw;color:{T.INK_SUB};white-space:nowrap;">'
         f'分析対象：{n_fac}施設'
-        + (f'　|　分析期間：{escape(period)}' if period else "")
+        + (f'　｜　分析期間：{escape(period)}' if period else "")
         + '</span></div>'
     )
-    body = (
+    legend_card = (
+        f'<div style="width:26cqw;flex:none;border:1px solid {T.CARD_LINE};'
+        'border-radius:.7cqw;padding:.8cqw 1.1cqw;display:flex;flex-direction:column;'
+        'justify-content:center;gap:.5cqw;">'
+        f'<span style="font-size:1.05cqw;font-weight:700;color:{T.NAVY};">'
+        'スコアの見方（5点満点）</span>'
+        f'<div style="display:flex;flex-wrap:wrap;gap:.5cqw 1cqw;">{legend}</div></div>'
+    )
+    body = body_area(
         lead
-        + '<div style="flex:1;display:flex;flex-direction:column;min-height:0;'
-        'padding:0 1.8cqw;">'
         + panel("施設別スコアヒートマップ（10項目）",
                 f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;">'
-                f'{head}{rows}</div>')
-        + '</div>'
-        '<div style="flex:none;display:flex;gap:1cqw;align-items:center;'
-        'padding:.8cqw 1.8cqw 0;">'
-        + summary
-        + '<div style="width:16cqw;flex:none;border:1px solid ' + T.CARD_LINE
-        + ';border-radius:.7cqw;padding:.5cqw .7cqw;">'
-        f'<div style="font-size:.66cqw;font-weight:800;color:{T.INK};'
-        'margin-bottom:.25cqw;">スコアの見方（5点満点）</div>'
-        f'<div>{legend}</div></div></div>'
+                f'{head}{rows}</div>', pad="0")
+        + '<div style="height:8cqw;flex:none;display:flex;gap:1.2cqw;">'
+        + summary + legend_card + '</div>',
+        top=T.BODY_TOP_TIGHT, column=True, gap=.8,
     )
-    header = (
-        f'<div style="flex:none;display:flex;align-items:stretch;background:{T.NAVY};'
-        'height:7.4cqw;">'
-        f'<div style="flex:none;width:6.6cqw;background:{T.ACCENT};color:#fff;'
-        'display:flex;align-items:center;justify-content:center;'
-        'font-size:3.1cqw;font-weight:800;">5</div>'
-        f'<div style="display:flex;align-items:center;padding-left:2.2cqw;color:#fff;'
-        f'font-size:{T.FS["slide_title"]}cqw;font-weight:800;">空間体験分析'
-        f'<span style="font-size:{T.FS["slide_title"] * 0.62:.2f}cqw;font-weight:700;">'
-        '（詳細）</span></div>' + _planner_badge() + '</div>'
+    return canvas(
+        slide_header("5", "空間体験分析", sub_title="詳細",
+                     right=_pill("プランナー起点")),
+        body,
+        footer(score_note(b), tagline="顧客の声を、戦略と成長へ。"),
     )
-    return canvas(header + body + footer(score_note(b)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1685,75 +1794,69 @@ def slide5_space_detail(b: dict) -> str:
 def _voice_card(v, style: dict) -> str:
     """4象限カード1枚。大きな引用符つきで口コミを載せる。"""
     if not v.quote:
-        inner = (f'<div style="flex:1;display:flex;align-items:center;'
-                 f'color:{T.SUB};font-size:.85cqw;">'
-                 'この観点に該当する口コミは見つかりませんでした</div>')
+        inner = (f'<p style="margin:0;flex:1;display:flex;align-items:center;'
+                 f'color:{T.SUB};font-size:1cqw;">'
+                 'この観点に該当する口コミは見つかりませんでした</p>')
     else:
         chips = "".join(
-            f'<span style="display:inline-flex;align-items:center;gap:.3cqw;'
-            f'background:{style["bg"]};color:{style["fg"]};border-radius:.4cqw;'
-            'padding:.25cqw .8cqw;font-size:.72cqw;font-weight:700;'
-            f'margin-right:.5cqw;">{icon} {escape(c)}</span>'
-            for icon, c in zip(("👤", "👥"), v.chips)
+            f'<span style="background:#fff;border:1px solid {style["border"]};'
+            'border-radius:.4cqw;padding:.25cqw .7cqw;font-size:.92cqw;'
+            f'color:{T.INK_SUB};white-space:nowrap;overflow:hidden;'
+            f'text-overflow:ellipsis;">{escape(c)}</span>'
+            for c in v.chips
         )
         inner = (
-            f'<div style="flex:1;min-height:0;display:flex;align-items:center;'
-            f'font-size:1.05cqw;font-weight:700;line-height:1.6;color:{T.INK};'
-            'overflow:hidden;"><div>'
-            f'<span style="color:{style["fg"]};font-size:1.5cqw;'
-            'vertical-align:-.15em;">“</span>'
-            f'{escape(v.quote)}'
-            f'<span style="color:{style["fg"]};font-size:1.5cqw;'
-            'vertical-align:-.35em;">”</span></div></div>'
-            + (f'<div style="flex:none;border-top:1px dashed {T.LINE};'
-               f'padding-top:.5cqw;">{chips}</div>' if chips else "")
+            f'<p style="margin:0;flex:1;font-size:1.3cqw;font-weight:700;'
+            f'line-height:1.5;color:{T.INK};overflow:hidden;">'
+            f'“{escape(v.quote)}”</p>'
+            + (f'<div style="display:flex;gap:.7cqw;min-width:0;'
+               f'border-top:1px dashed {style["border"]};padding-top:.6cqw;'
+               f'margin-top:.5cqw;">{chips}</div>' if chips else "")
         )
     return (
-        f'<div style="flex:1;min-width:0;background:{style["bg"]};'
-        'border-radius:1.1cqw;padding:1cqw 1.2cqw;display:flex;gap:1cqw;">'
-        f'<div style="flex:none;width:3.4cqw;height:3.4cqw;border-radius:50%;'
-        'background:#fff;display:flex;align-items:center;justify-content:center;'
-        f'font-size:1.5cqw;">{style["icon"]}</div>'
-        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
-        'gap:.55cqw;">'
-        f'<div style="flex:none;font-size:1.25cqw;font-weight:800;'
-        f'color:{style["fg"]};">{escape(v.quadrant)}</div>'
+        f'<div style="border:1px solid {style["border"]};background:{style["bg"]};'
+        'border-radius:.9cqw;padding:1.2cqw 1.4cqw;display:flex;gap:1.2cqw;'
+        'min-width:0;min-height:0;">'
+        f'<span style="width:5.4cqw;height:5.4cqw;flex:none;border-radius:50%;'
+        f'background:{style["icon_bg"]};color:{style["fg"]};display:flex;'
+        f'align-items:center;justify-content:center;font-size:2.4cqw;">'
+        f'{style["icon"]}</span>'
+        '<div style="flex:1;display:flex;flex-direction:column;min-width:0;">'
+        f'<div style="font-size:1.5cqw;font-weight:800;color:{style["fg"]};'
+        f'margin-bottom:.5cqw;">{escape(v.quadrant)}</div>'
         f'{inner}</div></div>'
     )
 
 
 def slide6_voices(b: dict) -> str:
-    """SLIDE 6「特徴的な口コミ」。docs/design/slide_p11.png。"""
+    """SLIDE 6「特徴的な口コミ」。"""
     from . import voices as _v
     vs = b.get("voices") or _v.pick_fallback([])
     period = b.get("period_label") or ""
     meta = f"分析期間：{period}" if period else ""
 
-    cards = [
+    cards = "".join(
         _voice_card(v, T.QUADRANT_CARDS.get(v.quadrant, T.QUADRANT_CARDS["維持すべき価値"]))
         for v in vs
-    ]
-    grid = (
-        '<div style="flex:1;display:flex;flex-direction:column;gap:1cqw;'
-        'min-height:0;padding:0 1.8cqw;">'
-        f'<div style="flex:1;display:flex;gap:1cqw;min-height:0;">'
-        f'{cards[0]}{cards[1]}</div>'
-        f'<div style="flex:1;display:flex;gap:1cqw;min-height:0;">'
-        f'{cards[2]}{cards[3]}</div></div>'
     )
     # 属性が推定値のときは、その旨を必ず添える（口コミに書かれた事実ではない）
     estimated = any(getattr(v, "estimated", False) and v.chips for v in vs)
     note = "※上記は代表的なご意見（N=1）の抜粋です"
     if estimated:
         note += "／属性は口コミ本文からの推定です"
-    body = (
-        f'<div style="flex:none;font-size:{T.FS["slide_lead"]}cqw;'
-        f'color:{T.INK};padding:.9cqw 1.8cqw .8cqw;">'
+    body = body_area(
+        f'<div style="font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
+        f'color:{T.INK};flex:none;">'
         '実際の来場者のリアルな声から、維持すべき価値や改善のヒント、'
         '未来の企画につながる声を整理しました。</div>'
-        f'{grid}'
+        '<div style="flex:1;display:grid;grid-template-columns:1fr 1fr;'
+        f'grid-template-rows:1fr 1fr;gap:1.2cqw;min-height:0;">{cards}</div>',
+        top=T.BODY_TOP_TIGHT, column=True, gap=1.0,
     )
-    return canvas(slide_header("6", "特徴的な口コミ", meta) + body + footer(note))
+    return canvas(
+        slide_header("6", "特徴的な口コミ", meta), body,
+        footer(note, tagline="利用しやすいアウトプット構成（プランナー起点）"),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1761,7 +1864,7 @@ def slide6_voices(b: dict) -> str:
 #   （PDF のページ番号は 8 だが、構成上は 7 が正）
 # ═══════════════════════════════════════════════════════════════════════════
 def _prio_badge(p: str) -> str:
-    col = T.ACCENT if p == "高" else "#E07A22"
+    col = T.ACCENT if p == "高" else T.TREND_BADGES["良好"]["fg"]
     return (
         f'<span style="display:inline-block;background:{col};color:#fff;'
         'border-radius:.7cqw;padding:.12cqw .7cqw;font-size:.62cqw;'
@@ -1777,12 +1880,14 @@ def _issue_table(issues: list) -> str:
                 '課題を抽出できるデータがありません</div>')
     cell = "padding:.55cqw .7cqw;font-size:.74cqw;"
     head = (
-        f'<div style="display:flex;background:{T.NAVY};color:#fff;font-weight:800;">'
+        f'<div style="display:flex;background:{T.NAVY};color:#fff;'
+        'font-size:1.3cqw;font-weight:700;flex:none;">'
         + "".join(
-            f'<div style="flex:{w};{cell}text-align:center;font-size:.85cqw;">'
-            f'{escape(h)}</div>'
-            for h, w in (("課題", "1.5"), ("根拠", "2"), ("企画仮説", "2"),
-                         ("対応領域", "1.5"))
+            f'<div style="flex:{w};padding:.7cqw 1cqw;text-align:center;'
+            + (f'border-right:1px solid {T.NAVY_LINE};' if i < 3 else "")
+            + f'">{escape(h)}</div>'
+            for i, (h, w) in enumerate((("課題", "1.5"), ("根拠", "2"),
+                                        ("企画仮説", "2"), ("対応領域", "1.6")))
         )
         + '</div>'
     )
@@ -1837,10 +1942,11 @@ def _priority_matrix(actions: list) -> str:
                 f'justify-content:center;color:{T.SUB};font-size:.85cqw;">'
                 '打ち手がありません</div>')
     # (ラベル, 左半分か, 上半分か, 背景)
+    # README §3「2×2。右上のみ #FDF2F6 で強調」
     quads = (
         ("中期で検討", True, True, "#fff"),
-        ("優先的に着手", False, True, T.HEAT_HIGH_W),
-        ("検討優先度 低", True, False, T.HEAT_LOW_W),
+        ("優先的に着手", False, True, T.ACCENT_SOFT_2),
+        ("検討優先度 低", True, False, "#fff"),
         ("短期で着手", False, False, "#fff"),
     )
     zones = "".join(
@@ -1854,9 +1960,16 @@ def _priority_matrix(actions: list) -> str:
         + (f'left:3%;' if left else 'right:3%;')
         + (f'top:3%;' if top else 'bottom:3%;')
         + f'font-size:.66cqw;font-weight:800;white-space:nowrap;'
-        f'color:{T.ACCENT_DEEP if lab == "優先的に着手" else T.SUB};">'
+        f'color:{T.ACCENT if lab == "優先的に着手" else T.INK_FAINT};">'
         f'{escape(lab)}</div>'
         for lab, left, top, _bg in quads
+    )
+    # 象限を分ける破線（正典は 2×2 の十字）
+    split = (
+        f'<div style="position:absolute;left:50%;top:0;bottom:0;width:0;'
+        f'border-left:1px dashed {T.CARD_LINE};"></div>'
+        f'<div style="position:absolute;top:50%;left:0;right:0;height:0;'
+        f'border-top:1px dashed {T.CARD_LINE};"></div>'
     )
     # 近い位置に重なるとラベルが読めなくなるので、既に置いた点から離す
     placed: list[tuple[float, float]] = []
@@ -1890,11 +2003,29 @@ def _priority_matrix(actions: list) -> str:
         + vertical_text("インパクト", size=.62, weight=700) + '</div>'
         '<div style="flex:1;min-width:0;display:flex;flex-direction:column;">'
         f'<div style="flex:1;position:relative;min-height:0;border-left:1px solid '
-        f'{T.INK};border-bottom:1px solid {T.INK};">{zones}{labels}{dots}</div>'
+        f'{T.INK_SUB};border-bottom:1px solid {T.INK_SUB};">'
+        f'{zones}{split}{labels}{dots}</div>'
         '<div style="flex:none;display:flex;justify-content:space-between;'
-        f'font-size:.62cqw;color:{T.INK};margin-top:.2cqw;">'
+        f'font-size:.88cqw;color:{T.INK_SUB};margin-top:.2cqw;">'
         '<span>低</span><span style="font-weight:700;">実現しやすさ</span>'
-        '<span>高</span></div></div></div>'
+        '<span>高</span></div>'
+        + _matrix_legend() + '</div></div>'
+    )
+
+
+def _matrix_legend() -> str:
+    """優先度マトリクスの凡例（正典 ReviewLens.dc.html:745）。"""
+    return (
+        '<div style="flex:none;display:flex;justify-content:center;gap:1.4cqw;'
+        'flex-wrap:wrap;padding-top:.5cqw;">'
+        + "".join(
+            '<span style="display:flex;align-items:center;gap:.4cqw;'
+            f'font-size:.88cqw;color:{T.INK_SUB};">'
+            f'<span style="width:.9cqw;height:.9cqw;border-radius:50%;'
+            f'border:1.5px solid {col};"></span>{escape(lab)}</span>'
+            for lab, col in T.MATRIX_LEGEND
+        )
+        + '</div>'
     )
 
 
@@ -1938,20 +2069,21 @@ def slide7_discussion(b: dict) -> str:
     meta = f"分析期間：{period}" if period else ""
     generated = any(getattr(i, "hypothesis", "") for i in issues)
 
-    body = (
-        '<div style="flex:1;display:flex;flex-direction:column;min-height:0;'
-        'padding:1cqw 1.8cqw 0;gap:.9cqw;">'
+    body = body_area(
         f'<div style="flex:1.15;min-height:0;display:flex;">{_issue_table(issues)}</div>'
-        '<div style="flex:1;display:flex;gap:1.1cqw;min-height:0;">'
+        '<div style="flex:1;display:flex;gap:1.2cqw;min-height:0;">'
         + panel("優先度マトリクス（インパクト × 実現しやすさ）",
-                _priority_matrix(actions))
-        + panel("打ち手アクション（優先施策）", _action_cards(actions))
-        + '</div></div>'
+                _priority_matrix(actions), head_size=1.25, pad=".8cqw")
+        + panel("打ち手アクション（優先施策）", _action_cards(actions),
+                head_size=1.25, pad="0")
+        + '</div>',
+        top=7.2, column=True, gap=1.0,
     )
     note = "※スコアは5点満点。優先度とインパクトは実測の差から算出しています"
     if generated:
         note += "／企画仮説・打ち手は生成AIによる提案です"
-    return canvas(slide_header("7", "ディスカッションポイント", meta) + body + footer(note))
+    return canvas(slide_header("7", "ディスカッションポイント", meta), body,
+                  footer(note))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1963,27 +2095,24 @@ def slide0_disclaimer(b: dict) -> str:
     rows = "".join(
         '<div style="flex:1;display:flex;gap:1cqw;align-items:center;">'
         f'<span style="flex:none;width:1.9cqw;height:1.9cqw;border-radius:50%;'
-        f'background:{T.HEAT_HIGH_W};color:{T.ACCENT_DEEP};font-weight:800;'
-        'font-size:.9cqw;display:flex;align-items:center;justify-content:center;">'
+        f'background:{T.ACCENT_SOFT};color:{T.ACCENT};font-weight:700;'
+        'font-size:1cqw;display:flex;align-items:center;justify-content:center;">'
         f'{i}</span>'
-        f'<span style="flex:1;font-size:.92cqw;line-height:1.55;color:{T.INK};">'
+        f'<span style="flex:1;font-size:1.05cqw;line-height:1.55;color:{T.INK};">'
         f'{escape(p)}</span></div>'
         for i, p in enumerate(config.DISCLAIMER_POINTS, 1)
     )
-    body = (
-        f'<div style="flex:none;font-size:{T.FS["slide_lead"]}cqw;color:{T.INK};'
-        'padding:.9cqw 1.8cqw .2cqw;">'
-        '本レポートをご覧いただく前に、以下をご確認ください。</div>'
-        '<div style="flex:1;display:flex;flex-direction:column;min-height:0;'
-        'padding:.4cqw 1.8cqw .4cqw;">'
-        f'<div style="flex:1;min-height:0;background:#FBFBF9;'
-        f'border:1px solid {T.CARD_LINE};border-radius:1cqw;'
+    body = body_area(
+        f'<div style="flex:none;font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
+        f'color:{T.INK};">本レポートをご覧いただく前に、以下をご確認ください。</div>'
+        f'<div style="flex:1;min-height:0;background:{T.TABLE_HEAD};'
+        f'border:1px solid {T.CARD_LINE};border-radius:{T.CARD_RADIUS};'
         f'padding:1.2cqw 1.8cqw;display:flex;flex-direction:column;">{rows}</div>'
-        f'<div style="flex:none;margin-top:.7cqw;font-size:{T.FS["note"]}cqw;'
-        f'color:{T.SUB};">データ基準日: {escape(b.get("date", ""))}'
-        '　／　本レポートは参考情報です（Voice BAUM）</div></div>'
+        f'<div style="flex:none;font-size:{T.FS["note"]}cqw;color:{T.INK_FAINT};">'
+        f'データ基準日: {escape(b.get("date", ""))}'
+        '　／　本レポートは参考情報です（Voice BAUM）</div>',
+        top=T.BODY_TOP_TIGHT, column=True, gap=.9,
     )
     return canvas(
-        slide_header("!", config.DISCLAIMER_TITLE, "免責事項")
-        + body + footer("")
+        slide_header("!", config.DISCLAIMER_TITLE, "免責事項"), body, footer(""),
     )

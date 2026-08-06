@@ -23,3 +23,6 @@ Thumbs.db
 
 # ダミーデータ（scripts/make_dummy_data.py で再生成できる）
 data/dummy.db
+
+# スライドの目視確認用の書き出し（scripts/render_slides.py）
+_slides/

@@ -6,16 +6,20 @@ once, right after st.set_page_config().
 """
 import streamlit as st
 
+from .. import report_theme
+
 ACCENT = "#B0338A"
 ACCENT_SOFT = "rgba(176,51,138,0.09)"
 ACCENT_RING = "rgba(176,51,138,0.22)"
 
 
 def inject_global_css() -> None:
+    # レポート側の見出しは 800。Noto Sans JP の 800 を読まないと合成太字になり、
+    # 和文だけ字面が崩れるので、URL は report_theme.FONT_URL に一本化する。
     st.markdown(f"""
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="{report_theme.FONT_URL}" rel="stylesheet">
     <style>
     html, body, [class*="css"] {{
       font-family: 'Manrope', 'Noto Sans JP', system-ui, sans-serif !important;

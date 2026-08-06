@@ -47,17 +47,42 @@ def _bundle(tmp_path, n_peers: int = 5):
 # プリミティブ
 # --------------------------------------------------------------------------- #
 def test_canvas_is_16_by_9():
-    """PDF が 960×540pt なのでスライドは 16:9（従来の 16:10 ではない）。"""
+    """スライドは 16:9。枠は正典どおり 10px 角丸＋カード罫線。"""
     assert T.ASPECT_RATIO == "16/9"
-    assert "aspect-ratio:16/9" in slides.canvas("x")
+    c = slides.canvas("<h/>", "<b/>", "<f/>")
+    assert "aspect-ratio:16/9" in c
+    assert "container-type:inline-size" in c
+    # 本文とフッターを絶対配置するので、枠自体は position:relative でなければならない
+    assert "position:relative" in c
+    assert "<h/><b/><f/>" in c
 
 
-def test_slide_header_uses_pdf_colors():
+def test_body_area_uses_canonical_insets():
+    """本文エリア left/right:2cqw・top:6.9〜7.4cqw・bottom:4.6cqw（README §2）。"""
+    a = slides.body_area("<x/>")
+    assert "left:2.0cqw" in a and "right:2.0cqw" in a
+    assert "top:7.4cqw" in a and "bottom:4.6cqw" in a
+    assert "top:6.9cqw" in slides.body_area("<x/>", top=T.BODY_TOP_TIGHT)
+
+
+def test_slide_header_follows_design_tokens():
+    """帯 6.3cqw ／ タイル 6.3cqw 正方・2.7cqw/800 ／ タイトル 2.3cqw/800。"""
     h = slides.slide_header("1", "施設・基本情報", "分析期間：2023/4〜2024/3")
     assert T.NAVY in h and T.ACCENT in h
     assert "施設・基本情報" in h and "分析期間：2023/4〜2024/3" in h
-    # 番号バッジは帯と同じ高さまで伸ばす（align-items:stretch）
+    assert "height:6.3cqw" in h
+    assert "width:6.3cqw" in h
+    assert "font-size:2.7cqw" in h and "font-size:2.3cqw" in h
+    # 補足は 1.05cqw / 600
+    assert "font-size:1.05cqw;font-weight:600" in h
     assert "align-items:stretch" in h
+
+
+def test_slide_header_accepts_pill_and_outline_tags():
+    pill = slides.slide_header("2", "市場内ポジション", right=slides._pill("プランナー起点"))
+    assert "プランナー起点" in pill and "border-radius:999px" in pill
+    conf = slides.slide_header("5", "空間・体験分析", right=slides._outline_tag("confidential"))
+    assert "confidential" in conf and f"border:1.5px solid {T.ACCENT}" in conf
 
 
 def test_panel_renders_title_icon_and_note():
@@ -65,13 +90,33 @@ def test_panel_renders_title_icon_and_note():
     assert "施設別スコアヒートマップ" in p and "📊" in p and "※注記" in p
     assert "<i>body</i>" in p
     assert T.NAVY in p
+    # カード見出しは 1.35cqw/700（README §2）
+    assert "font-size:1.35cqw;font-weight:700" in p
+
+
+def test_panel_head_is_centered_without_icon_or_note():
+    """アイコンも注記も無いカード見出しは中央寄せ（正典の既定）。"""
+    assert "text-align:center" in slides.panel("総合評価ランキング", "")
+    assert "text-align:center" not in slides.panel("口コミ数の推移", "", icon="◪")
+
+
+def test_footer_is_pinned_and_two_toned():
+    """Voice=アクセント／BAUM=ネイビーの2色・1.5cqw/800、上罫は内部罫線色。"""
+    f = slides.footer("※注記")
+    assert f'color:{T.ACCENT};">Voice' in f
+    assert f'color:{T.NAVY};">BAUM' in f
+    assert "font-size:1.5cqw;font-weight:800" in f
+    assert f"border-top:1px solid {T.LINE}" in f
+    assert "position:absolute" in f and "bottom:1.1cqw" in f
+    assert "※注記" in f
 
 
 def test_stars_gold_count_follows_rating():
-    assert slides._stars(4.2).count("#F5B324") == 4
-    assert slides._stars(4.2).count("#D9D9D9") == 1
-    assert slides._stars(5.0).count("#F5B324") == 5
-    assert slides._stars(None).count("#D9D9D9") == 5
+    assert slides._stars(4.2).count(T.STAR) == 4
+    assert slides._stars(4.2).count(T.STAR_EMPTY) == 1
+    assert slides._stars(5.0).count(T.STAR) == 5
+    assert slides._stars(None).count(T.STAR_EMPTY) == 5
+    assert T.STAR == "#F2B01E" and T.STAR_EMPTY == "#D6D9E0"
 
 
 # --------------------------------------------------------------------------- #
@@ -571,7 +616,10 @@ def test_slide5_renders_radar_tables_and_summary(tmp_path):
     for i, t in enumerate(topic_score.SPACE_TOPICS, 1):
         assert f"{i}. {t}" in html
     for no in ("01", "02", "03", "04"):
-        assert f">{no}</div>" in html
+        assert f">{no}</span>" in html
+    # 要約カードはアイコン・番号・枠線を正典（ReviewLens.dc.html:2063）から取る
+    for c in T.SUMMARY_CARDS:
+        assert c["icon"] in html and c["border"] in html
 
 
 def test_slide5_detail_has_ten_rows_with_trend_badges(tmp_path):
