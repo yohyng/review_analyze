@@ -374,3 +374,108 @@ def test_token_cache_survives_a_failed_analysis(db_path):
 
     assert prog["error"]
     assert conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0] > 0
+
+
+# --------------------------------------------------------------------------- #
+# ⑤-b〜⑤-d の LLM 結果が捨てられていないこと
+#
+#   変化点の説明・代表口コミ・企画仮説は LLM に書かせているが、その結果を
+#   build_bundle に渡し忘れていた（呼ぶだけ呼んで捨てていた）。
+#   ・LLM の待ち時間だけ払って何も得ていない
+#   ・スライドは黙って fallback の文章になる（エラーも出ないので気づけない）
+#   同じ渡し忘れを二度やらないための番人。
+# --------------------------------------------------------------------------- #
+def _bundle_call_kwargs() -> set[str]:
+    """ワーカー内の preview.build_bundle(...) に渡しているキーワード名。"""
+    import ast
+
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_analysis_worker")
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "build_bundle"):
+            return {k.arg for k in node.keywords if k.arg}
+    raise AssertionError("ワーカーが preview.build_bundle を呼んでいない")
+
+
+def test_worker_passes_llm_results_into_the_bundle():
+    assert {"change_points", "voices_result", "discussion_result"} <= _bundle_call_kwargs(), (
+        "⑤-b〜⑤-d で作った変化点・代表口コミ・企画仮説を build_bundle に渡していない。"
+        "渡さないと LLM を呼んだ時間が丸ごと無駄になり、スライドは無言で fallback になる。"
+    )
+
+
+def test_worker_reuses_the_profile_for_the_pptx():
+    """PPTX 生成側で TF-IDF をやり直さない（②の結果を渡す）。"""
+    import ast
+
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_analysis_worker")
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "build_report"):
+            assert "profile" in {k.arg for k in node.keywords if k.arg}, (
+                "build_report に profile を渡していない。渡さないと report 側が "
+                "build_profile を呼び直し、トークンキャッシュが冷えていると数十秒かかる。"
+            )
+            return
+    raise AssertionError("ワーカーが report.build_report を呼んでいない")
+
+
+def test_build_report_does_not_rebuild_a_given_profile(db_path, tmp_path):
+    """profile を渡したら text_analysis.build_profile を呼ばないこと。"""
+    from src import report, text_analysis
+
+    conn = db.get_conn(db_path)
+    prof = text_analysis.build_profile(conn, "対象館", top_n=20)
+
+    calls = []
+    orig = text_analysis.build_profile
+    text_analysis.build_profile = lambda *a, **k: (calls.append(a) or orig(*a, **k))
+    try:
+        report.build_report(conn, "対象館", profile=prof,
+                            output_path=tmp_path / "x.pptx")
+    finally:
+        text_analysis.build_profile = orig
+    assert calls == [], "profile を渡したのに build_profile を呼び直している"
+
+
+# --------------------------------------------------------------------------- #
+# 進捗の可観測性
+#
+#   ローディングカードの経過秒は CSS アニメーションなので、サーバが止まって
+#   いてもブラウザ側で数字だけ増え続ける。どの工程で待っているのかを
+#   サーバ側の時刻で示せるようにしておく。
+# --------------------------------------------------------------------------- #
+def test_mark_records_phase_and_duration():
+    prog: dict = {}
+    analysis_mode._mark(prog, "A")
+    assert prog["phase"] == "A" and prog["phase_started"] > 0
+    prog["phase_started"] -= 2.0            # 2秒前に始まったことにする
+    analysis_mode._mark(prog, "B")
+    assert prog["phase"] == "B"
+    assert prog["timings"][0][0] == "A"
+    assert prog["timings"][0][1] >= 2.0
+
+
+def test_worker_marks_every_step(db_path):
+    """⑥が「PowerPoint生成中」のまま何分も黙る状態にならないこと。"""
+    prog = _prog(db_path)
+    analysis_mode._analysis_worker(prog)
+    assert not prog.get("error"), prog.get("error")
+    phases = [p for p, _s in prog.get("timings", [])]
+    for want in ("テキストプロファイル", "スライド生成", "スライド組み立て",
+                 "語彙キャッシュ書き戻し"):
+        assert want in phases, f"{want} の計測が無い（{phases}）"
+
+
+def test_loading_card_shows_server_side_elapsed():
+    from src.ui import components
+
+    html = components.loading_card_html(5, "生成中", server_secs=847)
+    assert "847 秒経過" in html
+    # サーバ側の値を出すときは、CSSだけで進む偽の経過秒は出さない
+    assert 'class="vb-timer"' not in html
+    assert 'class="vb-timer"' in components.loading_card_html(5, "生成中")

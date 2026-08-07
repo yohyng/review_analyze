@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import traceback
 from html import escape
 from pathlib import Path
@@ -238,6 +239,23 @@ def _kz_collect_section(conn, query: str) -> None:
 #  render() のクロージャではなくモジュール関数にしてあるのは、Streamlit 無しで
 #  そのままテストから実行できるようにするため（クロージャのままだと、ここでの
 #  取り違えを一切テストで検出できなかった）。
+def _mark(prog: dict, phase: str | None) -> None:
+    """いま何をしているかと、その開始時刻をワーカー側で記録する。
+
+    ローディングカードの経過秒は CSS アニメーションなので、サーバが止まって
+    いてもブラウザ側で数字だけ増え続ける（＝止まっているのに動いて見える）。
+    ここで打つ時刻を使って、メインスレッドが「サーバから見た経過秒」を出す。
+    どの工程で待たされているのかを、環境に入らなくても切り分けられるようにする。
+    """
+    now = time.time()
+    prev = prog.get("phase")
+    started = prog.get("phase_started")
+    if prev and started:
+        prog.setdefault("timings", []).append((prev, round(now - started, 1)))
+    prog["phase"] = phase
+    prog["phase_started"] = now
+
+
 def _analysis_worker(prog: dict) -> None:
     try:
         # 施設ループのローカル変数 result と衝突しない名前にすること。
@@ -254,6 +272,7 @@ def _analysis_worker(prog: dict) -> None:
         pkey  = prog["_prof_key"]
 
         # ③-a  テキストプロファイル（session_state → DBキャッシュ → build_profile）
+        _mark(prog, "テキストプロファイル")
         prog["step"] = 2
         _profile = prog["_cached_profile"]
         if not _profile:
@@ -381,6 +400,7 @@ def _analysis_worker(prog: dict) -> None:
             return
 
         # ④  TF-IDF トピック抽出
+        _mark(prog, "TF-IDF")
         prog["step"]   = 3
         n_sent = _ts_result.n_sentences
         prog["detail"] = f"本文 {n_wt:,} 件・{n_sent:,} 文から特徴キーワードをTF-IDFで抽出中"
@@ -391,6 +411,7 @@ def _analysis_worker(prog: dict) -> None:
         #    type='comparison' タグや全施設平均にすり替わらないように）。
         _sel_peers = prog.get("_peers_for_bundle")
         n_peers = len(_sel_peers) if _sel_peers else total_fac - 1
+        _mark(prog, "競合比較・LLM")
         prog["step"]   = 4
         prog["detail"] = f"比較対象 {n_peers} 施設との 22 観点スコア差分を計算中"
         _insights = None
@@ -453,7 +474,11 @@ def _analysis_worker(prog: dict) -> None:
             return None if _derr else _ddata
 
         # ⑥  レポート生成
+        #    ここは以前ひとかたまりで、詳細テキストが変わらないまま数分黙る
+        #    ことがあった（どこで待っているのか外から分からない）。
+        #    PPTX / スライド / 書き戻し の3つに割って、それぞれ経過を出す。
         prog["step"]   = 5
+        _mark(prog, "スライド生成")
         prog["detail"] = f"「{tgt}」の分析レポート（PowerPoint）を生成中"
         _tmp = Path(tempfile.mkdtemp()) / f"VoiceBAUM_{tgt}.pptx"
         report.build_report(
@@ -463,14 +488,23 @@ def _analysis_worker(prog: dict) -> None:
             insights=_insights,
             topic_list=_topic_list if _topic_list else None,
             topic_score_result=_ts_result if not _ts_result.empty else None,
+            profile=_profile,          # ②で計算済み。ここで作り直さない
             peers=_sel_peers,
             output_path=_tmp,
         )
 
         # ビルドバンドル（プレビュー用）
+        #    ⑤-b〜⑤-d で LLM に書かせた変化点・代表口コミ・企画仮説を
+        #    ここで渡す。渡し忘れると LLM を呼んだ結果が捨てられ、
+        #    スライドは黙って fallback の文章になる。
+        _mark(prog, "スライド組み立て")
+        prog["detail"] = "分析スライドを組み立て中"
         _bundle = preview.build_bundle(
             tconn, tgt, matrix, _profile, _insights,
             peers_override=prog.get("_peers_for_bundle"),
+            change_points=_cps or None,
+            voices_result=_voices,
+            discussion_result=_disc if akey else None,
         )
 
         # 結果を受け渡し用 dict へ（session_state 反映はメインスレッド）
@@ -486,11 +520,14 @@ def _analysis_worker(prog: dict) -> None:
         ss_out["an_peers_used"]     = _sel_peers   # PPTX再生成でも同じ比較軸を使う
 
         # 新しく解析したぶんを書き戻す（次回以降このぶんは計算不要になる）
+        _mark(prog, "語彙キャッシュ書き戻し")
+        prog["detail"] = "解析した語彙をDBに書き戻し中"
         try:
             text_analysis.flush_token_cache(tconn)
         except Exception:
             pass
 
+        _mark(prog, None)
         prog["step"]   = 6
         prog["detail"] = "完了しました"
         prog["result"] = ss_out
@@ -764,6 +801,8 @@ def render():
         if _prog.get("done"):
             for _k, _v in (_prog.get("result") or {}).items():
                 st.session_state[_k] = _v
+            # どの工程に何秒かかったかはプレビュー側で出す（遅いときの切り分け用）
+            st.session_state["an_timings"] = _prog.get("timings") or []
             st.session_state["an_screen"] = "preview"
             st.session_state.pop(_PROG_KEY, None)
             st.rerun()
@@ -798,8 +837,12 @@ def render():
                 if _p.get("done") or _p.get("error"):
                     st.rerun()      # scope="app" → 上の ①／② が処理する
                     return
+                _started = _p.get("phase_started")
                 st.markdown(
-                    _loading_card_html(_p.get("step", 2), _p.get("detail", "")),
+                    _loading_card_html(
+                        _p.get("step", 2), _p.get("detail", ""),
+                        server_secs=(time.time() - _started) if _started else None,
+                    ),
                     unsafe_allow_html=True,
                 )
 
@@ -973,6 +1016,18 @@ def render():
                 _bundle["photo_data_uri"] = (
                     f"data:{_photo_mime};base64," + base64.b64encode(_photo_bytes).decode()
                 )
+
+            # 遅いときの切り分け用。どの工程に何秒かかったかを畳んで出しておく。
+            _tm = st.session_state.get("an_timings") or []
+            if _tm:
+                with st.expander(
+                    f"⏱ 処理時間の内訳（合計 {sum(s for _p, s in _tm):,.0f} 秒）",
+                    expanded=False,
+                ):
+                    st.dataframe(
+                        pd.DataFrame(_tm, columns=["工程", "秒"]),
+                        hide_index=True, width="stretch",
+                    )
 
             st.markdown(slides.slide0_disclaimer(_bundle), unsafe_allow_html=True)
 

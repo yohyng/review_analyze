@@ -112,14 +112,20 @@ _ANIM_CSS = """
 """
 
 
-def loading_card_html(current: int, detail: str = "") -> str:
+def loading_card_html(current: int, detail: str = "",
+                      server_secs: float | None = None) -> str:
     """Full-screen loading overlay — step list with per-step detail text.
 
     `current` = index of the step currently running (0-based).
     `detail`  = fine-grained message shown directly under the active step.
+    `server_secs` = サーバ側で測ったこの工程の経過秒。
 
     CSS animations (sweep bar / dots / timer) continue client-side even while
     Python is blocked by synchronous computation.
+
+    ただし CSS の経過秒はブラウザ側だけで進むので、**サーバが死んでいても
+    数字は増え続ける**（止まっているのに動いて見える）。server_secs を渡すと
+    サーバ側で測った値を併記するので、そこが止まっていれば本当に止まっている。
     """
     total = len(LOADING_STEPS)
     done = min(current, total)
@@ -159,8 +165,11 @@ def loading_card_html(current: int, detail: str = "") -> str:
                 f'▷ {_detail_with_animated_numbers(active_detail)}</div>'
                 # スイープバー
                 '<div class="vb-sweep"></div>'
-                # 経過秒カウンター
-                '<div class="vb-timer"></div>'
+                # 経過秒カウンター（CSS＝ブラウザ側 / server_secs＝サーバ側）
+                + ('<div class="vb-timer"></div>' if server_secs is None else
+                   '<div style="font-size:11px;color:#A7ABB0;margin-top:6px;">'
+                   f'この工程 {server_secs:,.0f} 秒経過'
+                   '（サーバ側の計測。増えなくなったら止まっています）</div>')
             )
         else:
             icon = (

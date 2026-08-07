@@ -562,6 +562,7 @@ def build_report(
     profile_info: Optional[dict] = None,
     photo_bytes: Optional[bytes] = None,
     peers: Optional[list[str]] = None,
+    profile: "Optional[text_analysis.TextProfile]" = None,
     output_path: str | Path = "report.pptx",
 ) -> Path:
     prs = Presentation()
@@ -575,7 +576,10 @@ def build_report(
     # 選択した競合にスコアが無いのに「全体平均」を出すと比較軸がすり替わるため。
     if comp is None and not peers:
         comp = analysis.build_comparison(conn, target_name, "all_avg")
-    profile = text_analysis.build_profile(conn, target_name, top_n=20)
+    # 呼び出し側が既に持っていれば作り直さない（形態素解析からやり直すと
+    # トークンキャッシュが冷えている初回に数十秒かかる）。
+    if profile is None:
+        profile = text_analysis.build_profile(conn, target_name, top_n=20)
 
     # 独自指標（感情・トピック統合スコア）。未算出なら内部で算出。
     if topic_score_result is None:
