@@ -63,10 +63,18 @@ def load_token_cache(conn) -> int:
 
 
 def flush_token_cache(conn) -> int:
-    """今回新たに解析したぶんをDBへ書き戻す。分析の終わりに1回だけ呼ぶ。"""
+    """今回新たに解析したぶんをDBへ書き戻す。
+
+    書けたときだけ「書き出し待ち」から消す。失敗しても消してしまうと、
+    次に呼んでも二度と書かれず、一番重い形態素解析の結果が永久に失われる。
+    事前計算はバッチごとにこれを呼ぶので、失敗ぶんは次のバッチで再挑戦される。
+    """
     from . import db as _db
+    if not _token_cache_new:
+        return 0
     n = _db.save_token_cache(conn, _token_cache_new)
-    _token_cache_new.clear()
+    if n:
+        _token_cache_new.clear()
     return n
 
 

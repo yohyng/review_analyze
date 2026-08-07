@@ -24,7 +24,7 @@ import streamlit as st
 from src import (
     analysis, auth, charts, config, csv_profiler, db, dummy_data, geocode,
     images, kaizode, llm, preview, report, review_csv, score_excel, scoring,
-    search, text_analysis, topic_score, topics,
+    search, text_analysis, topic_score, topics, warmup,
 )
 from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
@@ -886,72 +886,100 @@ def render():
         st.markdown(
             '<p class="vb-sub">分析で使う重い計算をここで済ませておきます。'
             "利用者が分析を実行したときに待たされなくなります。"
-            "データを取り込んだあとに一度実行してください。</p>",
+            "一度に全部やると途中で切られることがあるので、数施設ずつ進めます。"
+            "途中でやめても、進んだぶんは残ります。</p>",
             unsafe_allow_html=True,
         )
 
         _wc = conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0]
-        _sc = conn.execute("SELECT COUNT(*) FROM topic_score_cache").fetchone()[0]
-        _pc = conn.execute("SELECT COUNT(*) FROM text_profile_cache").fetchone()[0]
-        _nf = conn.execute(
-            "SELECT COUNT(DISTINCT f.id) FROM facility f JOIN review r "
-            "ON r.facility_id = f.id").fetchone()[0]
+        _todo, _n_fac = warmup.survey(conn)
+        _done_fac = _n_fac - len(_todo)
 
         _w1, _w2, _w3 = st.columns(3)
-        _w1.metric("形態素解析キャッシュ", f"{_wc:,}")
-        _w2.metric("感情スコア", f"{_sc} / {_nf} 施設")
-        _w3.metric("キーワード", f"{_pc} 施設")
+        _w1.metric("感情スコア", f"{_done_fac} / {_n_fac} 施設")
+        _w2.metric("残り", f"{len(_todo)} 施設")
+        _w3.metric("形態素解析キャッシュ", f"{_wc:,}")
 
-        st.info(
-            "**何をするか**\n\n"
-            "1. 全施設の口コミを形態素解析してキャッシュに保存\n"
-            "2. 全施設の感情スコアを計算してDBに保存\n\n"
-            "口コミ本文は取り込み後に変わらないので、1のキャッシュは失効しません。"
-            "2は口コミ件数が変わった施設だけ再計算されます。"
-        )
+        if _n_fac:
+            st.progress(_done_fac / _n_fac)
 
-        if st.button("⚡ 事前計算を実行", type="primary", width="stretch",
-                     key="warmup_run"):
-            _names = [r["name"] for r in conn.execute(
-                "SELECT f.name FROM facility f JOIN review r ON r.facility_id = f.id "
-                "GROUP BY f.id ORDER BY f.name").fetchall()]
-            _bar = st.progress(0.0, text="準備中…")
-            text_analysis.load_token_cache(conn)
-
-            _done = 0
-            for _i, _nm in enumerate(_names, 1):
-                _bar.progress(_i / max(len(_names), 1),
-                              text=f"{_i}/{len(_names)} 施設: {_nm}")
-                _row = conn.execute(
-                    "SELECT f.id, COUNT(r.id) nr FROM facility f "
-                    "LEFT JOIN review r ON r.facility_id = f.id "
-                    "WHERE f.name = ? GROUP BY f.id", (_nm,)).fetchone()
-                if not _row:
-                    continue
-                if db.get_topic_score_cache(conn, _row["id"], _row["nr"]):
-                    continue                     # 既に計算済み
-                _res = topic_score.analyze_facility(conn, _nm)
-                if not _res.empty:
-                    db.set_topic_score_cache(
-                        conn, _row["id"], _row["nr"],
-                        json.dumps([
-                            {"name": x.name, "weight": x.weight,
-                             "avg_score": x.avg_score, "total_score": x.total_score,
-                             "salience": x.salience, "sentiment": x.sentiment}
-                            for x in _res.topics]),
-                        _res.overall_score, _res.n_sentences)
-                    _done += 1
-
-            _bar.progress(1.0, text="形態素解析の結果を保存中…")
-            _saved = text_analysis.flush_token_cache(conn)
-            data.clear_list_caches()
-            data.topic_matrix_cached.clear()
-            _bar.empty()
-            st.success(
-                f"完了しました。感情スコア {_done} 施設を計算、"
-                f"形態素解析 {_saved:,} 件を保存しました。"
+        if not _todo:
+            st.success("✅ 事前計算は完了しています。分析はキャッシュから即座に返ります。")
+        else:
+            st.info(
+                "**何をするか**\n\n"
+                "1. 口コミを形態素解析してキャッシュに保存（一番重い処理）\n"
+                "2. 感情スコアを計算してDBに保存\n\n"
+                "口コミ本文は取り込み後に変わらないので、1のキャッシュは失効しません。"
+                "2は口コミ件数が変わった施設だけ再計算されます。"
             )
-            st.rerun()
+
+            _c1, _c2 = st.columns([1, 2])
+            with _c1:
+                _size = st.number_input(
+                    "1回に処理する施設数", min_value=1, max_value=50,
+                    value=warmup.DEFAULT_BATCH, step=1, key="warmup_batch",
+                    help="途中で切られるようなら小さくしてください。",
+                )
+            with _c2:
+                _auto = st.checkbox(
+                    "終わるまで自動で続ける", value=True, key="warmup_auto",
+                    help="1バッチごとに画面を描き直しながら進みます。"
+                         "ページを離れれば止まり、進んだぶんは残ります。",
+                )
+
+            _b1, _b2 = st.columns(2)
+            _go = _b1.button(
+                f"⚡ 次の {min(int(_size), len(_todo))} 施設を計算",
+                type="primary", width="stretch", key="warmup_run",
+            )
+            if _b2.button("⏹ 自動継続を止める", width="stretch",
+                          key="warmup_stop"):
+                st.session_state["warmup_auto"] = False
+                st.rerun()
+
+            if _go or (_auto and st.session_state.get("_warmup_running")):
+                st.session_state["_warmup_running"] = True
+                _batch = warmup.next_batch(_todo, int(_size))
+                _bar = st.progress(0.0, text="準備中…")
+                text_analysis.load_token_cache(conn)
+
+                def _tick(i, n, name):
+                    _bar.progress(i / max(n, 1), text=f"{i}/{n} 施設: {name}")
+
+                _res = warmup.run_batch(conn, _batch, on_progress=_tick)
+                _bar.empty()
+                data.clear_list_caches()
+                data.topic_matrix_cached.clear()
+
+                _log = st.session_state.setdefault("_warmup_log", [])
+                _log.append(
+                    f"{len(_res.computed)} 施設を計算"
+                    + (f"・{len(_res.skipped)} 施設は本文なし" if _res.skipped else "")
+                    + (f"・{len(_res.failed)} 施設が失敗" if _res.failed else "")
+                    + f"・形態素解析 {_res.tokens_saved:,} 件を保存"
+                )
+                for _nm, _why in _res.failed:
+                    st.warning(f"「{_nm}」は失敗しました（次回また試されます）: {_why}")
+
+                # 「計算できたか」ではなく「DBに書けたか」で判定する。
+                # 書けていないのに続けると、同じ施設を永久に計算し直す。
+                if not _res.advanced:
+                    st.session_state["_warmup_running"] = False
+                    st.error(
+                        "このバッチで残りが減りませんでした。DBへの書き込みが"
+                        "できていない可能性があります。自動継続を止めました。"
+                    )
+                elif _auto and len(_todo) > len(_batch):
+                    st.rerun()
+                else:
+                    st.session_state["_warmup_running"] = False
+                    st.rerun()
+
+        if st.session_state.get("_warmup_log"):
+            with st.expander("実行ログ", expanded=False):
+                for _line in st.session_state["_warmup_log"][-20:]:
+                    st.caption(_line)
 
         st.divider()
         st.caption(
