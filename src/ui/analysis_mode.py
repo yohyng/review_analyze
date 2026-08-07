@@ -256,6 +256,56 @@ def _mark(prog: dict, phase: str | None) -> None:
     prog["phase_started"] = now
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _places_photo_cached(_conn_key: str, name: str, api_key: str) -> dict | None:
+    """Places の写真URLをセッション内で一時的に持つ（再描画のたびに叩かない）。
+
+    Streamlit は操作のたびにスクリプト全体を再実行するので、素で呼ぶと
+    ボタンひとつで6施設ぶんの API 呼び出しが飛ぶ。写真そのものは保持せず、
+    URL だけを短時間（30分）持つ性能目的の一時キャッシュ。
+    """
+    from src import places  # noqa: PLC0415
+
+    conn = db.get_conn(config.DB_PATH)
+    p = places.photo_for_facility(conn, name, api_key)
+    return {"url": p.url, "attribution": p.attribution} if p else None
+
+
+def _places_photos(conn, bundle: dict) -> None:
+    """写真の空き枠を Google Places で埋める（画面プレビュー専用）。
+
+    規約上、写真は保存できない（無期限保存が許されているのは place_id だけ）。
+    DB に焼かず、Google の URL を <img src> で参照する。よって PPTX には入らない。
+    手動アップロード済みの枠は上書きしない（そちらは配布物にも使えるため）。
+    """
+    from src import places  # noqa: PLC0415
+
+    key = places.get_api_key()
+    if not key or not st.session_state.get("use_places_photos", True):
+        return
+
+    attrs: list[str] = []
+    ck = str(config.DB_PATH)
+
+    if not bundle.get("photo_data_uri"):
+        got = _places_photo_cached(ck, bundle.get("target", ""), key)
+        if got:
+            bundle["photo_data_uri"] = got["url"]
+            attrs.append(got["attribution"])
+
+    for peer in (bundle.get("peer_display") or []):
+        if peer.get("photo_data_uri"):
+            continue
+        got = _places_photo_cached(ck, peer.get("name", ""), key)
+        if got:
+            peer["photo_data_uri"] = got["url"]
+            attrs.append(got["attribution"])
+
+    if attrs:
+        # 帰属表示は必須。重複を潰して並び順は保つ。
+        bundle["photo_attribution"] = "写真: " + "、".join(dict.fromkeys(attrs))
+
+
 def _analysis_worker(prog: dict) -> None:
     try:
         # 施設ループのローカル変数 result と衝突しない名前にすること。
@@ -1036,6 +1086,12 @@ def render():
                 _bundle["photo_data_uri"] = (
                     f"data:{_photo_mime};base64," + base64.b64encode(_photo_bytes).decode()
                 )
+
+            # ── 空いている写真枠を Google Places で埋める（画面プレビュー専用）──
+            #    規約上、写真は保存できない（無期限保存が許されているのは
+            #    place_id だけ）。なので DB には焼かず、表示のたびに Google の
+            #    URL を <img src> で参照する。PPTX には入らない。
+            _places_photos(conn, _bundle)
 
             # 遅いときの切り分け用。どの工程に何秒かかったかを畳んで出しておく。
             _tm = st.session_state.get("an_timings") or []

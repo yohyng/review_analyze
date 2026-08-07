@@ -24,7 +24,7 @@ import streamlit as st
 from src import (
     analysis, auth, charts, config, csv_profiler, db, dummy_data, geocode,
     images, kaizode, llm, preview, report, review_csv, score_excel, scoring,
-    search, text_analysis, topic_score, topics, warmup,
+    places, search, text_analysis, topic_score, topics, warmup,
 )
 from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
@@ -1456,12 +1456,49 @@ export TURSO_TOKEN="eyJh..."
 ```toml
 GEMINI_API_KEY = "AIza..."
 ```
+
+**Google Maps API キー** (施設写真の自動取得):
+```toml
+GOOGLE_MAPS_API_KEY = "AIza..."
+```
 """)
 
             st.info(
                 "Turso 未設定の場合はローカルの `data/reviews.db` を使用します。"
                 "データはサーバー再起動で消えるためクラウドDBの設定を推奨します。"
             )
+
+        st.divider()
+        st.markdown("#### 🖼 施設写真の自動取得（Google Places）")
+        _gm = places.get_api_key()
+        if _gm:
+            st.success("✅ Google Maps API キーが設定されています。")
+        else:
+            st.warning(
+                "GOOGLE_MAPS_API_KEY が未設定です。設定すると、写真が登録されて"
+                "いない施設の枠を Google の写真で埋めます。"
+            )
+        st.checkbox(
+            "分析プレビューで施設写真を自動取得する",
+            value=st.session_state.get("use_places_photos", True),
+            key="use_places_photos", disabled=not _gm,
+        )
+        _pid_n = conn.execute(
+            "SELECT COUNT(*) FROM facility WHERE place_id IS NOT NULL"
+        ).fetchone()[0]
+        _fac_n = conn.execute("SELECT COUNT(*) FROM facility").fetchone()[0]
+        st.caption(f"place_id を記録済み: {_pid_n} / {_fac_n} 施設")
+
+        st.warning(
+            "**規約上の制約**\n\n"
+            "Google Maps Platform では、Places のコンテンツのうち無期限に保存して"
+            "よいのは **place_id だけ**です（写真・名称・評価は都度取得）。\n\n"
+            "そのため取得した写真は **画面プレビューにしか出ません**。"
+            "PowerPoint に焼き込むのは保存・再配布にあたるため、"
+            "配布資料の写真枠は手動アップロードしたぶんだけが入ります。\n\n"
+            "課金はレポートを開いた回数で決まります（1回あたり最大12呼び出し）。"
+            "Google Cloud 側で予算アラートを設定しておくことを勧めます。"
+        )
 
     elif _page == "account":
         st.markdown(

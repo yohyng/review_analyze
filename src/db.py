@@ -283,6 +283,8 @@ CREATE TABLE IF NOT EXISTS facility (
     general_rating  REAL,                       -- place_general_rating
     total_reviews   INTEGER,                    -- overall_place_reviews
     floor_area      TEXT,                       -- 延床（手入力・任意の表記のまま保持）
+    place_id        TEXT,                       -- Google place_id（規約上、無期限保存が
+                                                -- 許されている唯一の Places コンテンツ）
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
@@ -403,7 +405,7 @@ def get_conn(db_path: Optional[Path | str] = None):
 
 
 # Bump when adding an ALTER-based migration in _migrate() below.
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 def _migrate(conn) -> None:
@@ -431,6 +433,12 @@ def _migrate(conn) -> None:
         except Exception:
             pass  # 既にカラムがある（CREATE TABLE IF NOT EXISTS 側で新規作成済み）等
 
+    if ver < 3:
+        try:
+            conn.execute("ALTER TABLE facility ADD COLUMN place_id TEXT")
+        except Exception:
+            pass  # 既にカラムがある
+
     if ver < _SCHEMA_VERSION:
         try:
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
@@ -446,6 +454,49 @@ def init_db(conn) -> None:
         conn.execute(stmt)
     conn.commit()
     _migrate(conn)
+
+
+# --------------------------------------------------------------------------- #
+# Google place_id
+#   Google Maps Platform の規約で、Places のコンテンツのうち無期限に保存して
+#   よいのは place_id だけ（写真・名称・評価は都度取得）。ここに覚えておくと、
+#   写真を出すたびの検索呼び出しを施設あたり1回に減らせる。
+# --------------------------------------------------------------------------- #
+def get_place_id(conn, name: str) -> Optional[str]:
+    try:
+        row = conn.execute(
+            "SELECT place_id FROM facility WHERE name = ?", (name,)
+        ).fetchone()
+    except Exception:
+        return None
+    return (row["place_id"] or None) if row else None
+
+
+def set_place_id(conn, name: str, place_id: str) -> bool:
+    """覚えられなくても写真は出せるので、失敗は握って False を返す。"""
+    try:
+        conn.execute("UPDATE facility SET place_id = ? WHERE name = ?",
+                     (place_id, name))
+        conn.commit()
+    except Exception:
+        return False
+    return True
+
+
+def place_ids_bulk(conn, names: Iterable[str]) -> dict[str, str]:
+    """複数施設の place_id を1クエリで読む（Turso は 1クエリ = 1 HTTP 往復）。"""
+    names = list(names)
+    if not names:
+        return {}
+    ph = ",".join("?" * len(names))
+    try:
+        rows = conn.execute(
+            f"SELECT name, place_id FROM facility WHERE name IN ({ph})",
+            tuple(names),
+        ).fetchall()
+    except Exception:
+        return {}
+    return {r["name"]: r["place_id"] for r in rows if r["place_id"]}
 
 
 # --------------------------------------------------------------------------- #
