@@ -341,16 +341,28 @@ def _analysis_worker(prog: dict) -> None:
             ).fetchall()
             fac_info = {row["name"]: (row["id"], row["nr"]) for row in fac_rows}
 
+            # キャッシュは施設ごとに引かず1クエリでまとめて読む。
+            # Turso は 1クエリ = 1 HTTPリクエストなので、施設数ぶん往復すると
+            # 遅いうえに、その回数だけ 502 を踏む機会が増える。
+            cache_all = db.get_topic_score_cache_bulk(tconn)
+
+            # 本文も同じ理由でまとめて読む。キャッシュに無い施設だけを引く。
+            _todo = [
+                n for n in all_names
+                if fac_info.get(n) and tuple(fac_info[n]) not in cache_all
+            ]
+            if _todo:
+                prog["detail"] = f"未計算 {len(_todo)} 施設の口コミ本文をまとめて読み込み中"
+            texts_by_fac = db.review_texts_by_facility(tconn, _todo)
+
             matrix = {}
+            pending_cache: list[tuple] = []
             n_cached, n_computed = 0, 0
             for i, fname in enumerate(all_names):
                 if prog.get("cancelled"):
                     return          # 別の分析が始まったので、ここで手を引く
                 fid_n = fac_info.get(fname)
-                cached_row = (
-                    db.get_topic_score_cache(tconn, fid_n[0], fid_n[1])
-                    if fid_n else None
-                )
+                cached_row = cache_all.get(tuple(fid_n)) if fid_n else None
                 if cached_row:
                     topics_data = json.loads(cached_row["topics_json"])
                     ts_topics = [
@@ -371,10 +383,17 @@ def _analysis_worker(prog: dict) -> None:
                     )
                 else:
                     prog["detail"] = f"感情スコア {i + 1}/{total_fac} 施設: {fname}"
-                    result = topic_score.analyze_facility(tconn, fname)
+                    # 本文は上でまとめて読んである（施設ごとに引き直さない）
+                    _txts = texts_by_fac.get(fname)
+                    result = (
+                        topic_score.analyze_reviews(_txts) if _txts is not None
+                        else topic_score.analyze_facility(tconn, fname)
+                    )
                     matrix[fname] = result
                     n_computed += 1
-                    # DBに保存（次回 Streamlit 再起動後も有効）
+                    # DBに保存（次回 Streamlit 再起動後も有効）。
+                    # 1件ずつ書くと施設数ぶん往復するので溜めてまとめて書く。
+                    # 途中で中断されても、失うのは書けなかったぶんの再計算だけ。
                     if fid_n and not result.empty:
                         topics_json_str = json.dumps([
                             {"name": t.name, "weight": t.weight,
@@ -382,14 +401,15 @@ def _analysis_worker(prog: dict) -> None:
                              "salience": t.salience, "sentiment": t.sentiment}
                             for t in result.topics
                         ])
-                        try:
-                            db.set_topic_score_cache(
-                                tconn, fid_n[0], fid_n[1],
-                                topics_json_str, result.overall_score,
-                                result.n_sentences,
-                            )
-                        except Exception:
-                            pass  # キャッシュ保存失敗は無視
+                        pending_cache.append((
+                            fid_n[0], fid_n[1], topics_json_str,
+                            result.overall_score, result.n_sentences,
+                        ))
+                        if len(pending_cache) >= 20:
+                            db.set_topic_score_cache_bulk(tconn, pending_cache)
+                            pending_cache = []
+
+            db.set_topic_score_cache_bulk(tconn, pending_cache)
 
             # session_state にも書き戻す（同セッション内の再実行を高速化）
             ss_out[prog["_matrix_ss_key"]] = matrix

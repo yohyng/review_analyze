@@ -144,6 +144,63 @@ def _parse_turso_result(res, row_factory=None) -> "_TursoCursor":
     return cur
 
 
+# --------------------------------------------------------------------------- #
+# 一時的な失敗のリトライ
+#
+#   Turso は 1クエリ = 1 HTTPリクエスト。分析は施設数ぶんクエリを撃つので、
+#   途中で 1 回でもゲートウェイが 502 を返すと分析全体が落ちていた
+#   （実際に get_topic_score_cache のループ中に 502 で停止した）。
+#   ゲートウェイ由来の 5xx と接続断だけを、指数バックオフで数回やり直す。
+# --------------------------------------------------------------------------- #
+_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+_RETRY_MAX = 4                       # 初回 + 4回
+_RETRY_BASE = 0.5                    # 0.5 → 1 → 2 → 4 秒
+
+# 「もう一度送っても結果が変わらない」文だけをやり直す。
+# 502 は「DBに届かなかった」ことも「届いたが応答が失われた」ことも意味しうるので、
+# 素の INSERT INTO をやり直すと行が二重に入る。そこは即座に諦める。
+_IDEMPOTENT_HEAD = (
+    "select", "pragma", "with", "create", "update", "delete", "drop", "alter",
+    "insert or replace", "insert or ignore",
+)
+
+
+def _is_retriable_sql(sql: str) -> bool:
+    s = " ".join(str(sql).split()).lower()
+    return s.startswith(_IDEMPOTENT_HEAD)
+
+
+def _should_retry(exc) -> bool:
+    """ゲートウェイ由来の一時障害か（＝やり直す価値があるか）。"""
+    import requests  # noqa: PLC0415
+
+    if isinstance(exc, (requests.exceptions.ConnectionError,
+                        requests.exceptions.Timeout)):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        resp = getattr(exc, "response", None)
+        return resp is not None and resp.status_code in _RETRY_STATUS
+    return False
+
+
+def _post_with_retry(session, url, payload, timeout, retriable: bool):
+    """v2/pipeline へ POST。一時障害なら指数バックオフでやり直す。"""
+    import time as _time  # noqa: PLC0415
+
+    last = None
+    for attempt in range(_RETRY_MAX + 1):
+        try:
+            resp = session.post(url, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except Exception as exc:                       # noqa: BLE001
+            last = exc
+            if not retriable or not _should_retry(exc) or attempt == _RETRY_MAX:
+                raise
+            _time.sleep(_RETRY_BASE * (2 ** attempt))
+    raise last                                          # pragma: no cover
+
+
 def _turso_call(session, base_url, sql, params):
     """POST one SQL statement to Turso v2/pipeline. Returns _TursoCursor."""
     payload = {
@@ -152,8 +209,8 @@ def _turso_call(session, base_url, sql, params):
             {"type": "close"},
         ]
     }
-    resp = session.post(f"{base_url}/v2/pipeline", json=payload, timeout=30)
-    resp.raise_for_status()
+    resp = _post_with_retry(session, f"{base_url}/v2/pipeline", payload, 30,
+                            _is_retriable_sql(sql))
     data = resp.json()
     return _parse_turso_result(data["results"][0])
 
@@ -185,12 +242,13 @@ class _TursoConn:
             for sql, params in statements
         ]
         requests_body.append({"type": "close"})
-        resp = self._session.post(
-            f"{self._base_url}/v2/pipeline",
-            json={"requests": requests_body},
-            timeout=60,
+        # まとめ送りは全文が「やり直して安全」なときだけリトライする
+        # （素の INSERT INTO が混じるバッチは、二重投入になるのでやり直さない）
+        resp = _post_with_retry(
+            self._session, f"{self._base_url}/v2/pipeline",
+            {"requests": requests_body}, 60,
+            all(_is_retriable_sql(sql) for sql, _p in statements),
         )
-        resp.raise_for_status()
         for res in resp.json()["results"][:-1]:
             if res.get("type") == "error":
                 raise RuntimeError(f"Turso: {res['error']['message']}")
@@ -403,6 +461,52 @@ def get_topic_score_cache(conn, facility_id: int, n_reviews: int):
     return dict(row) if row else None
 
 
+def review_texts_by_facility(conn, names: Iterable[str]) -> dict[str, list[str]]:
+    """指定した施設の口コミ本文を1クエリでまとめて読む。
+
+    施設ごとに引くと Turso では施設数ぶんの HTTP 往復になる（46施設なら46回）。
+    未計算の施設だけを渡して、まとめて取る用。
+    """
+    names = [n for n in names]
+    if not names:
+        return {}
+    ph = ",".join("?" * len(names))
+    rows = conn.execute(
+        f"""SELECT f.name, r.text FROM review r
+            JOIN facility f ON f.id = r.facility_id
+            WHERE f.name IN ({ph}) AND r.text IS NOT NULL AND r.text != ''""",
+        tuple(names),
+    ).fetchall()
+    out: dict[str, list[str]] = {n: [] for n in names}
+    for r in rows:
+        out.setdefault(r[0], []).append(r[1])
+    return out
+
+
+def get_topic_score_cache_bulk(conn) -> dict[tuple[int, int], dict]:
+    """全施設ぶんのキャッシュを1クエリで読む。キーは (facility_id, n_reviews)。
+
+    Turso は 1クエリ = 1 HTTPリクエストなので、施設ごとに引くと
+    施設数ぶんの往復になり、遅いうえに 502 を踏む機会もその回数だけ増える。
+    分析の頭でまとめて読む。
+    """
+    try:
+        rows = conn.execute(
+            "SELECT facility_id, n_reviews, topics_json, overall_score, n_sentences "
+            "FROM topic_score_cache"
+        ).fetchall()
+    except Exception:
+        return {}
+    return {
+        (r["facility_id"], r["n_reviews"]): {
+            "topics_json": r["topics_json"],
+            "overall_score": r["overall_score"],
+            "n_sentences": r["n_sentences"],
+        }
+        for r in rows
+    }
+
+
 def set_topic_score_cache(
     conn,
     facility_id: int,
@@ -412,13 +516,42 @@ def set_topic_score_cache(
     n_sentences: int,
 ) -> None:
     """スコア結果をDBにキャッシュ保存する（同キーがあれば上書き）。"""
-    conn.execute(
-        "INSERT OR REPLACE INTO topic_score_cache "
-        "(facility_id, n_reviews, topics_json, overall_score, n_sentences) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (facility_id, n_reviews, topics_json, overall_score, n_sentences),
+    set_topic_score_cache_bulk(
+        conn, [(facility_id, n_reviews, topics_json, overall_score, n_sentences)]
     )
-    conn.commit()
+
+
+_TOPIC_CACHE_SQL = (
+    "INSERT OR REPLACE INTO topic_score_cache "
+    "(facility_id, n_reviews, topics_json, overall_score, n_sentences) "
+    "VALUES (?, ?, ?, ?, ?)"
+)
+
+
+def set_topic_score_cache_bulk(conn, rows: list[tuple]) -> int:
+    """複数施設ぶんをまとめて書く。rows = [(fid, n_reviews, json, score, n_sent), ...]
+
+    施設ごとに書くと Turso では施設数ぶんの HTTP 往復になる。
+    INSERT OR REPLACE なので、まとめ送りが途中で失敗してやり直しても安全。
+    書けなくても分析は続行できる（次回また計算するだけ）。
+    """
+    rows = list(rows)
+    if not rows:
+        return 0
+    try:
+        if hasattr(conn, "execute_pipeline"):
+            _CHUNK = 100
+            for i in range(0, len(rows), _CHUNK):
+                conn.execute_pipeline(
+                    [(_TOPIC_CACHE_SQL, r) for r in rows[i:i + _CHUNK]]
+                )
+        else:
+            for r in rows:
+                conn.execute(_TOPIC_CACHE_SQL, r)
+        conn.commit()
+    except Exception:
+        return 0
+    return len(rows)
 
 
 # --------------------------------------------------------------------------- #
