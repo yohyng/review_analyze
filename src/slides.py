@@ -183,6 +183,99 @@ def vertical_text(s: str, *, size: float, color: str | None = None,
     )
 
 
+# --------------------------------------------------------------------------- #
+# グラフの座標系
+#
+#   以前、y軸の上限を「mx/4 を切り下げて桁で丸める」で決めていたため、
+#   上限がデータの最大値より小さくなることがあった（例: 累計457件 → 上限400）。
+#   すると y 座標が負になり、折れ線がプロット領域の上へ突き抜けてカードから
+#   はみ出す。13通り試して8通りで再現した。
+#
+#   同じ壊れ方を二度としないよう、ここに2重の歯止めを置く:
+#     nice_axis() … top >= mx を必ず満たす目盛りを返す
+#     plot_y()    … それでも範囲外の値が来たら 0..100 内へ丸める
+#   さらに描画側の SVG は overflow:hidden にして、構造的に外へ出られなくする。
+# --------------------------------------------------------------------------- #
+PLOT_PAD_TOP = 4.0        # 線幅とマーカー半径ぶんの余白（viewBox 単位）
+PLOT_PAD_BOTTOM = 2.0
+
+_NICE_STEPS = (1.0, 2.0, 2.5, 5.0)
+
+
+def nice_axis(mx: float, max_ticks: int = 5) -> tuple[list[float], float]:
+    """0 から始まる「切りのいい」目盛りと上限を返す。
+
+    **上限は必ず mx 以上**。そのうえで、いちばん詰まって収まる刻みを選ぶ
+    （上限が同じなら目盛りが多いほうを採る）。
+
+    >>> nice_axis(457)[1]
+    500.0
+    >>> nice_axis(55)[1]
+    60.0
+    """
+    import math
+
+    if not mx or mx <= 0:
+        return [0.0, 1.0], 1.0
+
+    exp = math.floor(math.log10(mx))
+    best: tuple[float, float, int] | None = None      # (top, step, k)
+    for e in range(exp - 2, exp + 2):
+        for m in _NICE_STEPS:
+            step = m * (10.0 ** e)
+            if step <= 0:
+                continue
+            k = math.ceil(mx / step - 1e-9)           # 必要な区間数
+            if not (2 <= k <= max_ticks):
+                continue
+            top = step * k
+            if best is None or (top, -k) < (best[0], -best[2]):
+                best = (top, step, k)
+
+    if best is None:                                   # 理論上来ないが保険
+        return [0.0, float(mx)], float(mx)
+    top, step, k = best
+    return [step * i for i in range(k + 1)], top
+
+
+def plot_y(v: float, top: float, *, bottom: float = 0.0) -> float:
+    """値を viewBox の y 座標（0..100）へ。範囲外は端で止める。
+
+    軸の計算を間違えても、描画がカードの外へ出ないための最後の歯止め。
+    """
+    span = (top - bottom) or 1.0
+    r = (v - bottom) / span
+    r = 0.0 if r < 0 else (1.0 if r > 1 else r)
+    usable = 100.0 - PLOT_PAD_TOP - PLOT_PAD_BOTTOM
+    return PLOT_PAD_TOP + (1.0 - r) * usable
+
+
+def _fmt_tick(v: float) -> str:
+    """目盛りの数字。件数のような整数は小数点を出さない（60.0 ではなく 60）。"""
+    return f"{v:,.0f}" if abs(v - round(v)) < 1e-9 else f"{v:,.1f}"
+
+
+def plot_dots(pts: list[tuple[float, float]], *, size: float, color: str,
+              hollow: bool = False, ring: float = 0.16) -> str:
+    """折れ線のマーカー。**必ず真円**になる描き方で置く。
+
+    グラフの SVG は preserveAspectRatio="none" で縦横に別々の倍率で伸ばして
+    いるので、中に <circle> を描くと縦横比のぶんだけ潰れて楕円になる。
+    マーカーだけは HTML の絶対配置（幅も高さも cqw）で置き、
+    SVG のスケーリングから切り離す。
+
+    pts は (x%, y%) のリスト。size は直径（cqw）。
+    """
+    fill = "#fff" if hollow else color
+    return "".join(
+        f'<span style="position:absolute;left:{x:.2f}%;top:{y:.2f}%;'
+        f'transform:translate(-50%,-50%);width:{size}cqw;height:{size}cqw;'
+        f'border-radius:50%;background:{fill};'
+        f'border:{ring}cqw solid {color};box-sizing:border-box;"></span>'
+        for x, y in pts
+    )
+
+
 def tilted_axis_labels(labels: list[str], xs: list[float], *, deg: float,
                        size: float, color: str | None = None,
                        prefix: list[str] | None = None) -> str:
@@ -320,16 +413,11 @@ def _trend_body(trend: list) -> str:
     pts = trend[-24:]                       # 直近24か月まで
     vals = [v for _, v in pts]
     mx = max(vals) or 1
-    # y軸の目盛りは切りのいい5分割
-    step = max(1, int(mx / 4))
-    digits = 10 ** max(0, len(str(step)) - 1)
-    step = max(digits, (step // digits) * digits)
-    ticks = [step * i for i in range(5)]
-    top = ticks[-1] or 1
+    ticks, top = nice_axis(mx)              # top >= mx が保証される
     n = len(pts)
 
     def x(i): return i / (n - 1) * 100 if n > 1 else 50.0
-    def y(v): return (1 - v / top) * 100
+    def y(v): return plot_y(v, top)
 
     grid = "".join(
         f'<line x1="0" y1="{y(t):.2f}" x2="100" y2="{y(t):.2f}" stroke="{T.LINE}" '
@@ -341,15 +429,12 @@ def _trend_body(trend: list) -> str:
         f'fill="none" stroke="{T.ACCENT}" stroke-width="1.6" stroke-linejoin="round" '
         'vector-effect="non-scaling-stroke" />'
     )
-    dots = "".join(
-        f'<circle cx="{x(i):.2f}" cy="{y(v):.2f}" r="1.4" fill="{T.ACCENT}" '
-        'vector-effect="non-scaling-stroke" />'
-        for i, v in enumerate(vals)
-    )
+    dots = plot_dots([(x(i), y(v)) for i, v in enumerate(vals)],
+                     size=.5, color=T.ACCENT)
     ylabs = "".join(
         f'<div style="position:absolute;top:{y(t):.2f}%;left:-3.4cqw;width:3cqw;'
         f'text-align:right;transform:translateY(-50%);font-size:.6cqw;color:{T.SUB};">'
-        f'{t:,}</div>'
+        f'{_fmt_tick(t)}</div>'
         for t in ticks
     )
     # x軸ラベルは端と等間隔の4点だけ（PDFも間引いている）
@@ -378,9 +463,10 @@ def _trend_body(trend: list) -> str:
         '<div style="flex:1;position:relative;min-height:0;margin-left:3.6cqw;'
         'margin-top:.2cqw;">'
         f'{ylabs}'
+        # overflow:hidden — 万一 y 座標が範囲外でも、線がカードの外へ出ない
         '<svg viewBox="0 0 100 100" preserveAspectRatio="none" '
-        'style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;">'
-        f'{grid}{line}{dots}</svg>{badge}</div>'
+        'style="position:absolute;inset:0;width:100%;height:100%;overflow:hidden;">'
+        f'{grid}{line}</svg>{dots}{badge}</div>'
         f'<div style="flex:none;position:relative;height:1.6cqw;margin-left:3.6cqw;">'
         f'{xlabs}</div>'
     )
@@ -535,6 +621,35 @@ def _ranking_body(b: dict) -> str:
     )
 
 
+def _dist_axis_ticks(lo100: float, hi100: float, n: int = 5) -> str:
+    """評価分布の横軸に5点満点の数値を並べる。
+
+    「低評価／高評価」だけだと、どのくらいのスコア帯に何施設いるのかが
+    読み取れない。ビン全体の下端〜上端を等分した位置にスコアを置く。
+    端のラベルは枠から出ないよう寄せ方を変える。
+    """
+    lo5, hi5 = lo100 / 100 * 5, hi100 / 100 * 5
+    if hi5 - lo5 < 0.005:                     # 全施設が同スコア → 1本だけ
+        return (
+            '<div style="flex:none;position:relative;height:1.4cqw;">'
+            f'<div style="position:absolute;left:50%;transform:translateX(-50%);'
+            f'font-size:.78cqw;color:{T.INK_MUTE};">{lo5:.2f}</div></div>'
+        )
+    out = ""
+    for i in range(n):
+        r = i / (n - 1)
+        shift = "0" if i == 0 else ("-100%" if i == n - 1 else "-50%")
+        out += (
+            f'<div style="position:absolute;left:{r * 100:.1f}%;'
+            f'transform:translateX({shift});font-size:.78cqw;color:{T.INK_MUTE};'
+            f'white-space:nowrap;">{lo5 + (hi5 - lo5) * r:.2f}</div>'
+        )
+    return (
+        '<div style="flex:none;position:relative;height:1.4cqw;margin-top:.25cqw;">'
+        f'{out}</div>'
+    )
+
+
 def _distribution_body(b: dict) -> str:
     dist = b.get("ranking_dist") or []
     me = b.get("overall_sentiment")
@@ -585,8 +700,11 @@ def _distribution_body(b: dict) -> str:
         f'<div style="position:absolute;right:-.1cqw;top:-.28cqw;width:0;height:0;'
         f'border-left:.55cqw solid {T.INK};border-top:.3cqw solid transparent;'
         'border-bottom:.3cqw solid transparent;"></div></div>'
+        # 横軸の目盛り（5点満点）。低評価／高評価だけだと何の分布か読めないので、
+        # ビンの境界にあたるスコアを数値で置く。
+        f'{_dist_axis_ticks(lo, hi)}'
         '<div style="flex:none;display:flex;justify-content:space-between;'
-        f'font-size:.85cqw;font-weight:700;color:{T.INK};margin-top:.35cqw;">'
+        f'font-size:.8cqw;font-weight:700;color:{T.INK};margin-top:.15cqw;">'
         '<span>低評価</span><span>高評価</span></div>'
         # 総合評価（正典は白地＋カード罫線の1行ボックス）
         f'<div style="flex:none;margin-top:.9cqw;border:1px solid {T.CARD_LINE};'
@@ -695,7 +813,7 @@ def _indicator_chart(b: dict) -> str:
         f'stroke="{T.LINE}" stroke-width=".45" vector-effect="non-scaling-stroke"/>'
         for g in (1, 2, 3, 4, 5)
     )
-    series = ""
+    series, markers = "", ""
     for label, src, col, is_avg in (
         ("当施設", mine, T.ACCENT, False),
         ("同業平均", avg, T.BLUE, True),
@@ -706,11 +824,9 @@ def _indicator_chart(b: dict) -> str:
             f'{dash if is_avg else ""} stroke-linejoin="round" '
             'vector-effect="non-scaling-stroke"/>'
         )
-        series += "".join(
-            f'<circle cx="{x(i):.2f}" cy="{y(src.get(t, 50.0)):.2f}" r="1.25" '
-            f'fill="{"#fff" if not is_avg else col}" stroke="{col}" stroke-width="1" '
-            'vector-effect="non-scaling-stroke"/>'
-            for i, t in enumerate(topics)
+        markers += plot_dots(
+            [(x(i), y(src.get(t, 50.0))) for i, t in enumerate(topics)],
+            size=.62, color=col, hollow=not is_avg,
         )
     ylabs = "".join(
         f'<div style="position:absolute;top:{y(g * 20):.2f}%;left:-2.2cqw;width:1.8cqw;'
@@ -718,10 +834,16 @@ def _indicator_chart(b: dict) -> str:
         f'{g}</div>'
         for g in (1, 2, 3, 4, 5)
     )
-    # README §3「独自分析指標 … X軸ラベルは -90°」
-    xlabs = tilted_axis_labels(
-        topics, [x(i) for i in range(n)], deg=90, size=.8,
-        prefix=[_CIRCLED[i] if i < len(_CIRCLED) else str(i + 1) for i in range(n)],
+    # X軸ラベルは縦書き（丸番号＋指標名を1文字ずつ積む）。
+    # 回転で寝かせると「横書きを横倒しにしただけ」に見えるため。
+    xlabs = "".join(
+        f'<div style="position:absolute;left:{x(i):.2f}%;top:0;'
+        'transform:translateX(-50%);text-align:center;">'
+        f'<div style="font-size:.72cqw;color:{T.INK};line-height:1.2;'
+        'margin-bottom:.15cqw;">'
+        f'{_CIRCLED[i] if i < len(_CIRCLED) else i + 1}</div>'
+        + vertical_text(t, size=.66) + '</div>'
+        for i, t in enumerate(topics)
     )
     # 凡例は正典どおり「色の短い横棒＋名前」（線種の記号は使わない）
     legend = (
@@ -741,8 +863,8 @@ def _indicator_chart(b: dict) -> str:
         f'{ylabs}'
         '<svg viewBox="0 0 100 100" preserveAspectRatio="none" '
         'style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;">'
-        f'{grid}{series}</svg></div>'
-        f'<div style="flex:none;position:relative;height:9cqw;margin-left:2.4cqw;'
+        f'{grid}{series}</svg>{markers}</div>'
+        f'<div style="flex:none;position:relative;height:10.5cqw;margin-left:2.4cqw;'
         f'margin-top:.35cqw;">{xlabs}</div>'
     )
 
@@ -762,8 +884,8 @@ def _indicator_table(b: dict) -> str:
     body = "".join(
         f'<div style="flex:1;display:flex;align-items:center;'
         f'border-top:1px solid {T.LINE};min-height:0;">'
-        f'<div style="flex:1.5;padding:0 .6cqw;font-size:1cqw;color:{T.INK};'
-        'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+        f'<div style="flex:1.5;padding:.2cqw .6cqw;font-size:.9cqw;color:{T.INK};'
+        'line-height:1.3;word-break:break-all;">'
         f'{escape(t)}</div>'
         f'<div style="width:4.4cqw;flex:none;text-align:center;font-size:1.05cqw;'
         f'font-weight:700;color:{T.ACCENT};">{_pt5(m)}</div>'
@@ -785,7 +907,7 @@ def _indicator_table(b: dict) -> str:
         f'font-weight:700;color:{T.INK_MUTE};">{_pt5(tot_avg)}</div></div>'
     )
     return (
-        f'<div style="width:17cqw;flex:none;display:flex;flex-direction:column;'
+        f'<div style="width:19cqw;flex:none;display:flex;flex-direction:column;'
         f'border:1px solid {T.CARD_LINE};border-radius:.5cqw;overflow:hidden;">'
         f'{head}{body}{total}</div>'
     )
@@ -823,13 +945,22 @@ def experience_map(b: dict, *, names: list[str] | None = None,
         px = 8 + _norm(v.get(XS, 50.0), xlo, xhi) * 84
         py = 92 - _norm(v.get(YS, 50.0), ylo, yhi) * 84
         rr = 1.6 + _norm(v.get(RS, 50.0), rlo, rhi) * 2.6
+        # バブルも真円で置く（SVG は縦横で倍率が違うので <circle> は潰れる）
         if is_me:
-            dots += (f'<circle cx="{px:.2f}" cy="{py:.2f}" r="{rr * 1.7:.2f}" '
-                     f'fill="{T.ACCENT}"/>')
+            dots += (
+                f'<span style="position:absolute;left:{px:.2f}%;top:{py:.2f}%;'
+                f'transform:translate(-50%,-50%);width:{rr * 1.7:.2f}cqw;'
+                f'height:{rr * 1.7:.2f}cqw;border-radius:50%;'
+                f'background:{T.ACCENT};"></span>'
+            )
         else:
             col = T.SERIES_PEERS[i % len(T.SERIES_PEERS)] if label_points else T.BLUE
-            dots += (f'<circle cx="{px:.2f}" cy="{py:.2f}" r="{rr:.2f}" fill="{col}" '
-                     f'opacity="{0.85 if label_points else 0.55}"/>')
+            dots += (
+                f'<span style="position:absolute;left:{px:.2f}%;top:{py:.2f}%;'
+                f'transform:translate(-50%,-50%);width:{rr:.2f}cqw;'
+                f'height:{rr:.2f}cqw;border-radius:50%;background:{col};'
+                f'opacity:{0.85 if label_points else 0.55};"></span>'
+            )
         if is_me or label_points:
             nm_disp = "当施設" if is_me else _clip_name(nm, 7)
             # 上端付近のバブルはラベルを上に置くとパネルからはみ出すので下に回す
@@ -864,8 +995,8 @@ def experience_map(b: dict, *, names: list[str] | None = None,
         'vector-effect="non-scaling-stroke"/>'
         f'<line x1="6" y1="94" x2="6" y2="2" stroke="{T.INK}" stroke-width=".6" '
         'vector-effect="non-scaling-stroke"/>'
-        f'{dots}</svg>'
-        f'{labels}</div>'
+        '</svg>'
+        f'{dots}{labels}</div>'
         '<div style="flex:none;display:flex;justify-content:space-between;'
         f'font-size:.66cqw;color:{T.INK};margin-top:.15cqw;padding:0 .4cqw;">'
         '<span>低</span>'
@@ -1042,7 +1173,7 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
         f'stroke="{T.LINE}" stroke-width=".45" vector-effect="non-scaling-stroke"/>'
         for g in (1, 2, 3, 4, 5)
     )
-    series = ""
+    series, markers = "", ""
     for label, _nm, sc, col in cols:
         is_avg = label.endswith("平均")
         pts = " ".join(f"{x(i):.2f},{y(sc.get(t, 50.0)):.2f}" for i, t in enumerate(topics))
@@ -1052,11 +1183,9 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
             'stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
         )
         if not is_avg:
-            series += "".join(
-                f'<circle cx="{x(i):.2f}" cy="{y(sc.get(t, 50.0)):.2f}" r="1.15" '
-                f'fill="#fff" stroke="{col}" stroke-width=".95" '
-                'vector-effect="non-scaling-stroke"/>'
-                for i, t in enumerate(topics)
+            markers += plot_dots(
+                [(x(i), y(sc.get(t, 50.0))) for i, t in enumerate(topics)],
+                size=.52, color=col, hollow=True, ring=.13,
             )
     ylabs = "".join(
         f'<div style="position:absolute;top:{y(g * 20):.2f}%;left:-2.4cqw;width:2cqw;'
@@ -1079,7 +1208,7 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
         f'{ylabs}'
         '<svg viewBox="0 0 100 100" preserveAspectRatio="none" '
         'style="position:absolute;inset:0;width:100%;height:100%;overflow:visible;">'
-        f'{grid}{series}</svg></div>'
+        f'{grid}{series}</svg>{markers}</div>'
         '<div style="flex:none;position:relative;height:7.6cqw;margin-left:2.6cqw;'
         f'margin-top:.35cqw;">{xlabs}</div>'
     )
@@ -1276,11 +1405,8 @@ def _posneg_chart(series: list, points: list) -> str:
             f'height="{y(neg) - y(0):.2f}" fill="{T.NEG_BAR}"/>'
         )
     line = " ".join(f"{x(i):.2f},{y(r[4]):.2f}" for i, r in enumerate(pts))
-    dots = "".join(
-        f'<circle cx="{x(i):.2f}" cy="{y(r[4]):.2f}" r="1.3" fill="#fff" '
-        f'stroke="{T.DIFF_LINE}" stroke-width="1" vector-effect="non-scaling-stroke"/>'
-        for i, r in enumerate(pts)
-    )
+    dots = plot_dots([(x(i), y(r[4])) for i, r in enumerate(pts)],
+                     size=.55, color=T.DIFF_LINE, hollow=True, ring=.13)
     ylabs = "".join(
         f'<div style="position:absolute;top:{y(g):.2f}%;left:-3cqw;width:2.6cqw;'
         'text-align:right;transform:translateY(-50%);font-size:.62cqw;'
@@ -1339,7 +1465,7 @@ def _posneg_chart(series: list, points: list) -> str:
         f'{grid}{bars}'
         f'<polyline points="{line}" fill="none" stroke="{T.DIFF_LINE}" '
         'stroke-width="1.4" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
-        f'{dots}</svg></div>'
+        f'</svg>{dots}</div>'
         f'<div style="flex:none;position:relative;height:1.7cqw;margin-left:3.2cqw;">'
         f'{xlabs}'
         f'<div style="position:absolute;right:-1.6cqw;top:.1cqw;font-size:.6cqw;'
