@@ -826,7 +826,7 @@ def _indicator_chart(b: dict) -> str:
         )
         markers += plot_dots(
             [(x(i), y(src.get(t, 50.0))) for i, t in enumerate(topics)],
-            size=.62, color=col, hollow=not is_avg,
+            size=.62, color=col,
         )
     ylabs = "".join(
         f'<div style="position:absolute;top:{y(g * 20):.2f}%;left:-2.2cqw;width:1.8cqw;'
@@ -963,14 +963,15 @@ def experience_map(b: dict, *, names: list[str] | None = None,
             )
         if is_me or label_points:
             nm_disp = "当施設" if is_me else _clip_name(nm, 7)
-            # 上端付近のバブルはラベルを上に置くとパネルからはみ出すので下に回す
-            off = f"{rr * 1.9 + 3:.1f}" if py > 14 else f"-{rr * 1.9 + 1.6:.1f}"
+            # 上端付近のバブルはラベルを上に置くとカードの外（ヘッダー帯）まで
+            # 抜けてしまうので、下に回す。閾値はラベル1行ぶんの余裕をみる。
+            off = f"{rr * 1.9 + 3:.1f}" if py > 22 else f"-{rr * 1.9 + 1.6:.1f}"
             shift = "0" if px < 14 else ("-100%" if px > 86 else "-50%")
             labels += (
                 f'<div style="position:absolute;left:{px:.2f}%;top:{py:.2f}%;'
                 f'transform:translate({shift},-{off}cqw);'
-                f'font-size:.68cqw;font-weight:800;white-space:nowrap;'
-                f'color:{T.ACCENT_DEEP if is_me else T.INK};">{escape(nm_disp)}</div>'
+                f'font-size:.85cqw;font-weight:800;white-space:nowrap;'
+                f'color:{T.ACCENT if is_me else T.INK};">{escape(nm_disp)}</div>'
             )
     dash = 'stroke-dasharray="2.5 2.5"'
     return (
@@ -998,11 +999,13 @@ def experience_map(b: dict, *, names: list[str] | None = None,
         '</svg>'
         f'{dots}{labels}</div>'
         '<div style="flex:none;display:flex;justify-content:space-between;'
-        f'font-size:.66cqw;color:{T.INK};margin-top:.15cqw;padding:0 .4cqw;">'
+        f'font-size:.85cqw;font-weight:600;color:{T.INK_SUB};margin-top:.15cqw;'
+        'padding:0 .4cqw;">'
         '<span>低</span>'
-        '<span style="font-weight:700;">体験満足度</span><span>高</span></div>'
-        f'<div style="flex:none;font-size:{T.FS["note"]}cqw;color:{T.SUB};'
-        'margin-top:.25cqw;">○ バブルサイズ＝再訪意向</div>'
+        f'<span style="font-weight:800;color:{T.INK};">体験満足度</span>'
+        '<span>高</span></div>'
+        f'<div style="flex:none;font-size:{T.FS["note"]}cqw;font-weight:600;'
+        f'color:{T.INK_SUB};margin-top:.25cqw;">○ バブルサイズ＝再訪意向</div>'
         '</div>'
         + _outcome_boxes(b)
         + '</div>'
@@ -1024,17 +1027,17 @@ def _outcome_boxes(b: dict) -> str:
         'gap:.6cqw;padding:.3cqw;">'
         f'<span style="font-size:1.3cqw;">{icon}</span>'
         '<span style="text-align:center;">'
-        f'<div style="font-size:.68cqw;font-weight:700;color:{T.INK};">{name}</div>'
-        f'<div style="font-size:1.5cqw;font-weight:800;color:{T.ACCENT_DEEP};'
+        f'<div style="font-size:.9cqw;font-weight:700;color:{T.INK_SUB};">{name}</div>'
+        f'<div style="font-size:1.7cqw;font-weight:800;color:{T.ACCENT};'
         f'line-height:1.1;">{_pt5(mine.get(name))}</div>'
         '</span></div>'
         for icon, name in items
     )
     return (
-        '<div style="width:11cqw;flex:none;display:flex;flex-direction:column;'
+        '<div style="width:12.6cqw;flex:none;display:flex;flex-direction:column;'
         'gap:.6cqw;min-height:0;overflow:hidden;justify-content:center;">'
-        f'<div style="flex:none;font-size:.66cqw;font-weight:700;'
-        f'color:{T.ACCENT_DEEP};">口コミから算出した主要スコア</div>'
+        f'<div style="flex:none;font-size:.82cqw;font-weight:800;'
+        f'color:{T.ACCENT};white-space:nowrap;">口コミから算出した主要スコア</div>'
         f'{boxes}</div>'
     )
 
@@ -1063,6 +1066,7 @@ def market_trend(b: dict, note: str, *, large: bool = False) -> str:
             f'gap:{".8" if large else ".6"}cqw;min-height:0;min-width:0;">'
             f'{mark}'
             f'<span style="flex:1;min-width:0;font-size:{fs_item}cqw;color:{T.INK};'
+            f'font-weight:{700 if large else 600};'
             f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
             f'{escape(t)}</span></div>'
             for t in items[:5]
@@ -1185,7 +1189,7 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
         if not is_avg:
             markers += plot_dots(
                 [(x(i), y(sc.get(t, 50.0))) for i, t in enumerate(topics)],
-                size=.52, color=col, hollow=True, ring=.13,
+                size=.52, color=col,
             )
     ylabs = "".join(
         f'<div style="position:absolute;top:{y(g * 20):.2f}%;left:-2.4cqw;width:2cqw;'
@@ -1583,7 +1587,12 @@ def _radar(b: dict) -> str:
         return (f'<div style="flex:1;display:flex;align-items:center;'
                 f'justify-content:center;color:{T.SUB};font-size:.9cqw;">データ不足</div>')
 
+    # 作図は「正方形の枠」の中だけで行う。
+    #   SVG を横長のカードいっぱいに置くと letterbox されて中央に寄るため、
+    #   viewBox の座標と、HTML で置く軸ラベルの % がずれる（ラベルだけ
+    #   外側に流れて見づらくなっていた）。正方形に固定すれば両者が一致する。
     CX, CY, R = 50.0, 50.0, 33.0
+    LABEL_R = R * 1.22                 # 軸ラベルを置く半径
 
     def pos(i: int, v5: float, r: float = R) -> tuple[float, float]:
         a = math.radians(-90 + 360 * i / n)
@@ -1593,67 +1602,75 @@ def _radar(b: dict) -> str:
     rings = "".join(
         '<polygon points="' + " ".join(
             f"{x:.2f},{y:.2f}" for x, y in (pos(i, g) for i in range(n))
-        ) + f'" fill="none" stroke="{T.LINE}" stroke-width=".35" '
+        ) + f'" fill="none" stroke="{T.LINE}" stroke-width="{.9 if g == 5 else .55}" '
         'vector-effect="non-scaling-stroke"/>'
         for g in (1, 2, 3, 4, 5)
     )
     spokes = "".join(
         f'<line x1="{CX}" y1="{CY}" x2="{pos(i, 5)[0]:.2f}" y2="{pos(i, 5)[1]:.2f}" '
-        f'stroke="{T.LINE}" stroke-width=".3" vector-effect="non-scaling-stroke"/>'
+        f'stroke="{T.LINE}" stroke-width=".45" vector-effect="non-scaling-stroke"/>'
         for i in range(n)
     )
-    polys = ""
+    polys, marks = "", ""
     for name, sc, col, dashed in _space_series(b):
-        pts = " ".join(
-            f"{x:.2f},{y:.2f}"
-            for x, y in (pos(i, _score5(sc.get(t, 50.0)) or 0) for i, t in enumerate(axes))
-        )
+        xy = [pos(i, _score5(sc.get(t, 50.0)) or 0) for i, t in enumerate(axes)]
         # README §3：自施設だけ塗り10%、他系列は破線の線のみ
         dash = f'stroke-dasharray="{T.DASH_IND}"' if dashed else ""
-        fill = "none" if dashed else col
         polys += (
-            f'<polygon points="{pts}" fill="{fill}" fill-opacity="{0 if dashed else .1}" '
-            f'stroke="{col}" stroke-width="1.3" '
+            f'<polygon points="{" ".join(f"{x:.2f},{y:.2f}" for x, y in xy)}" '
+            f'fill="{"none" if dashed else col}" fill-opacity="{0 if dashed else .1}" '
+            f'stroke="{col}" stroke-width="{1.5 if dashed else 2.0}" '
             f'{dash} stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
         )
-        polys += "".join(
-            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="1" fill="{col}"/>'
-            for x, y in (pos(i, _score5(sc.get(t, 50.0)) or 0) for i, t in enumerate(axes))
+        # 頂点は塗りつぶしの丸。この SVG は等倍スケールなので真円のまま。
+        marks += "".join(
+            f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{1.1 if dashed else 1.4}" '
+            f'fill="{col}"/>'
+            for x, y in xy
         )
+    # 目盛りは中心から上へ 0〜5。作図の邪魔にならないよう軸のすぐ左に小さく置く。
     ring_labels = "".join(
-        f'<text x="{CX - 1.2:.1f}" y="{CY - R * g / 5 + 1:.1f}" font-size="2.4" '
-        f'fill="{T.SERIES_AVG}" text-anchor="end">{g}</text>'
+        f'<text x="{CX - 1.6:.1f}" y="{CY - R * g / 5 + .9:.1f}" font-size="2.8" '
+        f'fill="{T.INK_FAINT}" text-anchor="end">{g}</text>'
         for g in (0, 1, 2, 3, 4, 5)
     )
     labels = ""
     for i, t in enumerate(axes):
-        lx, ly = pos(i, 5.9)
-        anchor = "center"
-        if lx < CX - 4:
-            anchor = "right"
-        elif lx > CX + 4:
-            anchor = "left"
-        shift = {"center": "-50%", "right": "-100%", "left": "0"}[anchor]
+        lx, ly = pos(i, 5.0, LABEL_R)
+        if lx < CX - 4:                       # 左側 → 右寄せで内側に向ける
+            shift, align = "-100%", "right"
+        elif lx > CX + 4:                     # 右側 → 左寄せ
+            shift, align = "0", "left"
+        else:                                 # 真上・真下 → 中央
+            shift, align = "-50%", "center"
         labels += (
             f'<div style="position:absolute;left:{lx:.1f}%;top:{ly:.1f}%;'
-            f'transform:translate({shift},-50%);font-size:.66cqw;font-weight:700;'
-            f'color:{T.INK};white-space:nowrap;max-width:11cqw;">'
-            f'{i + 1}. {escape(t)}</div>'
+            f'transform:translate({shift},-50%);font-size:.8cqw;font-weight:700;'
+            f'color:{T.INK};text-align:{align};line-height:1.25;'
+            f'width:8.6cqw;">{i + 1}. {escape(t)}</div>'
         )
     legend = "".join(
-        '<div style="display:flex;align-items:center;gap:.4cqw;font-size:.7cqw;'
-        f'color:{T.INK};"><span style="color:{col};font-weight:800;">'
-        f'{"╌●╌" if dashed else "─●─"}</span>{escape(name)}</div>'
+        '<div style="display:flex;align-items:center;gap:.45cqw;font-size:.85cqw;'
+        f'font-weight:600;color:{T.INK};white-space:nowrap;">'
+        f'<span style="width:1.6cqw;height:0;border-top:.22cqw '
+        f'{"dashed" if dashed else "solid"} {col};display:inline-block;"></span>'
+        f'<span style="width:.55cqw;height:.55cqw;border-radius:50%;'
+        f'background:{col};flex:none;margin-left:-1.1cqw;"></span>'
+        f'<span style="margin-left:.35cqw;">{escape(name)}</span></div>'
         for name, _sc, col, dashed in _space_series(b)
     )
     return (
-        '<div style="flex:1;position:relative;min-height:0;display:flex;">'
-        '<div style="position:absolute;inset:0;">'
-        '<svg viewBox="0 0 100 100" style="width:100%;height:100%;">'
-        f'{rings}{spokes}{ring_labels}{polys}</svg></div>'
-        f'{labels}'
-        '<div style="position:absolute;right:.2cqw;bottom:.2cqw;display:flex;'
-        f'flex-direction:column;gap:.25cqw;">{legend}</div></div>'
+        '<div style="flex:1;min-height:0;position:relative;display:flex;'
+        'align-items:center;justify-content:center;">'
+        # 正方形の作図領域。SVG と軸ラベルが同じ座標系になる。
+        '<div style="position:relative;height:100%;aspect-ratio:1;flex:none;">'
+        '<svg viewBox="0 0 100 100" style="position:absolute;inset:0;'
+        'width:100%;height:100%;overflow:visible;">'
+        f'{rings}{spokes}{ring_labels}{polys}{marks}</svg>'
+        f'{labels}</div>'
+        # 凡例は列を取らず重ねる（横幅は軸ラベルに使いたい）
+        '<div style="position:absolute;right:0;bottom:0;display:flex;'
+        f'flex-direction:column;gap:.4cqw;">{legend}</div></div>'
     )
 
 
@@ -1728,16 +1745,20 @@ def _summary_cards(b: dict) -> str:
          if f["n_above"] * 2 >= f["n_axes"]
          else f'{f["base_label"]}を下回る軸が<br>半数を超え<br>底上げが課題'),
     ]
+    # 中身は上に詰めず、カードの中央に置く（正典もそうなっている）。
+    # 番号の下には色の短い罫線を1本入れて、番号と本文を切り分ける。
     cards = "".join(
         f'<div style="flex:1;border:1px solid {c["border"]};background:{c["bg"]};'
         'border-radius:.7cqw;padding:1cqw .8cqw;display:flex;flex-direction:column;'
-        'align-items:center;gap:.8cqw;min-width:0;">'
+        'align-items:center;justify-content:center;gap:.7cqw;min-width:0;">'
         f'<span style="font-size:2.6cqw;color:{c["fg"]};line-height:1;">'
         f'{c["icon"]}</span>'
         f'<span style="font-size:2.4cqw;font-weight:800;color:{c["fg"]};'
         f'line-height:1;">{c["no"]}</span>'
-        f'<p style="margin:0;font-size:1.05cqw;line-height:1.5;color:{T.INK};'
-        f'text-align:center;font-weight:600;">{txt}</p></div>'
+        f'<span style="width:2.6cqw;height:.16cqw;background:{c["fg"]};'
+        'flex:none;"></span>'
+        f'<p style="margin:0;font-size:1.05cqw;line-height:1.55;color:{T.INK};'
+        f'text-align:center;font-weight:700;">{txt}</p></div>'
         for c, txt in zip(T.SUMMARY_CARDS, texts)
     )
     return f'<div style="flex:1;display:flex;gap:1cqw;min-height:0;">{cards}</div>'
