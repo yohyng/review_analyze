@@ -115,12 +115,26 @@ def test_layout_metrics_match_readme():
     assert T.SLIDE_RADIUS == "10px"
 
 
-def test_font_sizes_match_readme():
+def test_structural_font_sizes_match_readme():
+    """骨格の級数は正典のまま動かさない。"""
     assert T.FS["slide_title"] == 2.30   # スライドタイトル 2.3cqw/800
     assert T.FS["slide_num"] == 2.70     # 番号タイルの数字 2.7cqw/800
-    assert T.FS["slide_meta"] == 1.05    # ヘッダー右の補足 1.05cqw/600
     assert T.FS["panel_head"] == 1.35    # カード見出し 1.35cqw/700
     assert T.FS["footer_mark"] == 1.50   # Voice BAUM 1.5cqw/800
+    assert T.FS["big_number"] == 3.40
+
+
+def test_body_font_sizes_are_raised_above_the_readme_minimums():
+    """本文まわりは正典より一段上げてある（実データで読めなかったため）。
+
+    上げたことを忘れて正典の値へ戻さないよう、下限をここで固定する。
+    """
+    assert T.FS["slide_meta"] >= 1.05    # 正典 1.05
+    assert T.FS["note"] >= 0.95          # 正典 0.95
+    assert T.FS["table_cell"] >= 0.88    # 正典 0.88〜1.05
+    assert T.FS["body"] >= 1.0           # 正典 1.0〜1.2
+    # 上げすぎて骨格を食わないこと
+    assert T.FS["body"] < T.FS["panel_head"]
 
 
 def test_font_stack_loads_both_families_including_weight_800():

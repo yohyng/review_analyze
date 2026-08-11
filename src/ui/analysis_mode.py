@@ -799,6 +799,23 @@ def render():
                             label_visibility="collapsed",
                         )
 
+                # ── レポートの構成 ────────────────────────────────────── #
+                #    「（詳細）」の3枚はプランナー向けの掘り下げページ。
+                #    相手や場面によっては要らないので、ここで外せるようにする。
+                st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+                _dc1, _dc2, _dc3 = st.columns([1, 2, 1])
+                with _dc2:
+                    st.toggle(
+                        "「詳細」ページも作る",
+                        value=st.session_state.get("an_with_detail", True),
+                        key="an_with_detail",
+                        help="市場内ポジション（詳細）／指定競合との比較（詳細）／"
+                             "空間体験分析（詳細）の3枚。オフにすると7枚構成になります。",
+                    )
+                    _n_slides = len(slides.report_slides(
+                        detail=st.session_state.get("an_with_detail", True)))
+                    st.caption(f"レポートは全 {_n_slides} 枚（＋冒頭の免責）になります")
+
                 # ── 実行ボタン ────────────────────────────────────────── #
                 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
                 _rc1, _rc2, _rc3 = st.columns([1, 2, 1])
@@ -1238,17 +1255,9 @@ def render():
             # ── 分析レポート本体（PDF「20260726_VoiceBAUM_v1」p3〜p12 準拠）──── #
             #    SLIDE 1 は上の PROFILE 編集ブロック側で描いている（編集中は
             #    フォームに差し替わるため）。ここは SLIDE 2 以降。
-            for _slide in (
-                slides.slide2_market_position,
-                slides.slide2_market_detail,
-                slides.slide3_competitor_compare,
-                slides.slide3_competitor_detail,
-                slides.slide4_timeline,
-                slides.slide5_space_experience,
-                slides.slide5_space_detail,
-                slides.slide6_voices,
-                slides.slide7_discussion,
-            ):
+            for _slide in slides.report_slides(
+                detail=st.session_state.get("an_with_detail", True)
+            )[1:]:                       # SLIDE 1 は上の PROFILE ブロックで描画済み
                 st.markdown(_slide(_bundle), unsafe_allow_html=True)
         else:
             st.warning("分析結果がありません。設定に戻って再実行してください。")

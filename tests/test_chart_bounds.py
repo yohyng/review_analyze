@@ -21,7 +21,7 @@ import re
 
 import pytest
 
-from src import db, preview, slides
+from src import db, preview, report_theme as T, slides
 
 _MAXES = [1, 2, 3, 5, 7, 9, 12, 17, 30, 40, 55, 77, 99, 100, 101, 120, 150,
           199, 200, 249, 250, 333, 400, 457, 499, 500, 501, 780, 999, 1000,
@@ -191,18 +191,46 @@ def test_distribution_shows_numeric_x_axis(tmp_path):
     b = _dist_bundle(tmp_path, [0.50, 0.55, 0.60, 0.65, 0.70])
     html = slides._distribution_body(b)
     assert "低評価" in html and "高評価" in html
-    # 下端 2.50 と上端 3.50 が数値で出ること
-    assert "2.50" in html and "3.50" in html
+    # 目盛りは5点満点の小数2桁が5つ
+    assert len(re.findall(r">[0-9]\.[0-9]{2}<", html)) >= 5
 
 
 def test_distribution_axis_handles_identical_scores(tmp_path):
     """全施設が同じスコアでも軸が壊れないこと。"""
     b = _dist_bundle(tmp_path, [0.6, 0.6, 0.6])
-    html = slides._distribution_body(b)
-    assert "3.00" in html
+    assert "3.00" in slides._distribution_body(b)
 
 
-def test_distribution_has_thirteen_bars(tmp_path):
-    b = _dist_bundle(tmp_path, [0.4, 0.5, 0.6, 0.7, 0.8])
+def test_distribution_plots_one_dot_per_facility(tmp_path):
+    """施設数が少ないとヒストグラムは空の階級だらけで分布に見えないので、
+    1施設1点のドットプロットにしてある。"""
+    scores = [0.40, 0.50, 0.60, 0.70, 0.80]
+    b = _dist_bundle(tmp_path, scores)
     html = slides._distribution_body(b)
-    assert html.count("border-radius:.18cqw .18cqw 0 0") == 13
+    # 他施設の点＋自施設の大きい点＋その順位ピル
+    assert html.count(f"background:{T.BAR_PEER}") == len(scores)
+    assert f"background:{T.ACCENT}" in html
+    assert "位 /" in html and "施設" in html
+    # 平均の位置も出す
+    assert "平均 " in html
+
+
+def test_distribution_stacks_dots_that_would_overlap(tmp_path):
+    """同点の施設が重なって1点に見えないよう、上へ積む。
+
+    軸はデータの幅に合わせて伸縮するので、値が「近い」だけでは重ならない。
+    重なるのは **同点** のとき。
+    """
+    b = _dist_bundle(tmp_path, [0.50, 0.60, 0.60, 0.60, 0.60, 0.70])
+    html = slides._distribution_body(b)
+    bottoms = {m for m in re.findall(r"bottom:([\d.]+)%", html)}
+    assert len(bottoms) >= 4, f"同点の4施設が同じ高さに重なっている: {sorted(bottoms)}"
+
+
+@pytest.mark.parametrize("n", [2, 3, 6, 20, 46])
+def test_distribution_survives_any_facility_count(tmp_path, n):
+    b = _dist_bundle(tmp_path, [0.4 + i * 0.01 for i in range(n)])
+    html = slides._distribution_body(b)
+    assert html and html.count(f"background:{T.BAR_PEER}") == n
+    # 積み上げても枠内に収まること
+    assert all(0 <= float(v) <= 100 for v in re.findall(r"bottom:([\d.]+)%", html))

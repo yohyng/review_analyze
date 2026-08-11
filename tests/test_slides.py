@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from src import db, preview, report_theme as T, slides, topic_score
 
 TOPICS = topic_score.TOPIC_ORDER
@@ -73,8 +75,9 @@ def test_slide_header_follows_design_tokens():
     assert "height:6.3cqw" in h
     assert "width:6.3cqw" in h
     assert "font-size:2.7cqw" in h and "font-size:2.3cqw" in h
-    # 補足は 1.05cqw / 600
-    assert "font-size:1.05cqw;font-weight:600" in h
+    # 補足は 600。級数は正典の 1.05 より一段上げてある（実データで読めないため）
+    assert f'font-size:{T.FS["slide_meta"]}cqw;font-weight:600' in h
+    assert T.FS["slide_meta"] >= 1.05
     assert "align-items:stretch" in h
 
 
@@ -111,12 +114,34 @@ def test_footer_is_pinned_and_two_toned():
     assert "※注記" in f
 
 
-def test_stars_gold_count_follows_rating():
-    assert slides._stars(4.2).count(T.STAR) == 4
-    assert slides._stars(4.2).count(T.STAR_EMPTY) == 1
+def test_stars_are_filled_in_whole_steps():
     assert slides._stars(5.0).count(T.STAR) == 5
+    assert slides._stars(5.0).count(T.STAR_EMPTY) == 0
+    assert slides._stars(3.0).count(T.STAR) == 3
+    assert slides._stars(3.0).count(T.STAR_EMPTY) == 2
     assert slides._stars(None).count(T.STAR_EMPTY) == 5
+    assert slides._stars(0).count(T.STAR) == 0
     assert T.STAR == "#F2B01E" and T.STAR_EMPTY == "#D6D9E0"
+
+
+def test_half_rating_fills_half_a_star():
+    """3.5 なら4つ目の星が半分だけ金色になる。"""
+    html = slides._stars(3.5)
+    assert "width:50%" in html
+    # 3つは満杯、1つは端数（クリップ用に金色をもう1つ描く）、1つは空
+    assert html.count(T.STAR) == 4 and html.count(T.STAR_EMPTY) == 2
+
+
+@pytest.mark.parametrize("rating,pct", [
+    (4.2, "20%"), (3.8, "80%"), (2.25, "25%"), (0.5, "50%"),
+])
+def test_fractional_ratings_clip_proportionally(rating, pct):
+    assert f"width:{pct}" in slides._stars(rating)
+
+
+def test_stars_clamp_out_of_range_ratings():
+    assert slides._stars(7.0).count(T.STAR) == 5
+    assert slides._stars(-1).count(T.STAR_EMPTY) == 5
 
 
 # --------------------------------------------------------------------------- #
@@ -343,7 +368,7 @@ def test_slide2_detail_has_all_three_panels(tmp_path):
     b = _bundle(tmp_path)
     html = slides.slide2_market_detail(b)
     for t in ("乃村独自の口コミ分析指標", "総合体験評価マッピング", "マーケット傾向",
-              "プランナー起点", "指標（代表例）", "当施設", "同業平均", "総合評価",
+              "指標（代表例）", "当施設", "同業平均", "総合評価",
               "この市場で評価されやすい指標", "この市場で課題になりやすい指標",
               "口コミから算出した主要スコア", "体験満足度", "推奨意向", "再訪意向"):
         assert t in html, t
@@ -1092,3 +1117,56 @@ def test_slides_state_what_three_points_means(tmp_path):
 
     b2 = dict(b, score_calibrated=False)
     assert "3.00＝市場平均" not in slides.score_note(b2)
+
+
+# --------------------------------------------------------------------------- #
+# レポートの構成（「詳細」ページを出すかどうか）
+# --------------------------------------------------------------------------- #
+def test_report_has_ten_slides_by_default():
+    fns = slides.report_slides()
+    assert len(fns) == 10
+    assert fns[0] is slides.slide1_facility_info
+    assert fns[-1] is slides.slide7_discussion
+
+
+def test_detail_slides_can_be_dropped():
+    """「（詳細）」の3枚を外すと7枚構成になる。"""
+    fns = slides.report_slides(detail=False)
+    names = [f.__name__ for f in fns]
+    assert len(fns) == 7
+    for n in slides.DETAIL_SLIDES:
+        assert n not in names, f"{n} が外れていない"
+    # 外すのは詳細だけ。本編は順番も含めてそのまま
+    assert names == ["slide1_facility_info", "slide2_market_position",
+                     "slide3_competitor_compare", "slide4_timeline",
+                     "slide5_space_experience", "slide6_voices",
+                     "slide7_discussion"]
+
+
+def test_detail_slide_names_all_exist():
+    for n in slides.DETAIL_SLIDES:
+        assert callable(getattr(slides, n)), n
+    assert "（詳細）" not in slides.slide2_market_position({"target": "x"})
+
+
+def test_both_report_shapes_render(tmp_path):
+    b = _bundle(tmp_path)
+    for detail in (True, False):
+        for fn in slides.report_slides(detail=detail):
+            assert fn(b), f"{fn.__name__} (detail={detail})"
+
+
+def test_setup_screen_offers_the_detail_toggle():
+    from pathlib import Path
+
+    from src.ui import analysis_mode
+
+    src = Path(analysis_mode.__file__).read_text(encoding="utf-8")
+    assert 'key="an_with_detail"' in src
+    assert 'slides.report_slides(' in src
+
+
+def test_planner_pill_is_gone_from_market_detail(tmp_path):
+    """右上の「プランナー起点」は不要との判断で外した。"""
+    b = _bundle(tmp_path)
+    assert "プランナー起点" not in slides.slide2_market_detail(b)
