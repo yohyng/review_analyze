@@ -21,7 +21,7 @@ import streamlit as st
 
 from src import (
     analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
-    llm, preview, report, review_csv, score_excel, scoring, search,
+    llm, places, preview, report, review_csv, score_excel, scoring, search,
     discussion, slides, text_analysis, timeline, topic_score, topics, voices,
 )
 from src.ui import components, data
@@ -202,30 +202,75 @@ def _kz_collect_section(conn, query: str) -> None:
     # ── 自動抽出 + プレビュー ──────────────────────────────────── #
     _parsed_name = geocode.parse_maps_url(_inp)
     _facility_name = (_parsed_name or _inp).strip()
+    _typed_url = bool(_parsed_name)          # URL を貼られたか、名前を打たれたか
 
-    _pkey = f"an_kz_preview::{_facility_name}"
-    if _pkey not in st.session_state:
-        with st.spinner("施設情報を取得中…"):
-            _profile = geocode.lookup(_facility_name)
-        st.session_state[_pkey] = _profile or {}
+    # 名前を打たれたときは Google Places で施設を1件に確定させ、
+    # place_id を指す Maps URL を自動で作る。
+    #   検索URL（/maps/search/?query=名前）だと同名の別施設を拾いうる。
+    #   KAIZODE は1発注ぶんの収集枠を消費するので、狙った施設を指したい。
+    _resolved = None
+    if not _typed_url:
+        _gkey = places.get_api_key()
+        _rkey = f"an_kz_place::{_facility_name}"
+        if _gkey and _rkey not in st.session_state:
+            with st.spinner("Google マップで施設を検索中…"):
+                _r = places.resolve(_facility_name, _gkey)
+            st.session_state[_rkey] = (
+                {"place_id": _r.place_id, "name": _r.name,
+                 "address": _r.address, "url": _r.maps_url} if _r else {}
+            )
+        _resolved = st.session_state.get(_rkey) or None
 
-    _profile = st.session_state.get(_pkey) or {}
-    _addr = (_profile.get("address") or "")[:60] if _profile else "(情報なし)"
+    # 住所は Places が引けていればそれ、無ければ OpenStreetMap
+    if _resolved and _resolved.get("address"):
+        _addr = _resolved["address"][:60]
+    else:
+        _pkey = f"an_kz_preview::{_facility_name}"
+        if _pkey not in st.session_state:
+            with st.spinner("施設情報を取得中…"):
+                _profile = geocode.lookup(_facility_name)
+            st.session_state[_pkey] = _profile or {}
+        _profile = st.session_state.get(_pkey) or {}
+        _addr = (_profile.get("address") or "")[:60] if _profile else "(情報なし)"
 
-    # 見た目を整える
-    _pc1, _pc2 = st.columns([3, 1])
-    with _pc1:
-        st.caption(f"🏢 {_facility_name}  ·  {_addr}")
-    with _pc2:
-        if st.button("📡 今すぐ集める", key="an_kz_order", type="primary", width="stretch"):
-            _maps_url = _parsed_name and _inp or kaizode.maps_search_url(_facility_name)
-            _dsid = _kz_order(conn, key, _maps_url, _facility_name)
-            if _dsid:
-                st.session_state[_ongoing_key] = {
-                    "dataset_id": _dsid,
-                    "facility_name": _facility_name,
-                }
-                st.rerun()
+    # 発注に使う URL を決める（貼られた URL > place_id > 名前で検索）
+    if _typed_url:
+        _maps_url = _inp
+    elif _resolved and _resolved.get("url"):
+        _maps_url = _resolved["url"]
+    else:
+        _maps_url = kaizode.maps_search_url(_facility_name)
+
+    st.caption(f"🏢 {_resolved['name'] if _resolved and _resolved.get('name') else _facility_name}"
+               f"  ·  {_addr}")
+    if _resolved and _resolved.get("url"):
+        st.success("✅ Google マップで施設を特定しました（この1件に対して発注します）")
+    elif not _typed_url and not places.get_api_key():
+        st.info(
+            "GOOGLE_MAPS_API_KEY が未設定のため、施設名での検索URLを使います。"
+            "同名の別施設を拾う可能性があるので、Google マップの URL を"
+            "貼るほうが確実です。"
+        )
+    elif not _typed_url:
+        st.warning(
+            "Google マップで施設を特定できませんでした。名前での検索URLを使います。"
+            "確実にするには Google マップの URL を貼ってください。"
+        )
+    st.text_input("KAIZODE に渡す Google マップ URL", value=_maps_url,
+                  key="an_kz_resolved_url", disabled=True)
+
+    if st.button("📡 今すぐ集める", key="an_kz_order", type="primary",
+                 width="stretch"):
+        _dsid = _kz_order(conn, key, _maps_url, _facility_name)
+        if _dsid:
+            # 確定した place_id は覚えておく（保存が許されている唯一のもの）
+            if _resolved and _resolved.get("place_id"):
+                db.set_place_id(conn, _facility_name, _resolved["place_id"])
+            st.session_state[_ongoing_key] = {
+                "dataset_id": _dsid,
+                "facility_name": _facility_name,
+            }
+            st.rerun()
 
 
 # ── Background thread: steps ③–⑥ ─────────────────────────────────────────── #
@@ -257,18 +302,25 @@ def _mark(prog: dict, phase: str | None) -> None:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _places_photo_cached(_conn_key: str, name: str, api_key: str) -> dict | None:
-    """Places の写真URLをセッション内で一時的に持つ（再描画のたびに叩かない）。
+def _places_cached(_conn_key: str, name: str, api_key: str) -> dict:
+    """Places の写真URLと住所をセッション内で一時的に持つ。
 
     Streamlit は操作のたびにスクリプト全体を再実行するので、素で呼ぶと
-    ボタンひとつで6施設ぶんの API 呼び出しが飛ぶ。写真そのものは保持せず、
-    URL だけを短時間（30分）持つ性能目的の一時キャッシュ。
+    ボタンひとつで6施設ぶんの API 呼び出しが飛ぶ。写真の実体は保持せず、
+    URL と住所だけを短時間（30分）持つ性能目的の一時キャッシュ。
+
+    住所は写真と同じ Details 呼び出しに相乗りさせている（photos を要求した
+    時点で Pro 階層なので、住所を足しても課金は変わらない）。
     """
     from src import places  # noqa: PLC0415
 
     conn = db.get_conn(config.DB_PATH)
-    p = places.photo_for_facility(conn, name, api_key)
-    return {"url": p.url, "attribution": p.attribution} if p else None
+    d = places.details_for_facility(conn, name, api_key)
+    return {
+        "url": d.photo.url if d.photo else "",
+        "attribution": d.photo.attribution if d.photo else "",
+        "address": d.address,
+    }
 
 
 def _places_photos(conn, bundle: dict) -> None:
@@ -287,19 +339,23 @@ def _places_photos(conn, bundle: dict) -> None:
     attrs: list[str] = []
     ck = str(config.DB_PATH)
 
-    if not bundle.get("photo_data_uri"):
-        got = _places_photo_cached(ck, bundle.get("target", ""), key)
-        if got:
-            bundle["photo_data_uri"] = got["url"]
-            attrs.append(got["attribution"])
+    got = _places_cached(ck, bundle.get("target", ""), key)
+    if not bundle.get("photo_data_uri") and got.get("url"):
+        bundle["photo_data_uri"] = got["url"]
+        attrs.append(got["attribution"])
+    # 住所は OpenStreetMap が引けなかったときの穴埋め（日本の施設は
+    # Nominatim の網羅性が低く「—」のままになりがち）。手入力があれば触らない。
+    if got.get("address") and not (bundle.get("address") or "").strip():
+        bundle["address"] = got["address"]
+        bundle["address_from_google"] = True
 
     for peer in (bundle.get("peer_display") or []):
         if peer.get("photo_data_uri"):
             continue
-        got = _places_photo_cached(ck, peer.get("name", ""), key)
-        if got:
-            peer["photo_data_uri"] = got["url"]
-            attrs.append(got["attribution"])
+        pg = _places_cached(ck, peer.get("name", ""), key)
+        if pg.get("url"):
+            peer["photo_data_uri"] = pg["url"]
+            attrs.append(pg["attribution"])
 
     if attrs:
         # 帰属表示は必須。重複を潰して並び順は保つ。

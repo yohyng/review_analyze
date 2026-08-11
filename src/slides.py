@@ -548,10 +548,12 @@ def slide1_facility_info(b: dict) -> str:
         f'<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">{summary}{trend}</div>'
         f'{peers}</div>'
     )
-    # 写真を Google Places から出したときは帰属表示が必須（規約）。
+    # Google Places のコンテンツ（写真・住所）を出したときは帰属表示が必須。
     note = "※口コミ数・総合評価は収集した口コミの実測値です"
     if b.get("photo_attribution"):
         note += f"／{b['photo_attribution']}"
+    if b.get("address_from_google"):
+        note += "／住所: Google"
     return canvas(slide_header("1", "施設・基本情報", meta), body, footer(note))
 
 

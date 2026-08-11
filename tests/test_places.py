@@ -132,7 +132,9 @@ def test_fetch_photo_builds_a_media_url_and_attribution(monkeypatch):
     monkeypatch.setattr(requests, "get", _get)
     p = places.fetch_photo("ChIJxyz", "KEY", max_px=600)
 
-    assert seen["headers"]["X-Goog-FieldMask"] == "photos"
+    # 住所は同じ呼び出しに相乗りさせる（photos を要求した時点で Pro 階層に
+    # なるので、formattedAddress を足しても課金は変わらない）
+    assert seen["headers"]["X-Goog-FieldMask"] == "photos,formattedAddress"
     assert p and p.url.startswith(
         "https://places.googleapis.com/v1/places/ChIJxyz/photos/AeJbb3/media")
     assert "maxWidthPx=600" in p.url and "key=KEY" in p.url
@@ -213,3 +215,119 @@ def test_slide_without_places_photos_is_unchanged(conn):
     html = slides.slide1_facility_info(b)
     assert "写真: " not in html
     assert "実測値" in html
+
+
+# --------------------------------------------------------------------------- #
+# 住所も同じ呼び出しで取る（追加課金なし）
+# --------------------------------------------------------------------------- #
+_DETAILS_PAYLOAD = dict(_PHOTO_PAYLOAD, formattedAddress="東京都台東区上野公園7-7")
+
+
+def test_details_returns_photo_and_address_in_one_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(requests, "get", lambda *a, **k: (
+        calls.append(1) or _FakeResp(_DETAILS_PAYLOAD)))
+
+    d = places.fetch_details("ChIJxyz", "KEY")
+    assert len(calls) == 1, "写真と住所で2回叩いている"
+    assert d.address == "東京都台東区上野公園7-7"
+    assert d.photo and d.photo.url
+
+
+def test_details_survives_a_place_without_photos(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp(
+        {"formattedAddress": "北海道帯広市"}))
+    d = places.fetch_details("ChIJxyz", "KEY")
+    assert d.address == "北海道帯広市" and d.photo is None
+
+
+def test_details_is_empty_on_failure(monkeypatch):
+    def _boom(*_a, **_k):
+        raise requests.exceptions.HTTPError("500")
+    monkeypatch.setattr(requests, "get", _boom)
+    d = places.fetch_details("ChIJxyz", "KEY")
+    assert d.address == "" and d.photo is None
+
+
+def test_address_only_fills_an_empty_field():
+    """OSM や手入力で住所が入っていれば、Google の値で上書きしない。"""
+    from pathlib import Path
+
+    from src.ui import analysis_mode
+
+    src = Path(analysis_mode.__file__).read_text(encoding="utf-8")
+    assert 'not (bundle.get("address") or "").strip()' in src
+
+
+# --------------------------------------------------------------------------- #
+# KAIZODE へ渡す Google マップ URL
+# --------------------------------------------------------------------------- #
+def test_maps_url_points_at_one_place():
+    """検索URLではなく place_id を指す URL。同名の別施設を拾わせない。"""
+    assert places.maps_url("ChIJxyz") == (
+        "https://www.google.com/maps/place/?q=place_id:ChIJxyz")
+    assert places.maps_url("") == ""
+
+
+def test_resolve_returns_the_place_with_name_and_address(monkeypatch):
+    seen = {}
+
+    def _post(url, json=None, timeout=None, headers=None):
+        seen.update(headers=headers, body=json)
+        return _FakeResp({"places": [{
+            "id": "ChIJabc",
+            "displayName": {"text": "国立西洋美術館"},
+            "formattedAddress": "東京都台東区上野公園7-7",
+        }]})
+
+    monkeypatch.setattr(requests, "post", _post)
+    r = places.resolve("西洋美術館", "KEY")
+
+    assert r and r.place_id == "ChIJabc"
+    assert r.name == "国立西洋美術館"
+    assert r.address == "東京都台東区上野公園7-7"
+    assert r.maps_url.endswith("place_id:ChIJabc")
+    # 人が「この施設で合っているか」を確かめられるよう名前と住所も取る
+    assert seen["headers"]["X-Goog-FieldMask"] == (
+        "places.id,places.displayName,places.formattedAddress")
+
+
+def test_resolve_handles_no_match_and_failures(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResp({"places": []}))
+    assert places.resolve("存在しない館", "KEY") is None
+
+    def _boom(*_a, **_k):
+        raise requests.exceptions.ConnectionError("down")
+    monkeypatch.setattr(requests, "post", _boom)
+    assert places.resolve("館", "KEY") is None
+    assert places.resolve("館", "") is None
+
+
+def test_kaizode_flow_prefers_the_place_id_url():
+    """名前を打たれたら place_id の URL を作り、それを発注に使うこと。"""
+    from pathlib import Path
+
+    from src.ui import analysis_mode
+
+    src = Path(analysis_mode.__file__).read_text(encoding="utf-8")
+    sec = src[src.index("def _kz_collect_section"):src.index("# ── Background thread")]
+    assert "places.resolve(" in sec
+    assert '_maps_url = _resolved["url"]' in sec
+    # 特定できなかったときは名前での検索URLに落ち、その旨を伝えること
+    assert "kaizode.maps_search_url(" in sec
+    assert "同名の別施設" in sec
+    # 確定した place_id は覚える
+    assert "db.set_place_id(" in sec
+
+
+def test_slide_credits_google_for_the_address(conn):
+    """住所も Places のコンテンツ。出所を明記する（規約）。"""
+    b = preview.build_bundle(conn, "対象館", {}, None, None)
+    b.update(address="東京都台東区上野公園7-7", address_from_google=True)
+    html = slides.slide1_facility_info(b)
+    assert "東京都台東区上野公園7-7" in html
+    assert "住所: Google" in html
+    # OSM 由来のときは付けない
+    b2 = preview.build_bundle(conn, "対象館", {}, None, None)
+    b2["address"] = "東京都台東区上野公園7-7"
+    assert "住所: Google" not in slides.slide1_facility_info(b2)

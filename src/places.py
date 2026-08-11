@@ -99,55 +99,128 @@ def find_place_id(name: str, api_key: str) -> str | None:
     return (places[0].get("id") or None) if places else None
 
 
-def fetch_photo(place_id: str, api_key: str, *,
-                max_px: int = DEFAULT_MAX_PX) -> Photo | None:
-    """place_id から写真URLと帰属表示を得る。取れなければ None。
+def maps_url(place_id: str) -> str:
+    """place_id を指す Google マップの URL。
 
-    返す url は Google が配信する媒体URL。<img src> に直接入れて、
-    ブラウザに都度取りに行かせる（こちらでダウンロードして保存しない）。
+    施設名で検索する URL（/maps/search/?query=…）と違い、**その施設1件を
+    確実に指す**。KAIZODE への発注はこちらを渡したい（名前で検索させると
+    同名の別施設を拾って、収集枠を無駄にしうる）。
     """
-    if not place_id or not api_key:
+    return f"https://www.google.com/maps/place/?q=place_id:{place_id}" if place_id else ""
+
+
+@dataclass
+class Resolved:
+    """施設名から引き当てた Google 上の1件。"""
+    place_id: str
+    name: str = ""
+    address: str = ""
+
+    @property
+    def maps_url(self) -> str:
+        return maps_url(self.place_id)
+
+
+def resolve(name: str, api_key: str) -> Resolved | None:
+    """施設名から place_id・正式名称・住所を引く。
+
+    find_place_id より1段リッチな（＝1段高いSKUの）呼び出し。施設の登録時に
+    1回だけ使う想定。名称と住所を出して「この施設で合っているか」を人が
+    確かめられるようにするため（KAIZODE の収集枠を無駄にしないのが目的）。
+    """
+    if not (name or "").strip() or not api_key:
         return None
     try:
-        data = _get(_DETAILS_URL.format(place_id=place_id), api_key,
-                    "photos")
+        data = _post(_SEARCH_URL, api_key,
+                     "places.id,places.displayName,places.formattedAddress",
+                     {"textQuery": name.strip(), "languageCode": "ja",
+                      "maxResultCount": 1})
     except Exception:
         return None
-
-    photos = data.get("photos") or []
-    if not photos:
+    places = data.get("places") or []
+    if not places or not places[0].get("id"):
         return None
-    first = photos[0]
-    photo_name = first.get("name")
-    if not photo_name:
-        return None
-
-    who = [
-        a.get("displayName", "").strip()
-        for a in (first.get("authorAttributions") or [])
-        if a.get("displayName")
-    ]
-    return Photo(
-        url=(f"{_MEDIA_URL.format(photo_name=photo_name)}"
-             f"?maxWidthPx={int(max_px)}&key={api_key}"),
-        attribution=("Google / " + "・".join(who[:2])) if who else "Google",
+    p = places[0]
+    return Resolved(
+        place_id=p["id"],
+        name=(p.get("displayName") or {}).get("text", "") or "",
+        address=p.get("formattedAddress", "") or "",
     )
 
 
-def photo_for_facility(conn, name: str, api_key: str, *,
-                       max_px: int = DEFAULT_MAX_PX) -> Photo | None:
-    """施設名から写真を1枚。place_id は DB に覚える（保存が許されている唯一のもの）。
+@dataclass
+class Details:
+    """表示に使う施設情報。いずれも保存せず、都度取得する。"""
+    photo: Photo | None = None
+    address: str = ""
 
-    2回目以降は検索を飛ばせるので、呼び出しが Details + Photos の2回で済む。
+
+def fetch_details(place_id: str, api_key: str, *,
+                  max_px: int = DEFAULT_MAX_PX) -> Details:
+    """place_id から写真と住所をまとめて取る。
+
+    写真と住所を **1回の Details 呼び出し**で取る。photos を要求した時点で
+    Pro 階層になるので、住所を足しても課金は変わらない（ただ乗りできる）。
+    取れなければ空の Details を返す（写真も住所も資料の飾り）。
+    """
+    if not place_id or not api_key:
+        return Details()
+    try:
+        data = _get(_DETAILS_URL.format(place_id=place_id), api_key,
+                    "photos,formattedAddress")
+    except Exception:
+        return Details()
+
+    out = Details(address=data.get("formattedAddress", "") or "")
+    photos = data.get("photos") or []
+    if photos and photos[0].get("name"):
+        first = photos[0]
+        who = [
+            a.get("displayName", "").strip()
+            for a in (first.get("authorAttributions") or [])
+            if a.get("displayName")
+        ]
+        out.photo = Photo(
+            url=(f"{_MEDIA_URL.format(photo_name=first['name'])}"
+                 f"?maxWidthPx={int(max_px)}&key={api_key}"),
+            attribution=("Google / " + "・".join(who[:2])) if who else "Google",
+        )
+    return out
+
+
+def fetch_photo(place_id: str, api_key: str, *,
+                max_px: int = DEFAULT_MAX_PX) -> Photo | None:
+    """place_id から写真URLと帰属表示を得る。取れなければ None。"""
+    return fetch_details(place_id, api_key, max_px=max_px).photo
+
+
+def place_id_for(conn, name: str, api_key: str) -> str | None:
+    """施設名に対応する place_id。無ければ引いて DB に覚える。
+
+    place_id は規約上、無期限に保存してよい唯一の Places コンテンツ。
+    覚えておけば、以降の呼び出しから検索1回ぶんを削れる。
     """
     from . import db  # noqa: PLC0415
 
     if not api_key:
         return None
     pid = db.get_place_id(conn, name)
-    if not pid:
-        pid = find_place_id(name, api_key)
-        if not pid:
-            return None
-        db.set_place_id(conn, name, pid)      # 失敗しても写真は出せるので握る
-    return fetch_photo(pid, api_key, max_px=max_px)
+    if pid:
+        return pid
+    pid = find_place_id(name, api_key)
+    if pid:
+        db.set_place_id(conn, name, pid)      # 失敗しても続行できるので握る
+    return pid
+
+
+def details_for_facility(conn, name: str, api_key: str, *,
+                         max_px: int = DEFAULT_MAX_PX) -> Details:
+    """施設名から写真と住所を。place_id は DB に覚える。"""
+    pid = place_id_for(conn, name, api_key)
+    return fetch_details(pid, api_key, max_px=max_px) if pid else Details()
+
+
+def photo_for_facility(conn, name: str, api_key: str, *,
+                       max_px: int = DEFAULT_MAX_PX) -> Photo | None:
+    """施設名から写真を1枚。"""
+    return details_for_facility(conn, name, api_key, max_px=max_px).photo
