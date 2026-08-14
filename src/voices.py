@@ -28,12 +28,14 @@ _FUTURE = ("もっと", "増え", "次は", "また来", "また行", "期待", 
 @dataclass
 class Voice:
     quadrant: str
-    quote: str = ""
+    quote: str = ""          # 要約（1行）。LLM が無ければ本文の先頭文
+    raw: str = ""            # 口コミの生データ。**一字も変えない**
     age: str = ""            # 「40代」など。推定できなければ空
     gender: str = ""         # 「女性」など
     companion: str = ""      # 「ファミリー」など
     rating: int | None = None
     estimated: bool = False  # 属性が LLM 推定かどうか
+    summarized: bool = False # 要約が LLM 生成かどうか（生データそのままなら False）
 
     @property
     def chips(self) -> list[str]:
@@ -48,6 +50,23 @@ def _norm(s: str) -> str:
 def _clip(s: str, n: int = 70) -> str:
     s = (s or "").strip()
     return s if len(s) <= n else s[:n].rstrip() + "…"
+
+
+# 文の切れ目。生データから「先頭の1文」を取り出すのに使う。
+_SENT_END = re.compile(r"(?<=[。！？!?])")
+
+
+def headline(text: str, n: int = 44) -> str:
+    """生データから見出し用の1行を作る。**要約せず、先頭の文をそのまま使う。**
+
+    LLM が使えないときの代替。生成すると出所が曖昧になるので、
+    ここでは必ず本文の一部をそのまま切り出す。
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+    first = next((p for p in _SENT_END.split(t) if p.strip()), t)
+    return _clip(first.strip(), n)
 
 
 def pick_fallback(reviews: list[tuple]) -> list[Voice]:
@@ -81,7 +100,9 @@ def pick_fallback(reviews: list[tuple]) -> list[Voice]:
     ]
 
     return [
-        Voice(quadrant=name, quote=_clip(src[1]) if src else "",
+        Voice(quadrant=name,
+              quote=headline(src[1]) if src else "",
+              raw=(src[1] or "").strip() if src else "",
               rating=src[0] if src else None)
         for (name, _desc), src in zip(QUADRANTS, picks)
     ]
@@ -111,15 +132,26 @@ def apply_llm_result(reviews: list[tuple], data: list) -> list[Voice] | None:
             continue
 
         rating, text = reviews[idx]
-        quote = str(item.get("quote", "")).strip()
-        # 生成された引用が本文に無ければ、捏造なので本文で置き換える
-        if not quote or _norm(quote) not in _norm(text):
-            quote = text
+        raw = (text or "").strip()
+
+        # 見出しは LLM の要約を使う。ただし空なら本文の先頭文に落とす。
+        # （生データ側は下で必ずそのまま載せるので、要約が多少ずれても
+        #   読み手は原文に当たれる）
+        summary = str(item.get("summary", "")).strip()
+        summarized = bool(summary)
+        if not summary:
+            quote = str(item.get("quote", "")).strip()
+            # 生成された引用が本文に無ければ、捏造なので本文で置き換える
+            if quote and _norm(quote) in _norm(raw):
+                summary = _clip(quote)
+            else:
+                summary = headline(raw)
+
         out.append(Voice(
-            quadrant=name, quote=_clip(quote), rating=rating,
+            quadrant=name, quote=_clip(summary, 56), raw=raw, rating=rating,
             age=str(item.get("age", "") or "").strip(),
             gender=str(item.get("gender", "") or "").strip(),
             companion=str(item.get("companion", "") or "").strip(),
-            estimated=True,
+            estimated=True, summarized=summarized,
         ))
     return out

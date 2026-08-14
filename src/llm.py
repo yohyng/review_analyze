@@ -264,9 +264,12 @@ def pick_voice_quadrants(facility_name: str, reviews: list, api_key: str):
     reviews は [(rating, text), ...]。返り値は (data, error)。
     data は voices.apply_llm_result() に渡す形式。
 
-    **引用文を創作させない。** 選ぶのは口コミの index で、quote はその本文
+    **本文を創作させない。** 選ぶのは口コミの index で、quote はその本文
     からの逐語抜粋に限る（呼び出し側で実在を検証する）。属性は口コミの書きぶり
     からの推定であり、書かれていなければ空にさせる。
+
+    summary（見出し用の1行）だけは生成させる。ただしスライドには生データを
+    そのまま併記するので、読み手は必ず原文に当たれる。
     """
     from . import voices  # noqa: PLC0415
 
@@ -288,7 +291,9 @@ def pick_voice_quadrants(facility_name: str, reviews: list, api_key: str):
 {quads}
 
 制約:
-- 選ぶのは番号（index）です。**引用文を創作してはいけません。**
+- 選ぶのは番号（index）です。**本文そのものを創作してはいけません。**
+- summary は選んだ口コミが何を言っているかを 40 字以内で1行にまとめたもの。
+  資料の見出しに使うので、体言止め・簡潔に。**書かれていない事実を足さない。**
 - quote は選んだ口コミの本文から、そのまま抜き出した連続する一節にすること
   （語順を変えたり要約したりしない）。60字以内。
 - age / gender / companion は口コミの書きぶりから推定できる場合だけ書く。
@@ -299,7 +304,7 @@ def pick_voice_quadrants(facility_name: str, reviews: list, api_key: str):
 - 該当する口コミが無い観点は index を -1 にすること。
 
 出力は次の形式のJSONのみ（説明文やコードフェンスは不要）:
-[{{"index": 0, "quote": "...", "age": "", "gender": "", "companion": ""}}, ...]
+[{{"index": 0, "summary": "...", "quote": "...", "age": "", "gender": "", "companion": ""}}, ...]
 
 口コミ一覧:
 {listing}

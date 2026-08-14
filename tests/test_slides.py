@@ -814,7 +814,7 @@ def test_slide6_renders_four_cards(tmp_path):
             "未来の企画につながる声を整理しました。") in html
     for q, _d in __import__("src.voices", fromlist=["voices"]).QUADRANTS:
         assert q in html
-    assert "※上記は代表的なご意見（N=1）の抜粋です" in html
+    assert "※上記は代表的なご意見（N=1）です。原文はそのまま掲載しています" in html
     assert "映像体験" in html and "混雑時は待ち時間" in html
 
 
@@ -1170,3 +1170,114 @@ def test_planner_pill_is_gone_from_market_detail(tmp_path):
     """右上の「プランナー起点」は不要との判断で外した。"""
     b = _bundle(tmp_path)
     assert "プランナー起点" not in slides.slide2_market_detail(b)
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 6（N=1）— 要約と生データの併記
+#
+#   要約だけだと「本当にそう書いてあるのか」を確かめられない。
+#   必ず口コミの原文をそのまま併記する、という取り決めをここで固定する。
+# --------------------------------------------------------------------------- #
+_RAW = "スタッフの方の説明がとても丁寧で、展示の見方が変わりました。また来たいです。"
+
+
+def _voice_bundle(tmp_path, voices_list):
+    b = _bundle(tmp_path)
+    b["voices"] = voices_list
+    return b
+
+
+def test_headline_is_taken_verbatim_from_the_review():
+    """LLM が無いときの見出しは、要約せず先頭の文をそのまま切り出す。"""
+    from src import voices as _v
+
+    h = _v.headline(_RAW)
+    assert h == "スタッフの方の説明がとても丁寧で、展示の見方が変わりました。"
+    assert h in _RAW, "生成せず、本文の一部をそのまま使うこと"
+    assert _v.headline("") == ""
+    assert _v.headline("句点のない口コミ") == "句点のない口コミ"
+
+
+def test_fallback_keeps_the_raw_text_untouched():
+    from src import voices as _v
+
+    vs = _v.pick_fallback([(5, _RAW), (2, "混雑がひどい。")])
+    top = vs[0]
+    assert top.raw == _RAW, "生データは一字も変えないこと"
+    assert top.quote and top.quote in _RAW
+    assert top.summarized is False
+
+
+def test_slide6_shows_both_the_headline_and_the_raw_text(tmp_path):
+    from src import voices as _v
+
+    vs = _v.pick_fallback([(5, _RAW)])
+    html = slides.slide6_voices(_voice_bundle(tmp_path, vs))
+    assert "口コミ原文" in html
+    assert escape_ok(html, _RAW), "原文がそのまま載っていない"
+    assert escape_ok(html, vs[0].quote)
+
+
+def escape_ok(html: str, text: str) -> bool:
+    from html import escape as _e
+    return _e(text) in html
+
+
+def test_slide6_marks_generated_summaries(tmp_path):
+    from src import voices as _v
+
+    vs = _v.apply_llm_result(
+        [(5, _RAW), (2, "混雑がひどい。"), (3, "案内がほしい。"), (4, "また来たい。")],
+        [{"index": i, "summary": f"要約{i}", "quote": "", "age": "", "gender": "",
+          "companion": ""} for i in range(4)],
+    )
+    assert all(v.summarized for v in vs)
+    html = slides.slide6_voices(_voice_bundle(tmp_path, vs))
+    assert "見出しは生成AIによる要約です" in html
+    # 要約が生成でも、原文は必ずそのまま出る
+    assert escape_ok(html, _RAW)
+
+
+def test_llm_summary_falls_back_to_the_first_sentence(tmp_path):
+    """LLM が summary を返さなかったら、生成せず本文の先頭文に落とす。"""
+    from src import voices as _v
+
+    vs = _v.apply_llm_result(
+        [(5, _RAW)] * 4,
+        [{"index": 0, "quote": "", "age": "", "gender": "", "companion": ""}] * 4,
+    )
+    assert vs[0].quote in _RAW
+    assert vs[0].summarized is False
+
+
+def test_llm_summary_is_used_when_present():
+    from src import voices as _v
+
+    vs = _v.apply_llm_result(
+        [(5, _RAW)] * 4,
+        [{"index": 0, "summary": "説明の丁寧さが体験を変えた", "quote": "",
+          "age": "", "gender": "", "companion": ""}] * 4,
+    )
+    assert vs[0].quote == "説明の丁寧さが体験を変えた"
+    assert vs[0].raw == _RAW
+    assert vs[0].summarized is True
+
+
+def test_slide6_survives_an_empty_quadrant(tmp_path):
+    from src import voices as _v
+
+    vs = _v.pick_fallback([])
+    html = slides.slide6_voices(_voice_bundle(tmp_path, vs))
+    assert html and "この観点に該当する口コミは見つかりませんでした" in html
+
+
+def test_llm_prompt_asks_for_a_summary():
+    """要約は生成させる。ただし本文の創作は禁じたまま。"""
+    import inspect
+
+    from src import llm
+
+    src = inspect.getsource(llm.pick_voice_quadrants)
+    assert '"summary"' in src
+    assert "書かれていない事実を足さない" in src
+    assert "創作してはいけません" in src

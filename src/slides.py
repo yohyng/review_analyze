@@ -1991,39 +1991,70 @@ def slide5_space_detail(b: dict) -> str:
 # SLIDE 6「特徴的な口コミ」— docs/design/slide_p11.png
 # ═══════════════════════════════════════════════════════════════════════════
 def _voice_card(v, style: dict) -> str:
-    """4象限カード1枚。大きな引用符つきで口コミを載せる。"""
-    if not v.quote:
-        inner = (f'<p style="margin:0;flex:1;display:flex;align-items:center;'
-                 f'color:{T.SUB};font-size:1.22cqw;">'
-                 'この観点に該当する口コミは見つかりませんでした</p>')
-    else:
-        chips = "".join(
-            f'<span style="background:#fff;border:1px solid {style["border"]};'
-            'border-radius:.4cqw;padding:.25cqw .7cqw;font-size:1.12cqw;'
-            f'color:{T.INK_SUB};white-space:nowrap;overflow:hidden;'
-            f'text-overflow:ellipsis;">{escape(c)}</span>'
-            for c in v.chips
+    """4象限カード1枚。
+
+    上段に **要約（1行）**、下段に **口コミの生データをそのまま小さく** 載せる。
+    要約だけだと「本当にそう書いてあるのか」を確かめられないので、必ず原文を
+    併記する。原文は一字も変えない（長くて入り切らないぶんは枠で切れる）。
+    """
+    if not v.quote and not v.raw:
+        return (
+            f'<div style="border:1px solid {style["border"]};background:{style["bg"]};'
+            'border-radius:.9cqw;padding:1.2cqw 1.4cqw;display:flex;gap:1.2cqw;'
+            'min-width:0;min-height:0;">'
+            f'<span style="width:5.4cqw;height:5.4cqw;flex:none;border-radius:50%;'
+            f'background:{style["icon_bg"]};color:{style["fg"]};display:flex;'
+            f'align-items:center;justify-content:center;font-size:2.4cqw;">'
+            f'{style["icon"]}</span>'
+            '<div style="flex:1;display:flex;flex-direction:column;min-width:0;">'
+            f'<div style="font-size:1.5cqw;font-weight:800;color:{style["fg"]};'
+            f'margin-bottom:.5cqw;">{escape(v.quadrant)}</div>'
+            f'<p style="margin:0;flex:1;color:{T.SUB};font-size:1.1cqw;">'
+            'この観点に該当する口コミは見つかりませんでした</p></div></div>'
         )
-        inner = (
-            f'<p style="margin:0;flex:1;font-size:1.3cqw;font-weight:700;'
-            f'line-height:1.5;color:{T.INK};overflow:hidden;">'
-            f'“{escape(v.quote)}”</p>'
-            + (f'<div style="display:flex;gap:.7cqw;min-width:0;'
-               f'border-top:1px dashed {style["border"]};padding-top:.6cqw;'
-               f'margin-top:.5cqw;">{chips}</div>' if chips else "")
-        )
+
+    chips = "".join(
+        f'<span style="background:#fff;border:1px solid {style["border"]};'
+        'border-radius:.4cqw;padding:.22cqw .7cqw;font-size:.92cqw;'
+        f'color:{T.INK_SUB};white-space:nowrap;">{escape(c)}</span>'
+        for c in v.chips
+    )
+    stars = (f'<span style="font-size:.95cqw;">{_stars(v.rating, size=.95)}</span>'
+             if v.rating else "")
+
+    # 生データ。要約と見分けがつくよう、白地の枠に入れて一段小さく組む。
+    raw_block = (
+        f'<div style="flex:1;min-height:0;overflow:hidden;background:#fff;'
+        f'border:1px solid {style["border"]};border-radius:.5cqw;'
+        'padding:.6cqw .8cqw;margin-top:.5cqw;">'
+        '<div style="display:flex;align-items:center;gap:.5cqw;'
+        'margin-bottom:.3cqw;">'
+        f'<span style="font-size:.85cqw;font-weight:700;color:{T.INK_FAINT};">'
+        '口コミ原文</span>'
+        f'{stars}</div>'
+        f'<p style="margin:0;font-size:.92cqw;line-height:1.55;color:{T.INK_SUB};'
+        f'word-break:break-all;">{escape(v.raw)}</p></div>'
+        if v.raw else ""
+    )
     return (
         f'<div style="border:1px solid {style["border"]};background:{style["bg"]};'
-        'border-radius:.9cqw;padding:1.2cqw 1.4cqw;display:flex;gap:1.2cqw;'
+        'border-radius:.9cqw;padding:1cqw 1.2cqw;display:flex;gap:1cqw;'
         'min-width:0;min-height:0;">'
-        f'<span style="width:5.4cqw;height:5.4cqw;flex:none;border-radius:50%;'
+        f'<span style="width:4.6cqw;height:4.6cqw;flex:none;border-radius:50%;'
         f'background:{style["icon_bg"]};color:{style["fg"]};display:flex;'
-        f'align-items:center;justify-content:center;font-size:2.4cqw;">'
+        f'align-items:center;justify-content:center;font-size:2.1cqw;">'
         f'{style["icon"]}</span>'
         '<div style="flex:1;display:flex;flex-direction:column;min-width:0;">'
-        f'<div style="font-size:1.5cqw;font-weight:800;color:{style["fg"]};'
-        f'margin-bottom:.5cqw;">{escape(v.quadrant)}</div>'
-        f'{inner}</div></div>'
+        f'<div style="font-size:1.4cqw;font-weight:800;color:{style["fg"]};'
+        f'flex:none;">{escape(v.quadrant)}</div>'
+        # 要約（見出し）
+        f'<p style="margin:.3cqw 0 0;flex:none;font-size:1.25cqw;font-weight:700;'
+        f'line-height:1.45;color:{T.INK};">{escape(v.quote)}</p>'
+        # 生データ
+        f'{raw_block}'
+        + (f'<div style="display:flex;gap:.6cqw;min-width:0;flex:none;'
+           f'margin-top:.5cqw;">{chips}</div>' if chips else "")
+        + '</div></div>'
     )
 
 
@@ -2038,9 +2069,12 @@ def slide6_voices(b: dict) -> str:
         _voice_card(v, T.QUADRANT_CARDS.get(v.quadrant, T.QUADRANT_CARDS["維持すべき価値"]))
         for v in vs
     )
-    # 属性が推定値のときは、その旨を必ず添える（口コミに書かれた事実ではない）
+    # 生成した箇所は必ず明示する（口コミに書かれた事実と区別できるように）
     estimated = any(getattr(v, "estimated", False) and v.chips for v in vs)
-    note = "※上記は代表的なご意見（N=1）の抜粋です"
+    summarized = any(getattr(v, "summarized", False) for v in vs)
+    note = "※上記は代表的なご意見（N=1）です。原文はそのまま掲載しています"
+    if summarized:
+        note += "／見出しは生成AIによる要約です"
     if estimated:
         note += "／属性は口コミ本文からの推定です"
     body = body_area(
