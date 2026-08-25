@@ -80,3 +80,43 @@ def test_report_without_scores_text_only(tmp_path):
     assert out.exists()
     prs = Presentation(str(out))
     assert len(prs.slides) >= 3   # title + summary + insights at minimum
+
+
+# --------------------------------------------------------------------------- #
+# 設定画面の検索窓
+#
+#   <input> に直接 height を当てると、Streamlit 側の器（stTextInput）は既定の
+#   高さのままなので、はみ出したぶんが次の要素に隠れて下端が切れる。
+#   見た目は BaseWeb のラッパ（stTextInputRootElement）側に持たせること。
+#   実ブラウザで測って直したときの取り決めを、ここで固定する。
+# --------------------------------------------------------------------------- #
+def _setup_css() -> str:
+    from pathlib import Path
+
+    from src.ui import analysis_mode
+
+    src = Path(analysis_mode.__file__).read_text(encoding="utf-8")
+    start = src.index("# Hero search field:")
+    return src[start:src.index('""", unsafe_allow_html=True)', start)]
+
+
+def test_search_box_styles_the_wrapper_not_the_input():
+    css = _setup_css()
+    assert 'div[data-baseweb="input"]{' in css, (
+        "枠・角丸・影はラッパ側に当てること（input に直接だと器からはみ出す）"
+    )
+    tail = css.split('div[data-testid="stTextInput"] input{')[-1]
+    assert "height:60px" not in tail, "input 側に固定の高さを戻さない"
+
+
+def test_search_box_container_reserves_room_for_the_frame():
+    """器の高さを確保しないと、枠の下端が次の要素に隠れる。"""
+    css = _setup_css()
+    assert 'div[data-testid="stTextInput"]{ min-height:64px!important; }' in css
+
+
+def test_inner_base_input_is_transparent():
+    """内側の base-input は白で塗るので、透過させないと角丸と虫めがねが隠れる。"""
+    css = _setup_css()
+    assert 'div[data-baseweb="base-input"]{' in css
+    assert "background:transparent!important" in css

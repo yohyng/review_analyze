@@ -703,18 +703,38 @@ def render():
     # ══════════════════════════════════════════════════════════════════════ #
     if st.session_state["an_screen"] == "setup":
         # Hero search field: magenta magnifier + suggestion rows styled from buttons.
+        #
+        # 見た目は <input> ではなく **BaseWeb のラッパ**に持たせる。
+        # input を直接 height:60px にすると、Streamlit 側の器は既定の高さ
+        # （約40px）のままなので、はみ出したぶんが次の要素に隠れて
+        # 検索窓の下端が切れる（実際に切れていた）。
         st.markdown("""
         <style>
-        div[data-testid="stTextInput"] input{
-          height:60px!important;font-size:18px!important;border-radius:15px!important;
+        /* 器の高さを枠に合わせて確保する（これが無いと下端が隠れる） */
+        div[data-testid="stTextInput"]{ min-height:64px!important; }
+        /* 枠・影・虫めがねはラッパ側に */
+        div[data-testid="stTextInput"] div[data-baseweb="input"]{
+          height:60px!important;border-radius:15px!important;
           border:1.5px solid #E4E3DD!important;background-color:#fff!important;
-          padding-left:52px!important;color:#16202B!important;
           box-shadow:0 1px 2px rgba(20,30,40,.04),0 12px 30px rgba(20,30,40,.05)!important;
           background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%23B0338A' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-4.3-4.3'/%3E%3C/svg%3E")!important;
-          background-repeat:no-repeat!important;background-position:18px center!important;background-size:22px 22px!important;
+          background-repeat:no-repeat!important;background-position:18px center!important;
+          background-size:22px 22px!important;overflow:visible!important;
         }
-        div[data-testid="stTextInput"] input:focus{
-          border-color:#B0338A!important;box-shadow:0 0 0 4px rgba(176,51,138,.18)!important;}
+        div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within{
+          border-color:#B0338A!important;
+          box-shadow:0 0 0 4px rgba(176,51,138,.18)!important;
+        }
+        /* 内側の base-input は白で塗りつぶして角丸と虫めがねを覆うので透過させる */
+        div[data-testid="stTextInput"] div[data-baseweb="base-input"]{
+          background:transparent!important;background-color:transparent!important;
+        }
+        /* 中の input は素通し。枠を二重に描かない */
+        div[data-testid="stTextInput"] input{
+          height:100%!important;font-size:18px!important;padding-left:52px!important;
+          background:transparent!important;border:none!important;
+          box-shadow:none!important;color:#16202B!important;
+        }
         [class*="st-key-an_sug_"] button{
           text-align:left!important;justify-content:flex-start!important;
           border:1px solid #EEEDE7!important;border-radius:12px!important;
