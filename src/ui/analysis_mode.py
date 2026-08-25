@@ -366,6 +366,7 @@ def _analysis_worker(prog: dict) -> None:
     try:
         # 施設ループのローカル変数 result と衝突しない名前にすること。
         ss_out: dict = {}       # ← session_state に入れてほしいもの
+        db.reset_retry_budget()  # この分析でリトライに使ってよい時間を戻す
         tconn = db.get_conn(prog.get("_db_path"))  # fresh thread-local connection
         tgt   = prog["_target"]
         amode = prog["_an_mode"]
@@ -990,6 +991,20 @@ def render():
                 )
 
             _progress_ui()
+
+            # 止まったときに待つしかない状態にしない。押せば設定画面へ戻れる。
+            # ワーカーには cancelled を立てて、次のチェックポイントで手を引かせる。
+            _cc1, _cc2, _cc3 = st.columns([1, 2, 1])
+            with _cc2:
+                if st.button("■ 分析を中止する", key="an_cancel", width="stretch"):
+                    _prog["cancelled"] = True
+                    st.session_state["an_screen"] = "setup"
+                    st.session_state.pop(_PROG_KEY, None)
+                    st.rerun()
+                st.caption(
+                    "進んだぶん（形態素解析・感情スコア）はDBに残るので、"
+                    "やり直しても最初からにはなりません。"
+                )
             st.stop()
 
         # ── ④ 未開始 → 同期ステップ①② を実行してワーカーを起動 ────────── #

@@ -305,3 +305,81 @@ def test_worker_does_not_write_the_cache_per_facility():
     body = src[start:src.index("\ndef ", start + 1)]
     assert "db.set_topic_score_cache(" not in body
     assert "db.set_topic_score_cache_bulk(" in body
+
+
+# --------------------------------------------------------------------------- #
+# リトライの総時間に上限を設ける
+#
+#   1クエリのリトライは最大 7.5 秒の待ち。分析は数十クエリ撃つので、
+#   Turso が継続的に不調だと待ちが積み上がり、分析全体が何分も止まる。
+#   36クエリ全滅で待ちだけ 270 秒、HTTPタイムアウトを足すと10分級。
+#   実際に「レポート生成中」のまま 600 秒止まる報告があった。
+# --------------------------------------------------------------------------- #
+def test_retry_budget_caps_the_total_wait(monkeypatch):
+    """予算を使い切ったら、それ以降のクエリは粘らず即座に諦める。"""
+    import time as _t
+
+    slept = []
+    monkeypatch.setattr(_t, "sleep", lambda s: slept.append(s))
+    db.reset_retry_budget()
+
+    # 502 を返し続けるセッションで、何クエリも撃つ
+    for _ in range(50):
+        s = _FakeSession(fail_times=99)
+        with pytest.raises(requests.exceptions.HTTPError):
+            db._post_with_retry(s, "http://x/v2/pipeline", {}, 15, retriable=True)
+
+    total = sum(slept)
+    assert total <= db._RETRY_BUDGET_S + 4.0, (
+        f"リトライの待ちが {total:.0f} 秒まで積み上がった（上限 {db._RETRY_BUDGET_S}）"
+    )
+    assert db.retry_budget_left() == 0
+
+
+def test_retry_budget_is_spent_before_it_runs_out(monkeypatch):
+    """予算が残っているうちは、ちゃんとやり直す。"""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda _s: None)
+    db.reset_retry_budget()
+
+    s = _FakeSession(fail_times=2)
+    db._post_with_retry(s, "http://x/v2/pipeline", {}, 15, retriable=True)
+    assert s.calls == 3
+    assert 0 < db.retry_budget_left() < db._RETRY_BUDGET_S
+
+
+def test_retry_budget_resets_per_analysis(monkeypatch):
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda _s: None)
+    db.reset_retry_budget()
+    s = _FakeSession(fail_times=99)
+    with pytest.raises(requests.exceptions.HTTPError):
+        db._post_with_retry(s, "http://x/v2/pipeline", {}, 15, retriable=True)
+    assert db.retry_budget_left() < db._RETRY_BUDGET_S
+
+    db.reset_retry_budget()
+    assert db.retry_budget_left() == db._RETRY_BUDGET_S
+
+
+def test_worker_resets_the_budget_at_the_start():
+    from pathlib import Path
+
+    from src.ui import analysis_mode
+
+    src = Path(analysis_mode.__file__).read_text(encoding="utf-8")
+    start = src.index("def _analysis_worker(")
+    body = src[start:src.index("\ndef ", start + 1)]
+    assert "db.reset_retry_budget()" in body
+
+
+def test_running_screen_can_be_cancelled():
+    """止まったときに待つしかない状態にしない。"""
+    from pathlib import Path
+
+    from src.ui import analysis_mode
+
+    src = Path(analysis_mode.__file__).read_text(encoding="utf-8")
+    assert 'key="an_cancel"' in src
+    assert '_prog["cancelled"] = True' in src

@@ -156,6 +156,24 @@ _RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 _RETRY_MAX = 4                       # 初回 + 4回
 _RETRY_BASE = 0.5                    # 0.5 → 1 → 2 → 4 秒
 
+# 1クエリぶんのリトライは最大 7.5 秒の待ち。分析は数十クエリ撃つので、
+# Turso が継続的に不調だと待ちが積み上がって分析全体が何分も止まる
+# （36クエリ全滅で待ちだけ 270 秒、HTTPタイムアウトを足すと10分級）。
+# 「1回の分析でリトライに使ってよい総時間」を決めて、使い切ったら
+# 即座に諦める。落ちるのは避けられないが、**黙って何分も止まらない**。
+_RETRY_BUDGET_S = 40.0
+_retry_spent = 0.0
+
+
+def reset_retry_budget() -> None:
+    """分析の開始時に呼ぶ。リトライに使える時間を戻す。"""
+    global _retry_spent
+    _retry_spent = 0.0
+
+
+def retry_budget_left() -> float:
+    return max(0.0, _RETRY_BUDGET_S - _retry_spent)
+
 # 「もう一度送っても結果が変わらない」文だけをやり直す。
 # 502 は「DBに届かなかった」ことも「届いたが応答が失われた」ことも意味しうるので、
 # 素の INSERT INTO をやり直すと行が二重に入る。そこは即座に諦める。
@@ -184,9 +202,14 @@ def _should_retry(exc) -> bool:
 
 
 def _post_with_retry(session, url, payload, timeout, retriable: bool):
-    """v2/pipeline へ POST。一時障害なら指数バックオフでやり直す。"""
+    """v2/pipeline へ POST。一時障害なら指数バックオフでやり直す。
+
+    やり直しの総時間は _RETRY_BUDGET_S で頭打ちにする。使い切ったら
+    そこから先は1発勝負にして、分析全体が何分も止まるのを防ぐ。
+    """
     import time as _time  # noqa: PLC0415
 
+    global _retry_spent
     last = None
     for attempt in range(_RETRY_MAX + 1):
         try:
@@ -197,7 +220,11 @@ def _post_with_retry(session, url, payload, timeout, retriable: bool):
             last = exc
             if not retriable or not _should_retry(exc) or attempt == _RETRY_MAX:
                 raise
-            _time.sleep(_RETRY_BASE * (2 ** attempt))
+            wait = _RETRY_BASE * (2 ** attempt)
+            if _retry_spent + wait > _RETRY_BUDGET_S:
+                raise                                   # 予算切れ＝もう粘らない
+            _retry_spent += wait
+            _time.sleep(wait)
     raise last                                          # pragma: no cover
 
 
@@ -209,7 +236,7 @@ def _turso_call(session, base_url, sql, params):
             {"type": "close"},
         ]
     }
-    resp = _post_with_retry(session, f"{base_url}/v2/pipeline", payload, 30,
+    resp = _post_with_retry(session, f"{base_url}/v2/pipeline", payload, 15,
                             _is_retriable_sql(sql))
     data = resp.json()
     return _parse_turso_result(data["results"][0])
@@ -246,7 +273,7 @@ class _TursoConn:
         # （素の INSERT INTO が混じるバッチは、二重投入になるのでやり直さない）
         resp = _post_with_retry(
             self._session, f"{self._base_url}/v2/pipeline",
-            {"requests": requests_body}, 60,
+            {"requests": requests_body}, 30,
             all(_is_retriable_sql(sql) for sql, _p in statements),
         )
         for res in resp.json()["results"][:-1]:
