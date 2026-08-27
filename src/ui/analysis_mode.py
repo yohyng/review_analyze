@@ -21,7 +21,7 @@ import streamlit as st
 
 from src import (
     analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
-    llm, places, preview, report, review_csv, score_excel, scoring, search,
+    llm, onboard, places, preview, report, review_csv, score_excel, scoring, search,
     discussion, slides, text_analysis, timeline, topic_score, topics, voices,
 )
 from src.ui import components, data
@@ -72,8 +72,15 @@ def _kz_pull(conn, key: str, query: str) -> bool:
         data.clear_list_caches()
         _stats = db.facility_stats(conn, query)
         if _stats and _stats["n_reviews"] > 0:
-            st.success(f"✅ 「{query}」の口コミを取り込みました。分析できます。")
             st.session_state["an_target"] = query
+            # 「集めて分析する」から始めた場合は、取り込んだらそのまま分析へ。
+            # ここで止めると、待った末にもう一度ボタンを押させることになる。
+            _ong = st.session_state.get(f"an_kz_ongoing::{query}") or {}
+            if _ong.get("auto_analyze"):
+                st.session_state.pop(f"an_kz_ongoing::{query}", None)
+                st.session_state["an_screen"] = "running"
+            else:
+                st.success(f"✅ 「{query}」の口コミを取り込みました。分析できます。")
             st.rerun()
             return True
         else:
@@ -120,6 +127,7 @@ def _kz_progress_tracker(conn, key: str, dataset_id: str, facility_name: str, qu
         if st.button("⬇️ 取り込みを再度試す", key="an_kz_retry_import", width="stretch"):
             _kz_pull(conn, key, query)
         return
+
 
     if status == 40:
         st.error("❌ 収集に失敗しました。別の施設名を試すか、管理者に連絡してください。")
@@ -271,6 +279,86 @@ def _kz_collect_section(conn, query: str) -> None:
                 "facility_name": _facility_name,
             }
             st.rerun()
+
+
+def _onboard_panel(conn, p, meta: dict) -> None:
+    """onboard.plan の判定に従って、次の1手ぶんだけを出す。
+
+    これまでは「候補ボタン → expander を開く → 別の入力欄 → 発注ボタン →
+    取り込みボタン → 分析ボタン」と段が多かった。ここでは常に
+    **押すべきボタンを1つ**にする。押した先は最後まで自動で進む。
+    """
+    if p.action == onboard.AMBIGUOUS:
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        st.caption("どの施設ですか？")
+        for _n in p.candidates:
+            if st.button(f"{_n}　·　{meta.get(_n, '')}", key=f"an_sug_{_n}",
+                         width="stretch"):
+                st.session_state["an_target"] = _n
+                st.rerun()
+        return
+
+    if p.action == onboard.NOT_FOUND:
+        st.info("施設名を入力してください。")
+        return
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    # 何を分析しようとしているのかを1行で見せる（発注は不可逆なので）
+    _sub = p.address or meta.get(p.facility, "")
+    st.markdown(
+        '<div style="max-width:560px;margin:0 auto;text-align:center;">'
+        f'<div style="font-size:17px;font-weight:800;color:#16202B;">'
+        f'{escape(p.display_name or p.facility)}</div>'
+        + (f'<div style="font-size:13px;color:#8A9098;margin-top:4px;">'
+           f'{escape(_sub)}</div>' if _sub else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+    _b1, _b2, _b3 = st.columns([1, 2, 1])
+    with _b2:
+        if p.action == onboard.READY:
+            if st.button(p.label, type="primary", width="stretch",
+                         key="an_go_ready"):
+                st.session_state["an_target"] = p.facility
+                st.rerun()
+            return
+
+        # ここから先は収集が要る（EMPTY / NEW）
+        _kzkey = _resolve_kaizode_key()
+        if not st.session_state.get("admin_authed"):
+            st.info("この施設はまだ登録されていません。収集にはログインが必要です。")
+            if st.button("🔐 ログインして続ける", width="stretch", key="an_go_login"):
+                st.session_state["app_mode"] = "admin"
+                st.rerun()
+            return
+        if not _kzkey:
+            st.warning("KAIZODE APIキーが未設定です（管理 → 📡 KAIZODE連携）。")
+            return
+
+        if not p.place_id and p.action == onboard.NEW:
+            st.caption(
+                "⚠️ Google マップで施設を特定できませんでした。名前で検索して"
+                "収集するため、同名の別施設を拾う可能性があります。"
+            )
+        if st.button(p.label, type="primary", width="stretch", key="an_go_collect"):
+            _name = onboard.register(conn, p)
+            _dsid = _kz_order(conn, _kzkey, onboard.collect_url(p), _name)
+            if _dsid:
+                data.clear_list_caches()
+                # ここから先は自動: 収集を待つ → 取り込む → 分析を始める
+                st.session_state[f"an_kz_ongoing::{_name}"] = {
+                    "dataset_id": _dsid, "facility_name": _name,
+                    "auto_analyze": True,
+                }
+                st.session_state["an_target"] = _name
+                st.rerun()
+        st.caption(
+            f"押すと、施設を登録 → 口コミを収集 → 取り込み → 分析まで自動で進みます"
+            f"（残枠 {kaizode.monthly_remaining(conn):,} 件）"
+        )
 
 
 # ── Background thread: steps ③–⑥ ─────────────────────────────────────────── #
@@ -758,46 +846,26 @@ def render():
             _target = st.session_state.get("an_target")
 
             if not _target:
-                # ── 空の状態：検索 + 候補（ネイティブボタン）＋無効ボタン ─── #
+                # ── 空の状態：施設名を1回入れるだけ ──────────────────── #
+                #   入力から「次に何をすべきか」を onboard.plan が1つに決める。
+                #   画面には、その1手ぶんのボタンだけを出す。
                 _q = st.text_input(
-                    "施設名を入力", placeholder="施設名を入力",
+                    "施設名を入力", placeholder="施設名を入力（Enterで検索）",
                     key="an_search", label_visibility="collapsed",
                 )
                 _qs = _q.strip()
                 if _qs:
-                    _subs = [n for n in _names if _qs.lower() in n.lower()]
-                    _hints = search.suggest(_qs, _names)
-                    _seen, _cands = set(), []
-                    for _n in _subs + _hints:
-                        if _n not in _seen:
-                            _seen.add(_n)
-                            _cands.append(_n)
-                    _cands = _cands[:8]
-                    if _cands:
-                        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-                        for _n in _cands:
-                            _sub = _meta.get(_n, "")
-                            if st.button(
-                                f"{_n}　·　{_sub}", key=f"an_sug_{_n}",
-                                width="stretch",
-                            ):
-                                st.session_state["an_target"] = _n
-                                st.rerun()
-                    # 完全一致がDBに無ければ、候補があってもKAIZODE収集の導線を出す
-                    if not any(_qs == _n for _n in _names):
-                        if _cands:
-                            with st.expander("🔍 候補に無い？ KAIZODEで新しく収集する",
-                                             expanded=False):
-                                _kz_collect_section(conn, _qs)
-                        else:
-                            _kz_collect_section(conn, _qs)
-
-                st.markdown(
-                    '<div style="max-width:440px;margin:24px auto 0;text-align:center;'
-                    'background:#E4E3DD;color:#A7ABB0;font-weight:700;font-size:15px;'
-                    'padding:16px;border-radius:12px;">この内容で分析する</div>',
-                    unsafe_allow_html=True,
-                )
+                    _plan = onboard.plan(
+                        conn, _qs, names=_names, gmaps_key=places.get_api_key())
+                    _onboard_panel(conn, _plan, _meta)
+                else:
+                    st.markdown(
+                        '<div style="max-width:440px;margin:24px auto 0;'
+                        'text-align:center;background:#E4E3DD;color:#A7ABB0;'
+                        'font-weight:700;font-size:15px;padding:16px;'
+                        'border-radius:12px;">この内容で分析する</div>',
+                        unsafe_allow_html=True,
+                    )
 
             else:
                 # ── 選択済み：施設カード + 分析タイプ選択 + 実行ボタン ── #
