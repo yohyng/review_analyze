@@ -1197,19 +1197,46 @@ def render():
             st.error(str(_e))
             st.stop()
 
-        # ── 月間取得の進捗（上限の可視化）───────────────────────────── #
+        # ── 月間取得の進捗と上限の設定 ─────────────────────────────── #
         _kz_used = kaizode.get_monthly_usage(conn)
-        _kz_lim = kaizode.MONTHLY_LIMIT
+        _kz_lim = kaizode.monthly_limit(conn)
         _kz_rem = max(0, _kz_lim - _kz_used)
         st.progress(
-            min(1.0, _kz_used / _kz_lim) if _kz_lim else 0.0,
-            text=f"📅 今月のKAIZODE取得: {_kz_used:,} / {_kz_lim:,} 件（残り {_kz_rem:,}）",
+            min(1.0, _kz_used / _kz_lim) if _kz_lim else 1.0,
+            text=f"📅 今月の新規取得: {_kz_used:,} / {_kz_lim:,} 件（残り {_kz_rem:,}）",
         )
-        if _kz_rem == 0:
+        if _kz_lim == 0:
+            st.error("⛔ 上限が 0 件です。新規の取得は行われません。")
+        elif _kz_rem == 0:
             st.error("⚠️ 今月の取得上限に達しています。取り込みは翌月まで停止します。")
-        elif _kz_lim and _kz_used / _kz_lim >= 0.8:
+        elif _kz_used / _kz_lim >= 0.8:
             st.warning(f"今月の残り取得枠は {_kz_rem:,} 件です。大量取得にご注意ください。")
         st.caption(f"対象月: {kaizode.current_month()}（毎月リセット・UTC基準）")
+
+        with st.expander(f"⚙️ 月間の取得上限を変更（現在 {_kz_lim:,} 件／月）",
+                         expanded=False):
+            _lc1, _lc2 = st.columns([2, 1])
+            with _lc1:
+                _new_lim = st.number_input(
+                    "1か月に新規取得してよい口コミの件数",
+                    min_value=kaizode.MONTHLY_LIMIT_MIN,
+                    max_value=kaizode.MONTHLY_LIMIT_MAX,
+                    value=_kz_lim, step=1000, key="kz_limit_input",
+                    help="0 にすると新規取得を止められます。"
+                         "上限に達すると、その月は取り込みが停止します。",
+                )
+            with _lc2:
+                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                if st.button("保存", type="primary", width="stretch",
+                             key="kz_limit_save"):
+                    _saved = kaizode.set_monthly_limit(conn, int(_new_lim))
+                    st.success(f"上限を {_saved:,} 件／月にしました。")
+                    st.rerun()
+            st.caption(
+                f"既定は {kaizode.DEFAULT_MONTHLY_LIMIT:,} 件／月。"
+                "設定はDBに保存されるので、アプリを再起動しても残ります。"
+                "カウントは「新規に取り込めた口コミ件数」で、重複分は数えません。"
+            )
 
         tab_kst, tab_knew, tab_ksync = st.tabs(
             ["📋 収集状況", "🛒 収集を発注", "⬇️ DBへ取り込み"]
@@ -1334,7 +1361,7 @@ def render():
                     )
                     if _res.get("limit_reached"):
                         st.warning(
-                            f"⚠️ 今月の取得上限（{_res.get('monthly_limit', kaizode.MONTHLY_LIMIT):,}件）"
+                            f"⚠️ 今月の取得上限（{_res.get('monthly_limit', _kz_lim):,}件）"
                             "に達したため途中で停止しました。続きは翌月/枠回復後に取得されます。"
                         )
                     _topic_matrix_cached.clear()

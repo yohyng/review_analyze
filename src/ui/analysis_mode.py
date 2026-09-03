@@ -169,7 +169,7 @@ def _kz_collect_section(conn, query: str) -> None:
         return
 
     _rem = kaizode.monthly_remaining(conn)
-    st.caption(f"今月のKAIZODE残枠: {_rem:,} / {kaizode.MONTHLY_LIMIT:,} 件")
+    st.caption(f"今月のKAIZODE残枠: {_rem:,} / {kaizode.monthly_limit(conn):,} 件")
 
     # ── 進行中の収集があれば、そちらを優先表示 ────────────────── #
     _ongoing_key = f"an_kz_ongoing::{query}"

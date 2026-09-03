@@ -369,6 +369,12 @@ CREATE TABLE IF NOT EXISTS app_user (
     created_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS app_setting (
+    key             TEXT PRIMARY KEY,
+    value           TEXT,
+    updated_at      TEXT
+);
+
 CREATE TABLE IF NOT EXISTS kaizode_usage (
     month           TEXT PRIMARY KEY,          -- 'YYYY-MM'
     downloaded      INTEGER NOT NULL DEFAULT 0, -- 当月KAIZODEから取得したレビュー件数
@@ -481,6 +487,41 @@ def init_db(conn) -> None:
         conn.execute(stmt)
     conn.commit()
     _migrate(conn)
+
+
+# --------------------------------------------------------------------------- #
+# アプリ設定（DBに置く。デプロイし直しても消えない・管理画面から変えられる）
+# --------------------------------------------------------------------------- #
+def get_setting(conn, key: str, default: str = "") -> str:
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_setting WHERE key = ?", (key,)
+        ).fetchone()
+    except Exception:
+        return default
+    return row["value"] if row and row["value"] is not None else default
+
+
+def get_setting_int(conn, key: str, default: int) -> int:
+    raw = get_setting(conn, key, "")
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def set_setting(conn, key: str, value) -> bool:
+    """設定を書く。書けなくても呼び出し側は既定値で動けるので False を返す。"""
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_setting(key, value, updated_at) "
+            "VALUES (?, ?, ?)", (key, str(value), ts),
+        )
+        conn.commit()
+    except Exception:
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -613,23 +654,11 @@ def set_topic_score_cache_bulk(conn, rows: list[tuple]) -> int:
     INSERT OR REPLACE なので、まとめ送りが途中で失敗してやり直しても安全。
     書けなくても分析は続行できる（次回また計算するだけ）。
     """
-    rows = list(rows)
-    if not rows:
-        return 0
-    try:
-        if hasattr(conn, "execute_pipeline"):
-            _CHUNK = 100
-            for i in range(0, len(rows), _CHUNK):
-                conn.execute_pipeline(
-                    [(_TOPIC_CACHE_SQL, r) for r in rows[i:i + _CHUNK]]
-                )
-        else:
-            for r in rows:
-                conn.execute(_TOPIC_CACHE_SQL, r)
-        conn.commit()
-    except Exception:
-        return 0
-    return len(rows)
+    return _insert_many(
+        conn, "topic_score_cache",
+        ("facility_id", "n_reviews", "topics_json", "overall_score", "n_sentences"),
+        list(rows),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -683,24 +712,94 @@ def load_token_cache(conn) -> dict[str, list[str]]:
     return {r[0]: (r[1].split(" ") if r[1] else []) for r in rows}
 
 
-def save_token_cache(conn, items: dict[str, list[str]]) -> int:
-    """新しく解析したぶんだけを一括で書く。失敗しても分析は続行する。"""
-    if not items:
+# 1文にまとめる行数と、1リクエストのおおよそのバイト上限。
+#
+#   以前は「1行 = 1文」を200文ずつパイプラインで送っていた。これだと
+#   HTTP往復が 行数/200 回に比例して増え、実データの書き戻しに 304 秒
+#   かかっていた（約300往復）。VALUES を並べて1文に畳むと、同じ行数を
+#   桁違いに少ない往復で送れる。
+# 1文で使ってよい束縛パラメータ数。SQLite の SQLITE_LIMIT_VARIABLE_NUMBER は
+# 3.32 以降 32766（実測では 250000）だが、古い環境の 999 を下回っても壊れない
+# よう、実行時に問い合わせて安全側に丸める。
+_MULTI_BYTES = 2_000_000   # 1リクエストのおおよその上限（Turso は 30MB まで）
+
+
+def _max_bind_params() -> int:
+    """1文に渡せる束縛パラメータの上限（安全側）。"""
+    try:
+        import sqlite3 as _s  # noqa: PLC0415
+        c = _s.connect(":memory:")
+        try:
+            lim = int(c.getlimit(_s.SQLITE_LIMIT_VARIABLE_NUMBER))
+        finally:
+            c.close()
+    except Exception:
+        lim = 999                                  # 取れなければ最も古い既定値
+    return max(100, min(lim - 1, 20_000))          # 上げすぎない
+
+
+_MAX_PARAMS = _max_bind_params()
+
+
+def rows_per_statement(n_col: int) -> int:
+    """列数から、1文に畳んでよい行数を決める。"""
+    return max(1, _MAX_PARAMS // max(1, n_col))
+
+
+def _insert_many(conn, table: str, cols: tuple[str, ...], rows: list[tuple]) -> int:
+    """INSERT OR REPLACE を VALUES 並べで畳んで、少ない往復で書く。
+
+    書けた行数を返す。失敗したら 0（呼び出し側は再計算に落ちればよい）。
+    """
+    if not rows:
         return 0
-    rows = [(h, " ".join(toks)) for h, toks in items.items()]
-    sql = "INSERT OR REPLACE INTO token_cache(h, tokens) VALUES (?, ?)"
+    n_col = len(cols)
+    per_stmt = rows_per_statement(n_col)
+    head = (f"INSERT OR REPLACE INTO {table}({', '.join(cols)}) VALUES ")
+    tup = "(" + ", ".join("?" * n_col) + ")"
+
+    # 1文ぶんずつ（行数と、おおよそのバイト数の両方で切る）
+    stmts: list[tuple[str, tuple]] = []
+    i = 0
+    while i < len(rows):
+        chunk, nbytes = [], 0
+        while i < len(rows) and len(chunk) < per_stmt and nbytes < _MULTI_BYTES:
+            r = rows[i]
+            chunk.append(r)
+            nbytes += sum(len(str(v)) for v in r)
+            i += 1
+        params = tuple(v for r in chunk for v in r)
+        stmts.append((head + ", ".join([tup] * len(chunk)), params))
+
     try:
         if hasattr(conn, "execute_pipeline"):
-            _CHUNK = 200
-            for i in range(0, len(rows), _CHUNK):
-                conn.execute_pipeline([(sql, r) for r in rows[i:i + _CHUNK]])
+            # さらに数文を1リクエストに束ねる（バイト上限は守る）
+            batch, nbytes = [], 0
+            for sql, params in stmts:
+                if batch and nbytes + len(sql) > _MULTI_BYTES:
+                    conn.execute_pipeline(batch)
+                    batch, nbytes = [], 0
+                batch.append((sql, params))
+                nbytes += len(sql)
+            if batch:
+                conn.execute_pipeline(batch)
         else:
-            for r in rows:
-                conn.execute(sql, r)
+            for sql, params in stmts:
+                conn.execute(sql, params)
         conn.commit()
     except Exception:
         return 0
     return len(rows)
+
+
+def save_token_cache(conn, items: dict[str, list[str]]) -> int:
+    """新しく解析したぶんだけを一括で書く。失敗しても分析は続行する。"""
+    if not items:
+        return 0
+    return _insert_many(
+        conn, "token_cache", ("h", "tokens"),
+        [(h, " ".join(toks)) for h, toks in items.items()],
+    )
 
 
 # --------------------------------------------------------------------------- #

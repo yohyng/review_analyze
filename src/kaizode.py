@@ -27,8 +27,19 @@ from .review_csv import ParsedReview
 
 DEFAULT_BASE_URL = "https://kaizode-v2.scorobo.ai/api/v1"
 
-# KAIZODE から取得するレビューの月間上限（コスト/枠の保護）。
-MONTHLY_LIMIT = 20_000
+# KAIZODE から新規に取得するレビューの月間上限（コスト/枠の保護）。
+#
+# 実効値は DB の app_setting（キー SETTING_MONTHLY_LIMIT）から読む。
+# 管理画面から変えられ、デプロイし直しても消えない。未設定ならこの既定値。
+DEFAULT_MONTHLY_LIMIT = 10_000
+SETTING_MONTHLY_LIMIT = "kaizode_monthly_limit"
+
+# 上限として受け付ける範囲。0 にすると新規取得を止められる。
+MONTHLY_LIMIT_MIN = 0
+MONTHLY_LIMIT_MAX = 1_000_000
+
+# 後方互換（旧コードが参照している既定値）。実際の判定には使わないこと。
+MONTHLY_LIMIT = DEFAULT_MONTHLY_LIMIT
 
 
 def maps_search_url(name: str) -> str:
@@ -238,7 +249,7 @@ def sync_datasets(
 ) -> dict:
     """解析完了(status=30)のデータセットからレビューを差分取得し、DBへ取り込む。
 
-    月間取得上限(MONTHLY_LIMIT)を超えないよう、当月の残枠までで打ち切る。上限で
+    月間取得上限（monthly_limit(conn)）を超えないよう、当月の残枠までで打ち切る。上限で
     途中停止したデータセットは last_sync を進めない（枠回復後に続きから取得）。
 
     Returns {"inserted","skipped_dup","datasets_synced","datasets_skipped",
@@ -247,14 +258,15 @@ def sync_datasets(
     from . import db as _db
 
     month = current_month()
-    remaining = monthly_remaining(conn, month)
+    limit_n = monthly_limit(conn)          # 判定はDBの設定値で行う
+    remaining = monthly_remaining(conn, month, limit_n)
     if remaining <= 0:
         used = get_monthly_usage(conn, month)
-        log(f"⚠️ 今月のKAIZODE取得上限（{MONTHLY_LIMIT:,}件）に達しています。"
+        log(f"⚠️ 今月のKAIZODE取得上限（{limit_n:,}件）に達しています。"
             f"翌月まで新規取得はできません（今月 {used:,} 件）。")
         return {"inserted": 0, "skipped_dup": 0, "datasets_synced": 0,
                 "datasets_skipped": 0, "fetched": 0, "limit_reached": True,
-                "monthly_used": used, "monthly_limit": MONTHLY_LIMIT}
+                "monthly_used": used, "monthly_limit": limit_n}
 
     datasets = client.list_datasets()
     if dataset_id:
@@ -276,7 +288,7 @@ def sync_datasets(
 
         budget = remaining - fetched
         if budget <= 0:
-            log(f"⚠️ 今月の上限（{MONTHLY_LIMIT:,}件）に達したため、以降をスキップしました。")
+            log(f"⚠️ 今月の上限（{limit_n:,}件）に達したため、以降をスキップしました。")
             limit_reached = True
             break
 
@@ -318,7 +330,7 @@ def sync_datasets(
                     "datasets_synced": synced, "datasets_skipped": skipped,
                     "fetched": fetched, "limit_reached": True,
                     "monthly_used": get_monthly_usage(conn, month),
-                    "monthly_limit": MONTHLY_LIMIT}
+                    "monthly_limit": limit_n}
 
         last_pub = max((r.get("published_at") or "") for r in reviews)[:19] or since
         set_last_sync(conn, dsid, name, last_pub)
@@ -328,7 +340,7 @@ def sync_datasets(
     return {"inserted": total_ins, "skipped_dup": total_skip,
             "datasets_synced": synced, "datasets_skipped": skipped,
             "fetched": fetched, "limit_reached": limit_reached,
-            "monthly_used": used, "monthly_limit": MONTHLY_LIMIT}
+            "monthly_used": used, "monthly_limit": limit_n}
 
 
 # ---------------------------------------------------------------------- #
@@ -386,6 +398,30 @@ def add_monthly_usage(conn, n: int, month: Optional[str] = None) -> int:
     return get_monthly_usage(conn, month)
 
 
-def monthly_remaining(conn, month: Optional[str] = None, limit: int = MONTHLY_LIMIT) -> int:
-    """当月の残枠（0未満にはならない）。"""
+def monthly_limit(conn) -> int:
+    """当月の新規取得上限。DBの設定を優先し、無ければ既定値。
+
+    毎回DBを引くのは、管理画面で変えた直後から効かせたいため
+    （プロセスを再起動しないと反映されない、という事故を避ける）。
+    """
+    from . import db as _db  # noqa: PLC0415
+
+    n = _db.get_setting_int(conn, SETTING_MONTHLY_LIMIT, DEFAULT_MONTHLY_LIMIT)
+    return max(MONTHLY_LIMIT_MIN, min(MONTHLY_LIMIT_MAX, int(n)))
+
+
+def set_monthly_limit(conn, n: int) -> int:
+    """上限を保存して、保存後の値を返す。範囲外は丸める。"""
+    from . import db as _db  # noqa: PLC0415
+
+    n = max(MONTHLY_LIMIT_MIN, min(MONTHLY_LIMIT_MAX, int(n)))
+    _db.set_setting(conn, SETTING_MONTHLY_LIMIT, n)
+    return n
+
+
+def monthly_remaining(conn, month: Optional[str] = None,
+                      limit: Optional[int] = None) -> int:
+    """当月の残枠（0未満にはならない）。limit 未指定なら設定値を使う。"""
+    if limit is None:
+        limit = monthly_limit(conn)
     return max(0, limit - get_monthly_usage(conn, month))

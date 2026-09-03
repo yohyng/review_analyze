@@ -270,7 +270,7 @@ def test_topic_score_cache_writes_are_batched(tmp_path):
             return real(sql, *a)
 
         def execute_pipeline(self, statements):
-            sent.append(len(statements))
+            sent.append(len(statements))      # 1リクエストに入った「文」の数
             for sql, params in statements:
                 real(sql, params)
 
@@ -278,7 +278,8 @@ def test_topic_score_cache_writes_are_batched(tmp_path):
             conn.commit()
 
     assert db.set_topic_score_cache_bulk(_Pipelining(), rows) == 5
-    assert sent == [5], f"1リクエストにまとめること（{sent}）"
+    assert len(sent) == 1, f"1リクエストにまとめること（{sent}）"
+    assert sent[0] == 1, "5行は VALUES を並べて1文に畳むこと"
     got = db.get_topic_score_cache_bulk(conn)
     assert set(got) == {(f, 10) for f in fids}
 
@@ -383,3 +384,107 @@ def test_running_screen_can_be_cancelled():
     src = Path(analysis_mode.__file__).read_text(encoding="utf-8")
     assert 'key="an_cancel"' in src
     assert '_prog["cancelled"] = True' in src
+
+
+# --------------------------------------------------------------------------- #
+# 書き戻しの往復回数を行数から切り離す
+#
+#   以前は「1行 = 1文」を200文ずつ送っていたので、HTTP往復が 行数/200 に
+#   比例した。実データの語彙書き戻しで 304 秒（約300往復）かかっていた。
+#   VALUES を並べて1文に畳み、さらに数文を1リクエストに束ねる。
+# --------------------------------------------------------------------------- #
+class _CountingPipe:
+    """execute_pipeline の呼び出し回数（＝HTTP往復）を数える。"""
+
+    def __init__(self, real):
+        self._real = real
+        self.requests = 0
+        self.statements = 0
+
+    def execute(self, sql, *a):
+        return self._real.execute(sql, *a)
+
+    def execute_pipeline(self, statements):
+        self.requests += 1
+        self.statements += len(statements)
+        for sql, params in statements:
+            self._real.execute(sql, params)
+
+    def commit(self):
+        self._real.commit()
+
+
+@pytest.mark.parametrize("n_rows,max_requests", [
+    (500, 1), (2_000, 2), (10_000, 6), (60_000, 30),
+])
+def test_token_cache_flush_scales_far_better_than_one_request_per_200_rows(
+        tmp_path, n_rows, max_requests):
+    from src import db as _db
+
+    conn = _db.get_conn(tmp_path / f"t{n_rows}.db")
+    _db.init_db(conn)
+    pipe = _CountingPipe(conn)
+    items = {f"h{i:07d}": ["トークン", "の", "並び"] for i in range(n_rows)}
+
+    assert _db.save_token_cache(pipe, items) == n_rows
+    # 旧実装なら n_rows/200 回。少なくともその 1/5 以下に収まること。
+    assert pipe.requests <= max_requests, (
+        f"{n_rows:,}行で {pipe.requests} 往復（旧実装は {-(-n_rows//200)} 往復）"
+    )
+    assert conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0] == n_rows
+
+
+def test_folded_insert_writes_exactly_the_same_rows(tmp_path):
+    """まとめ書きにしても中身が変わらないこと。"""
+    from src import db as _db
+
+    conn = _db.get_conn(tmp_path / "same.db")
+    _db.init_db(conn)
+    items = {f"h{i}": [f"語{i}", "と", "並び"] for i in range(1200)}
+    _db.save_token_cache(conn, items)
+
+    got = dict(conn.execute("SELECT h, tokens FROM token_cache").fetchall())
+    assert len(got) == 1200
+    for h, toks in items.items():
+        assert got[h] == " ".join(toks)
+
+
+def test_folded_insert_replaces_on_conflict(tmp_path):
+    from src import db as _db
+
+    conn = _db.get_conn(tmp_path / "up.db")
+    _db.init_db(conn)
+    _db.save_token_cache(conn, {"h1": ["古い"]})
+    _db.save_token_cache(conn, {"h1": ["新しい", "値"]})
+    row = conn.execute("SELECT tokens FROM token_cache WHERE h='h1'").fetchone()
+    assert row[0] == "新しい 値"
+    assert conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("n_col", [1, 2, 5, 11])
+def test_folded_insert_respects_the_bind_parameter_limit(n_col):
+    """1文に渡すパラメータ数が SQLite の上限を超えないこと。
+
+    列数が増えれば1文に入れる行数を減らす。ここを固定値にしていると、
+    列の多いテーブル（topic_score_cache は5列）で上限を踏む。
+    """
+    from src import db as _db
+
+    per = _db.rows_per_statement(n_col)
+    assert per >= 1
+    assert per * n_col <= _db._MAX_PARAMS
+    assert _db._MAX_PARAMS <= 20_000
+
+
+def test_write_failure_still_degrades_to_zero(tmp_path):
+    from src import db as _db
+
+    class _Broken:
+        def execute(self, *_a, **_k):
+            raise requests.exceptions.HTTPError("502")
+
+        def commit(self):
+            pass
+
+    assert _db.save_token_cache(_Broken(), {"h": ["a"]}) == 0
+    assert _db.set_topic_score_cache_bulk(_Broken(), [(1, 10, "[]", 0.5, 3)]) == 0
