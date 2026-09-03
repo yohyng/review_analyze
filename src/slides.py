@@ -36,7 +36,7 @@ def canvas(header: str, body: str, foot: str) -> str:
         f'border-radius:{T.SLIDE_RADIUS};overflow:hidden;container-type:inline-size;'
         f'box-shadow:{T.SLIDE_SHADOW};font-family:{T.FONT_STACK};color:{T.INK};'
         'font-variant-numeric:tabular-nums;text-wrap:pretty;margin:0 0 22px;">'
-        f'{header}{body}{foot}</div>'
+        f'{TOOLTIP_CSS}{header}{body}{foot}</div>'
     )
 
 
@@ -276,9 +276,100 @@ def plot_dots(pts: list[tuple[float, float]], *, size: float, color: str,
     )
 
 
+# --------------------------------------------------------------------------- #
+# ツールチップ（軸の説明をホバーで出す）
+#
+#   Streamlit の st.markdown(unsafe_allow_html=True) は <script> を落とすので、
+#   **CSS だけ**で作る（:hover で子要素を出す）。JS は使えないし要らない。
+#
+#   スライドの枠は overflow:hidden なので、外側へ出す向きを間違えると
+#   吹き出しが切れる。place で内側へ逃がす。
+#     "up"    … ラベルの上に出す（X軸ラベル＝下端にあるもの向け）
+#     "down"  … 下に出す（上端にあるもの向け）
+#     "right" / "left" … 横に出す（左右の軸ラベル向け）
+# --------------------------------------------------------------------------- #
+TOOLTIP_CSS = f"""
+<style>
+.vb-tip{{position:relative;cursor:help;border-bottom:1px dotted {T.INK_FAINT};}}
+.vb-tip>.vb-tipbody{{
+  visibility:hidden;opacity:0;transition:opacity .12s;
+  position:absolute;z-index:60;width:16cqw;
+  background:{T.NAVY};color:#fff;border-radius:.5cqw;
+  padding:.7cqw .9cqw;font-size:.95cqw;font-weight:500;line-height:1.5;
+  text-align:left;white-space:normal;
+  box-shadow:0 .3cqw 1.2cqw rgba(20,30,40,.28);
+}}
+.vb-tip:hover>.vb-tipbody{{visibility:visible;opacity:1;}}
+.vb-tip>.vb-tipbody.up{{bottom:calc(100% + .5cqw);left:50%;transform:translateX(-50%);}}
+.vb-tip>.vb-tipbody.down{{top:calc(100% + .5cqw);left:50%;transform:translateX(-50%);}}
+.vb-tip>.vb-tipbody.right{{left:calc(100% + .5cqw);top:50%;transform:translateY(-50%);}}
+.vb-tip>.vb-tipbody.left{{right:calc(100% + .5cqw);top:50%;transform:translateY(-50%);}}
+/* 端のラベルは中央寄せだと枠を抜けるので、ラベル側の辺に合わせる */
+.vb-tip>.vb-tipbody.up-l{{bottom:calc(100% + .5cqw);left:0;transform:none;}}
+.vb-tip>.vb-tipbody.up-r{{bottom:calc(100% + .5cqw);right:0;left:auto;transform:none;}}
+.vb-tip>.vb-tipbody.down-l{{top:calc(100% + .5cqw);left:0;transform:none;}}
+.vb-tip>.vb-tipbody.down-r{{top:calc(100% + .5cqw);right:0;left:auto;transform:none;}}
+.vb-tipkw{{display:block;margin-top:.4cqw;color:{T.LAUREL};font-size:.85cqw;}}
+</style>
+"""
+
+
+def tooltip(label: str, desc: str, *, place: str = "up",
+            keywords: list[str] | None = None) -> str:
+    """ホバーで説明が出るラベル。desc が空ならただのテキストを返す。
+
+    keywords を渡すと「この語を数えている」を併記する。スコアが何で
+    できているのかは、この資料でいちばん聞かれるところなので。
+    """
+    if not desc:
+        return escape(label)
+    kw = (f'<span class="vb-tipkw">拾う語: '
+          f'{escape("・".join(keywords[:8]))}</span>' if keywords else "")
+    return (
+        f'<span class="vb-tip">{escape(label)}'
+        f'<span class="vb-tipbody {place}">{escape(desc)}{kw}</span></span>'
+    )
+
+
+def topic_tooltip(name: str, *, place: str = "up") -> str:
+    """観点名を、その定義（説明＋拾う語）付きで返す。"""
+    from . import topic_score  # noqa: PLC0415
+
+    d = next((t for t in topic_score.DEFAULT_TOPICS if t.name == name), None)
+    if not d:
+        return escape(name)
+    return tooltip(name, getattr(d, "desc", ""), place=place, keywords=d.keywords)
+
+
+def _tip_dir(lx: float, ly: float, cx: float, cy: float) -> str:
+    """円周上のラベルから、吹き出しを**中心側**へ出す向きを選ぶ。
+
+    上下の端で左右に出すと作図枠を横に抜け、カード（overflow:hidden）に
+    切られる。縦に逃がし、さらに左右の端では寄せ方も内側へ倒す。
+    """
+    # 横に逃がすのが基本（円の外側ではなく、中心側に空きがある）。
+    # 真上・真下のラベルだけは横に空きが無いので縦に逃がす。
+    if abs(lx - cx) < 12:
+        return "down" if ly < cy else "up"
+    return "right" if lx < cx else "left"
+
+
+def _topic_tip_body(name: str, place: str) -> str:
+    """観点の説明だけを返す（ラベル本体は呼び出し側が描く）。"""
+    from . import topic_score  # noqa: PLC0415
+
+    d = next((t for t in topic_score.DEFAULT_TOPICS if t.name == name), None)
+    if not d or not getattr(d, "desc", ""):
+        return ""
+    kw = (f'<span class="vb-tipkw">拾う語: '
+          f'{escape("・".join(d.keywords[:8]))}</span>')
+    return f'<span class="vb-tipbody {place}">{escape(d.desc)}{kw}</span>'
+
+
 def tilted_axis_labels(labels: list[str], xs: list[float], *, deg: float,
                        size: float, color: str | None = None,
-                       prefix: list[str] | None = None) -> str:
+                       prefix: list[str] | None = None,
+                       tips: bool = False) -> str:
     """X軸の傾いたラベル（README §3：独自指標 -90°／19指標比較 -62°）。
 
     右端を軸の目盛りに合わせて、そこを支点に反時計回りへ倒す。
@@ -287,11 +378,14 @@ def tilted_axis_labels(labels: list[str], xs: list[float], *, deg: float,
     out = ""
     for i, (t, px) in enumerate(zip(labels, xs)):
         head = (f'{prefix[i]} ' if prefix and i < len(prefix) else "")
+        place = "up-l" if px < 25 else ("up-r" if px > 75 else "up")
+        body = _topic_tip_body(t, place) if tips else ""
+        cls = ' class="vb-tip"' if body else ""
         out += (
-            f'<div style="position:absolute;left:{px:.2f}%;top:0;'
+            f'<div{cls} style="position:absolute;left:{px:.2f}%;top:0;'
             f'transform:translateX(-100%) rotate({-abs(deg):.0f}deg);'
             f'transform-origin:100% 0;font-size:{size}cqw;color:{col};'
-            f'white-space:nowrap;">{escape(head + t)}</div>'
+            f'white-space:nowrap;">{escape(head + t)}{body}</div>'
         )
     return out
 
@@ -779,8 +873,8 @@ def _top3_card(title: str, rows: list, accent: str, icon: str) -> str:
             f'background:{accent};color:#fff;display:flex;align-items:center;'
             f'justify-content:center;font-size:1.25cqw;font-weight:700;">{i}</span>'
             f'<span style="flex:1;min-width:0;font-size:1.45cqw;font-weight:700;'
-            f'color:{T.INK};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
-            f'{escape(name)}</span>'
+            f'color:{T.INK};white-space:nowrap;">'
+            f'{topic_tooltip(name, place="right")}</span>'
             '<span style="text-align:right;flex:none;">'
             f'<span style="display:block;font-size:1.95cqw;font-weight:800;'
             f'color:{accent};line-height:1.1;">{_pt5(mine)}</span>'
@@ -894,7 +988,10 @@ def _indicator_chart(b: dict) -> str:
         f'<div style="font-size:0.88cqw;color:{T.INK};line-height:1.2;'
         'margin-bottom:.15cqw;">'
         f'{_CIRCLED[i] if i < len(_CIRCLED) else i + 1}</div>'
-        + vertical_text(t, size=.66) + '</div>'
+        + f'<span class="vb-tip">{vertical_text(t, size=.66)}'
+        + _topic_tip_body(
+            t, "up-l" if x(i) < 25 else ("up-r" if x(i) > 75 else "up"))
+        + '</span></div>'
         for i, t in enumerate(topics)
     )
     # 凡例は正典どおり「色の短い横棒＋名前」（線種の記号は使わない）
@@ -1249,6 +1346,9 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
         for g in (1, 2, 3, 4, 5)
     )
     # README §3「19指標比較 … X軸 -62°」
+    #   ラベルは -62° 回転しているので、子として吹き出しを置くと一緒に傾いて
+    #   カードを抜ける。説明は同じスライドのヒートマップ（横書きの指標名）に
+    #   任せ、ここには付けない。
     xlabs = tilted_axis_labels(topics, [x(i) for i in range(n)], deg=62, size=.75)
     legend = "".join(
         '<span style="display:flex;align-items:center;gap:.35cqw;">'
@@ -1292,8 +1392,8 @@ def _compare_heatmap(b: dict, topics: list[str]) -> str:
         f'<div style="flex:1;display:flex;align-items:center;min-height:0;'
         f'border-bottom:1px solid {T.TABLE_HEAD};">'
         f'<div style="flex:2;padding:0 .6cqw;font-size:1.07cqw;color:{T.INK};'
-        'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
-        f'{escape(t)}</div>'
+        'white-space:nowrap;">'
+        f'{topic_tooltip(t, place="right")}</div>'
         + "".join(
             '<div style="flex:1;align-self:stretch;display:flex;align-items:center;'
             'justify-content:center;font-size:1.1cqw;'
@@ -1698,7 +1798,8 @@ def _radar(b: dict) -> str:
             f'<div style="position:absolute;left:{lx:.1f}%;top:{ly:.1f}%;'
             f'transform:translate({shift},-50%);font-size:0.98cqw;font-weight:700;'
             f'color:{T.INK};text-align:{align};line-height:1.25;'
-            f'width:8.6cqw;">{i + 1}. {escape(t)}</div>'
+            f'width:8.6cqw;">{i + 1}. '
+            f'{topic_tooltip(t, place=_tip_dir(lx, ly, CX, CY))}</div>'
         )
     legend = "".join(
         '<div style="display:flex;align-items:center;gap:.45cqw;font-size:1.04cqw;'

@@ -639,7 +639,8 @@ def test_slide5_renders_radar_tables_and_summary(tmp_path):
     assert "空間と体験の質を10の観点で評価し、改善の優先ポイントを可視化します。" in html
     assert "※ スコアは5点満点（高いほど評価が高いことを示します）" in html
     for i, t in enumerate(topic_score.SPACE_TOPICS, 1):
-        assert f"{i}. {t}" in html
+        # 軸名はホバー説明で包まれるので、番号と名前は隣接しない
+        assert f"{i}. " in html and t in html
     for no in ("01", "02", "03", "04"):
         assert f">{no}</span>" in html
     # 要約カードはアイコン・番号・枠線を正典（ReviewLens.dc.html:2063）から取る
