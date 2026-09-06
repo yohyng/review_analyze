@@ -1291,6 +1291,13 @@ def render():
             st.markdown(slides.slide0_disclaimer(_bundle), unsafe_allow_html=True)
 
             # ── PROFILE：この場でインライン編集（写真アップ＋各項目の手入力）──── #
+            #    ここは分析画面（ログイン不要）の中だが、中の3つのボタンは
+            #    db.save_photo / db.upsert_facility / db.delete_photo を叩く
+            #    ＝本番DBへの書き込み。URLを知っている人なら誰でも施設写真を
+            #    消せる状態だったので、編集は管理ログイン必須にする。
+            #    _ekey はセッションに残るので、入口だけでなくパネル本体も見る
+            #    （編集中にログアウトした場合に開いたままにしない）。
+            _can_edit = bool(st.session_state.get("admin_authed"))
             _ekey = f"prof_editing_{_target}"
             _ka, _kacc, _kopen, _kcat, _kfa = (f"prof_addr_{_target}", f"prof_acc_{_target}",
                                                f"prof_open_{_target}", f"prof_cat_{_target}",
@@ -1305,7 +1312,7 @@ def render():
                 if _k not in st.session_state and _v:
                     st.session_state[_k] = _v
 
-            if st.session_state.get(_ekey):
+            if _can_edit and st.session_state.get(_ekey):
                 with st.container(border=True):
                     st.markdown(
                         '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">'
@@ -1413,10 +1420,19 @@ def render():
                 st.markdown(slides.slide1_facility_info(_bundle), unsafe_allow_html=True)
                 _pe1, _pe2, _pe3 = st.columns([1, 1.4, 1])
                 with _pe2:
-                    if st.button("✏️ PROFILEを編集（写真・住所など）", width="stretch",
-                                 key=f"prof_edit_btn_{_target}"):
-                        st.session_state[_ekey] = True
-                        st.rerun()
+                    if _can_edit:
+                        if st.button("✏️ PROFILEを編集（写真・住所など）", width="stretch",
+                                     key=f"prof_edit_btn_{_target}"):
+                            st.session_state[_ekey] = True
+                            st.rerun()
+                    else:
+                        # 閲覧者にはボタン自体を出さない。運用者が未ログインの
+                        # ときだけ迷わないように入口を示す（159行と同じ形）。
+                        if st.button("🔐 ログインして PROFILE を編集",
+                                     width="stretch",
+                                     key=f"prof_edit_login_{_target}"):
+                            st.session_state["app_mode"] = "admin"
+                            st.rerun()
 
             # ── 分析レポート本体（PDF「20260726_VoiceBAUM_v1」p3〜p12 準拠）──── #
             #    SLIDE 1 は上の PROFILE 編集ブロック側で描いている（編集中は
