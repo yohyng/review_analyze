@@ -940,14 +940,24 @@ def render():
 
                 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
+                # 「指定競合」を選んだのに1件も選ばないまま実行すると、
+                # 警告なく市場全体比較のスライドが出る（順位も基準値もDB全施設）。
+                # 「競合と比べた資料」のつもりで作ったものを、そうでないまま
+                # 外に出してしまうので、実行を止めて選ばせる。
+                _run_block = ""
+
                 if _an_type == "competitor":
                     if _others:
-                        # デフォルト: DB登録済み比較施設（最大5件）
-                        _default_peers = [p for p in
-                                          analysis.facilities_by_type(conn, "comparison")
-                                          if p in _others][:5]
+                        # 既定値は置かない。facility.type は target/comparison の
+                        # 2値しかなく「どの施設の競合か」を持つ列が無い。しかも
+                        # KAIZODE 同期で入る施設は全部 comparison になるので、
+                        # facilities_by_type(conn,"comparison")[:5] は
+                        # 「名前順で先頭5件」でしかない。それを競合として黙って
+                        # 採用した資料が出るほうが害が大きい。
+                        # （v0.53.0 以前は既定を書いていたが、app.py が
+                        #   an_peers に [] を必ず入れるため一度も効いていなかった）
                         _prev_sel = [p for p in
-                                     st.session_state.get("an_peers", _default_peers)
+                                     st.session_state.get("an_peers") or []
                                      if p in _others][:5]
                         _selected_peers = st.multiselect(
                             "比較施設を選択（最大5件）",
@@ -960,6 +970,13 @@ def render():
                         st.session_state["an_peers"] = _selected_peers
                         st.session_state["an_mode"] = "compare" if _selected_peers else "single"
                         st.session_state["an_axis_label"] = "比較施設の平均"
+                        if not _selected_peers:
+                            _run_block = (
+                                "比較する施設を1件以上選んでください。"
+                                "選ばずに進めると、指定競合ではなく**市場全体**"
+                                "との比較になります（それでよければ"
+                                "「📊 マーケット比較」を選んでください）。"
+                            )
                     else:
                         st.info("比較できる施設がありません。単体分析で実行します。")
                         st.session_state["an_mode"] = "single"
@@ -1004,8 +1021,11 @@ def render():
                 _rc1, _rc2, _rc3 = st.columns([1, 2, 1])
                 with _rc2:
                     if _stats_ok:
+                        if _run_block:
+                            st.info(_run_block)
                         if st.button("この内容で分析する", type="primary",
-                                     width="stretch", key="an_run"):
+                                     width="stretch", key="an_run",
+                                     disabled=bool(_run_block)):
                             st.session_state["an_screen"] = "running"
                             st.rerun()
                     else:
