@@ -20,9 +20,11 @@ from src import db, places, preview, slides
 
 
 class _FakeResp:
-    def __init__(self, payload, status=200):
+    def __init__(self, payload, status=200, content=b"", headers=None):
         self._payload = payload
         self.status_code = status
+        self.content = content
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -122,7 +124,7 @@ _PHOTO_PAYLOAD = {
 }
 
 
-def test_fetch_photo_builds_a_media_url_and_attribution(monkeypatch):
+def test_fetch_photo_returns_a_resource_name_never_a_keyed_url(monkeypatch):
     seen = {}
 
     def _get(url, timeout=None, headers=None):
@@ -135,11 +137,61 @@ def test_fetch_photo_builds_a_media_url_and_attribution(monkeypatch):
     # 住所は同じ呼び出しに相乗りさせる（photos を要求した時点で Pro 階層に
     # なるので、formattedAddress を足しても課金は変わらない）
     assert seen["headers"]["X-Goog-FieldMask"] == "photos,formattedAddress"
-    assert p and p.url.startswith(
-        "https://places.googleapis.com/v1/places/ChIJxyz/photos/AeJbb3/media")
-    assert "maxWidthPx=600" in p.url and "key=KEY" in p.url
+
+    # Photo が持つのはリソース名だけ。ここに媒体URLやAPIキーを入れると、
+    # <img src> 経由でログイン不要のページのHTMLにキーが載る。
+    assert p and p.name == "places/ChIJxyz/photos/AeJbb3"
+    assert "KEY" not in repr(p), "Photo に API キーが混ざっている"
+    assert "http" not in p.name
+
     # 帰属表示は必須（規約）
     assert "山田太郎" in p.attribution and "Jane Doe" in p.attribution
+
+
+def test_photo_data_uri_keeps_the_key_in_the_request_headers(monkeypatch):
+    seen = {}
+
+    def _get(url, params=None, headers=None, timeout=None):
+        seen.update(url=url, params=params, headers=headers)
+        return _FakeResp(None, content=b"\xff\xd8\xffJPEGBYTES",
+                         headers={"Content-Type": "image/jpeg"})
+
+    monkeypatch.setattr(requests, "get", _get)
+    uri = places.fetch_photo_data_uri(
+        "places/ChIJxyz/photos/AeJbb3", "KEY", max_px=600)
+
+    # キーはヘッダで送る。URL にもクエリにも出さない（ログや Referer に漏れる）。
+    assert seen["headers"]["X-Goog-Api-Key"] == "KEY"
+    assert "KEY" not in seen["url"]
+    assert "key" not in {k.lower() for k in (seen["params"] or {})}
+    assert seen["params"]["maxWidthPx"] == 600
+
+    # 戻りは実体の data: URI。キーは1文字も含まれない。
+    assert uri.startswith("data:image/jpeg;base64,")
+    assert "KEY" not in uri
+
+
+def test_photo_data_uri_gives_up_quietly(monkeypatch):
+    # 画像でない / 大きすぎる / 失敗 のどれでも空文字。写真は資料の飾りなので
+    # 例外を投げて分析を止めない。
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp(
+        None, content=b"<html>nope</html>", headers={"Content-Type": "text/html"}))
+    assert places.fetch_photo_data_uri("places/X/photos/Y", "KEY") == ""
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResp(
+        None, content=b"x" * (5 * 1024 * 1024),
+        headers={"Content-Type": "image/jpeg"}))
+    assert places.fetch_photo_data_uri("places/X/photos/Y", "KEY") == ""
+
+    def _boom(*a, **k):
+        raise requests.exceptions.ConnectionError("down")
+
+    monkeypatch.setattr(requests, "get", _boom)
+    assert places.fetch_photo_data_uri("places/X/photos/Y", "KEY") == ""
+
+    # 引数が欠けていれば通信そのものをしない
+    assert places.fetch_photo_data_uri("", "KEY") == ""
+    assert places.fetch_photo_data_uri("places/X/photos/Y", "") == ""
 
 
 def test_fetch_photo_without_attribution_still_credits_google(monkeypatch):
@@ -231,7 +283,7 @@ def test_details_returns_photo_and_address_in_one_call(monkeypatch):
     d = places.fetch_details("ChIJxyz", "KEY")
     assert len(calls) == 1, "写真と住所で2回叩いている"
     assert d.address == "東京都台東区上野公園7-7"
-    assert d.photo and d.photo.url
+    assert d.photo and d.photo.name == "places/ChIJxyz/photos/AeJbb3"
 
 
 def test_details_survives_a_place_without_photos(monkeypatch):
@@ -331,3 +383,44 @@ def test_slide_credits_google_for_the_address(conn):
     b2 = preview.build_bundle(conn, "対象館", {}, None, None)
     b2["address"] = "東京都台東区上野公園7-7"
     assert "住所: Google" not in slides.slide1_facility_info(b2)
+
+
+# --------------------------------------------------------------------------- #
+# APIキーがブラウザに届かないことの回帰テスト
+#
+# 分析画面はログイン不要（app.py の認証ゲートは管理モードの中）。そこに描く
+# HTML に `key=...` を載せると、ソースを表示するだけで誰でもキーを持ち出せて、
+# 所有者の Google Cloud に課金できてしまう。v0.50.0 以前は媒体URLをそのまま
+# <img src> に流していた。
+# --------------------------------------------------------------------------- #
+def test_api_key_never_reaches_the_rendered_slide(monkeypatch):
+    from src.ui import analysis_mode
+
+    SECRET = "AIzaSyTOPSECRET_DO_NOT_LEAK"
+
+    def _fake_cached(_conn_key, name, api_key):
+        assert api_key == SECRET, "キーはサーバ側の取得にだけ使う"
+        return {
+            "data_uri": "data:image/jpeg;base64,AAAA",
+            "attribution": "Google / 山田太郎",
+            "address": "東京都台東区上野公園7-7",
+        }
+
+    monkeypatch.setattr(places, "get_api_key", lambda: SECRET)
+    monkeypatch.setattr(analysis_mode, "_places_cached", _fake_cached)
+    monkeypatch.setattr(analysis_mode.st, "session_state", {}, raising=False)
+
+    bundle = {
+        "target": "デモ美術館",
+        "peer_display": [{"name": "競合A", "photo_data_uri": None}],
+    }
+    analysis_mode._places_photos(None, bundle)
+
+    assert bundle["photo_data_uri"].startswith("data:image/")
+    assert bundle["peer_display"][0]["photo_data_uri"].startswith("data:image/")
+    assert "写真:" in bundle["photo_attribution"]
+
+    # バンドルのどこにもキーが無いこと（スライドHTMLはここから作られる）
+    import json
+    assert SECRET not in json.dumps(bundle, ensure_ascii=False)
+    assert "key=" not in json.dumps(bundle, ensure_ascii=False)

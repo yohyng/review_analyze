@@ -391,22 +391,29 @@ def _mark(prog: dict, phase: str | None) -> None:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _places_cached(_conn_key: str, name: str, api_key: str) -> dict:
-    """Places の写真URLと住所をセッション内で一時的に持つ。
+    """Places の写真と住所をセッション内で一時的に持つ。
 
     Streamlit は操作のたびにスクリプト全体を再実行するので、素で呼ぶと
-    ボタンひとつで6施設ぶんの API 呼び出しが飛ぶ。写真の実体は保持せず、
-    URL と住所だけを短時間（30分）持つ性能目的の一時キャッシュ。
+    ボタンひとつで6施設ぶんの API 呼び出しが飛ぶ。写真も住所も短時間（30分）
+    だけ持つ性能目的の一時キャッシュ（DBには焼かない＝規約どおり都度取得）。
 
     住所は写真と同じ Details 呼び出しに相乗りさせている（photos を要求した
     時点で Pro 階層なので、住所を足しても課金は変わらない）。
+
+    写真は **data: URI（実体）** で返す。以前は `key=...` 付きの Google 媒体URL
+    をそのまま返して <img src> に置いていたが、分析画面はログイン不要なので
+    ページのソースからAPIキーが読めてしまっていた。実体をサーバ側で取れば
+    キーは外に出ない。ブラウザが毎回 Google を叩かなくなるぶん呼び出しも減る。
     """
     from src import places  # noqa: PLC0415
 
     conn = db.get_conn(config.DB_PATH)
     d = places.details_for_facility(conn, name, api_key)
+    uri = (places.fetch_photo_data_uri(d.photo.name, api_key)
+           if d.photo else "")
     return {
-        "url": d.photo.url if d.photo else "",
-        "attribution": d.photo.attribution if d.photo else "",
+        "data_uri": uri,
+        "attribution": d.photo.attribution if (d.photo and uri) else "",
         "address": d.address,
     }
 
@@ -428,8 +435,8 @@ def _places_photos(conn, bundle: dict) -> None:
     ck = str(config.DB_PATH)
 
     got = _places_cached(ck, bundle.get("target", ""), key)
-    if not bundle.get("photo_data_uri") and got.get("url"):
-        bundle["photo_data_uri"] = got["url"]
+    if not bundle.get("photo_data_uri") and got.get("data_uri"):
+        bundle["photo_data_uri"] = got["data_uri"]
         attrs.append(got["attribution"])
     # 住所は OpenStreetMap が引けなかったときの穴埋め（日本の施設は
     # Nominatim の網羅性が低く「—」のままになりがち）。手入力があれば触らない。
@@ -441,8 +448,8 @@ def _places_photos(conn, bundle: dict) -> None:
         if peer.get("photo_data_uri"):
             continue
         pg = _places_cached(ck, peer.get("name", ""), key)
-        if pg.get("url"):
-            peer["photo_data_uri"] = pg["url"]
+        if pg.get("data_uri"):
+            peer["photo_data_uri"] = pg["data_uri"]
             attrs.append(pg["attribution"])
 
     if attrs:

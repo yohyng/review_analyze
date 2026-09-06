@@ -35,15 +35,25 @@ _MEDIA_URL = "https://places.googleapis.com/v1/{photo_name}/media"
 _TIMEOUT = 8
 DEFAULT_MAX_PX = 800
 
+# data: URI にして埋め込むので、極端に大きい画像は弾く（HTMLが膨らむ）。
+_MAX_PHOTO_BYTES = 4 * 1024 * 1024
+
 
 @dataclass
 class Photo:
-    """表示に必要な最小限。写真そのものは保持しない（保存禁止のため）。"""
-    url: str                      # <img src> にそのまま入れる Google 提供のURL
+    """表示に必要な最小限。写真そのものは保持しない（保存禁止のため）。
+
+    **APIキーをここに入れないこと**。以前は `key=...` を含む媒体URLを持たせて
+    そのまま `<img src>` に流していたが、それはキーをページのHTMLに露出させる
+    （分析画面はログイン不要なので、ソースを表示すれば誰でも読める）。
+    保持するのは `photos/xxx` というリソース名だけで、実体の取得は
+    fetch_photo_data_uri() がサーバ側で行う。
+    """
+    name: str                     # "places/X/photos/Y" というリソース名
     attribution: str = ""         # 帰属表示。必ず写真の近くに出すこと
 
     def __bool__(self) -> bool:
-        return bool(self.url)
+        return bool(self.name)
 
 
 def get_api_key() -> str:
@@ -181,11 +191,46 @@ def fetch_details(place_id: str, api_key: str, *,
             if a.get("displayName")
         ]
         out.photo = Photo(
-            url=(f"{_MEDIA_URL.format(photo_name=first['name'])}"
-                 f"?maxWidthPx={int(max_px)}&key={api_key}"),
+            name=first["name"],
             attribution=("Google / " + "・".join(who[:2])) if who else "Google",
         )
     return out
+
+
+def fetch_photo_data_uri(photo_name: str, api_key: str, *,
+                         max_px: int = DEFAULT_MAX_PX) -> str:
+    """写真の実体をサーバ側で取って data: URI にする。取れなければ ""。
+
+    **APIキーをブラウザに渡さないための関数**。媒体URLに `key=` を付けて
+    `<img src>` に置くと、分析画面（ログイン不要）のHTMLからキーが読めてしまう。
+    ここで取得を済ませてしまえば、キーはサーバとGoogleの間から出ない。
+
+    保存はしない（規約上、写真は都度取得）。呼び出し側が短時間だけ
+    メモリに載せる（_places_cached の ttl）ぶんは性能目的の一時キャッシュ。
+    """
+    if not photo_name or not api_key:
+        return ""
+    import base64      # noqa: PLC0415
+    import requests    # noqa: PLC0415
+
+    try:
+        resp = requests.get(
+            _MEDIA_URL.format(photo_name=photo_name),
+            params={"maxWidthPx": int(max_px)},
+            headers={"X-Goog-Api-Key": api_key},
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except Exception:
+        return ""
+
+    blob = resp.content or b""
+    if not blob or len(blob) > _MAX_PHOTO_BYTES:
+        return ""
+    mime = (resp.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+    if not mime.startswith("image/"):
+        return ""
+    return f"data:{mime};base64," + base64.b64encode(blob).decode()
 
 
 def fetch_photo(place_id: str, api_key: str, *,
