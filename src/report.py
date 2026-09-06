@@ -336,9 +336,17 @@ def _slide_topic_score(prs, ts: "topic_score.TopicScoreResult") -> None:
              f"{ov:.0f} / 100", size=40, bold=True, color=MAGENTA)
     _textbox(slide, Inches(0.5), Inches(2.7), Inches(4.2), Inches(0.5),
              f"分析文数 {ts.n_sentences}／レビュー {ts.n_reviews} 件", size=12, color=GREY)
+    # 較正済みの値は「市場内の相対位置」なので、素点用の凡例（50=中立）を
+    # そのまま出すと絶対評価として誤読される。画面側 slides.score_note() と
+    # 同じ言い方に揃える。
+    _calibrated = topic_score.is_calibrated(ts)
     _textbox(slide, Inches(0.5), Inches(3.15), Inches(4.3), Inches(2.6),
-             "各文をポジ／中立／ネガに評価し、トピック確率で重み付けして"
-             "トピックごとの評価スコアへ集計しています（50=中立）。",
+             ("各文をポジ／中立／ネガに評価し、トピック確率で重み付けして"
+              "トピックごとの評価スコアへ集計しています"
+              "（50＝市場平均。同カテゴリ施設の分布内での相対位置）。"
+              if _calibrated else
+              "各文をポジ／中立／ネガに評価し、トピック確率で重み付けして"
+              "トピックごとの評価スコアへ集計しています（50=中立）。"),
              size=12, color=NAVY)
 
     # トピック別テーブル（感情降順）
@@ -357,7 +365,10 @@ def _slide_topic_score(prs, ts: "topic_score.TopicScoreResult") -> None:
 
     _textbox(slide, Inches(5.1), Inches(1.3) + row_h * (len(rows) + 1) + Inches(0.1),
              Inches(7.7), Inches(0.4),
-             "感情スコア: 60以上=ポジ / 40以下=ネガ。言及度: そのトピックが語られた割合。",
+             ("感情スコア: 50＝市場平均（相対値）。"
+              "言及度: そのトピックが語られた割合。"
+              if _calibrated else
+              "感情スコア: 60以上=ポジ / 40以下=ネガ。言及度: そのトピックが語られた割合。"),
              size=10.5, color=GREY)
 
 

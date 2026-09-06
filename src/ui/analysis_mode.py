@@ -616,6 +616,17 @@ def _analysis_worker(prog: dict) -> None:
             # session_state にも書き戻す（同セッション内の再実行を高速化）
             ss_out[prog["_matrix_ss_key"]] = matrix
 
+        # 較正はここで**1回だけ**行い、PPTX と画面スライドに同じ行列を渡す。
+        #
+        # 以前は build_bundle の中でしか較正しておらず、その手前で呼ばれる
+        # build_report には素点が渡っていた。同じ分析なのに画面が「3.85/5」、
+        # 客先に出る PPTX が「66/100」(=3.30/5) と食い違っていた。
+        # 較正の基準は母集団全体（比較モードで絞る前）にすること。
+        # calibrate_matrix は冪等なので、build_bundle 側が再度呼んでも
+        # 二重には掛からない。
+        if config.SCORE_CALIBRATION:
+            matrix, _ = topic_score.calibrate_matrix(matrix)
+
         _ts_result = matrix.get(tgt) or topic_score.analyze_facility(tconn, tgt)
 
         if prog.get("cancelled"):

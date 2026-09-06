@@ -590,6 +590,11 @@ def calibration_stats(matrix: dict) -> Optional[dict]:
     return out
 
 
+# 較正済みかどうかは backend の接尾辞で判別する（結果に専用のフラグを
+# 持たせると、キャッシュを経由したときに落ちるため）。
+CALIBRATED_SUFFIX = "+calibrated"
+
+
 def calibrated_sentiment(v100: float, stat: Optional[tuple]) -> float:
     """観点スコア(0-100)を、市場内の相対位置にもとづく 0-100 に写す。
 
@@ -620,16 +625,35 @@ def calibrate_result(result: "TopicScoreResult",
     return TopicScoreResult(
         topics=topics, overall_score=result.overall_score,
         n_reviews=result.n_reviews, n_sentences=result.n_sentences,
-        backend=result.backend + "+calibrated", empty=result.empty,
+        backend=result.backend + CALIBRATED_SUFFIX, empty=result.empty,
     )
 
 
+def is_calibrated(result) -> bool:
+    """この結果がすでに較正済みか（backend の接尾辞で判別する）。"""
+    return bool(result is not None and str(result.backend).endswith(CALIBRATED_SUFFIX))
+
+
 def calibrate_matrix(matrix: dict) -> tuple[dict, bool]:
-    """行列全体を較正する。戻り値は (較正後の行列, 較正したか)。"""
+    """行列全体を較正する。戻り値は (較正後の行列, 表示値が較正済みか)。
+
+    **冪等**。すでに較正済みの行列を渡しても二重に較正しない。
+    分析ワーカーは PPTX と画面スライドの数字を揃えるために、両方を作る前に
+    1回だけ較正して同じ行列を渡す。build_bundle は素の行列を受け取る
+    呼び出し（テストやダミーデータ生成）も残っているので、ここで吸収する。
+
+    第2要素は「較正を実行したか」ではなく「返す値が較正済みか」。
+    スライドの注記（3.00＝市場平均）の出し分けに使うので、素通しした
+    ときも較正済みなら True を返す。
+    """
+    usable = [r for r in matrix.values() if r is not None]
+    if usable and all(is_calibrated(r) for r in usable):
+        return matrix, True
     stats = calibration_stats(matrix)
     if not stats:
         return matrix, False
-    return {n: calibrate_result(r, stats) for n, r in matrix.items()}, True
+    return ({n: (calibrate_result(r, stats) if r is not None else None)
+             for n, r in matrix.items()}, True)
 
 
 def facility_topic_matrix(
