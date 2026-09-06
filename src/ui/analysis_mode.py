@@ -372,6 +372,26 @@ def _onboard_panel(conn, p, meta: dict) -> None:
 #  render() のクロージャではなくモジュール関数にしてあるのは、Streamlit 無しで
 #  そのままテストから実行できるようにするため（クロージャのままだと、ここでの
 #  取り違えを一切テストで検出できなかった）。
+# 解析中（running）画面のCSS。ブラウザでの実測テストからも参照するので
+# モジュール定数にしてある（テストが本物の文字列を見ないと意味がない）。
+#
+# CANCEL_ZONE_Z はローディングのオーバーレイ
+# （components.loading_card_html の z-index:2147483000）より大きいこと。
+# 小さいとボタンが板の下に入って物理的に押せない。
+CANCEL_ZONE_Z = 2147483100
+
+_RUNNING_CSS = (
+    "<style>[data-testid='stHeader']{display:none!important;}"
+    "[data-testid='stStatusWidget']{display:none!important;}"
+    "[data-testid='stToolbar']{display:none!important;}"
+    "[data-testid='stAppViewContainer']{opacity:1!important;}"
+    ".st-key-an_cancel_zone{position:fixed!important;left:50%;"
+    "transform:translateX(-50%);bottom:26px;width:min(360px,84vw);"
+    f"z-index:{CANCEL_ZONE_Z}!important;text-align:center;}}"
+    "</style>"
+)
+
+
 def _mark(prog: dict, phase: str | None) -> None:
     """いま何をしているかと、その開始時刻をワーカー側で記録する。
 
@@ -1028,13 +1048,13 @@ def render():
                 _specific_name = _peers_ss[0]
 
         # Hide Streamlit's own chrome so the loading overlay stands completely alone.
-        st.markdown(
-            "<style>[data-testid='stHeader']{display:none!important;}"
-            "[data-testid='stStatusWidget']{display:none!important;}"
-            "[data-testid='stToolbar']{display:none!important;}"
-            "[data-testid='stAppViewContainer']{opacity:1!important;}</style>",
-            unsafe_allow_html=True,
-        )
+        #
+        # 中止ボタンだけはオーバーレイより前に出す。ローディングは
+        # components.loading_card_html() が position:fixed / inset:0 /
+        # z-index:2147483000 の不透明な板を全面に敷くので、素直に描くと
+        # ボタンはその**下**に入って物理的に押せない（v0.44.0 で足してから
+        # ずっと押せていなかった）。
+        st.markdown(_RUNNING_CSS, unsafe_allow_html=True)
 
         # ── Progress state key (unique per target so restarting a different
         #    facility doesn't collide with a stale background thread)
@@ -1100,8 +1120,11 @@ def render():
 
             # 止まったときに待つしかない状態にしない。押せば設定画面へ戻れる。
             # ワーカーには cancelled を立てて、次のチェックポイントで手を引かせる。
-            _cc1, _cc2, _cc3 = st.columns([1, 2, 1])
-            with _cc2:
+            #
+            # キー付きコンテナにするのは、上の CSS（.st-key-an_cancel_zone）で
+            # オーバーレイより手前に浮かせるため。ボタンと注記を1つの箱に
+            # 入れておかないと、注記だけがオーバーレイの下に残る。
+            with st.container(key="an_cancel_zone"):
                 if st.button("■ 分析を中止する", key="an_cancel", width="stretch"):
                     _prog["cancelled"] = True
                     st.session_state["an_screen"] = "setup"
