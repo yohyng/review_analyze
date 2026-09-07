@@ -11,7 +11,7 @@ DATA_DIR = BASE_DIR / "data"
 #     VOICEBAUM_DB=data/dummy.db streamlit run app.py
 DB_PATH = Path(os.environ.get("VOICEBAUM_DB") or (DATA_DIR / "reviews.db"))
 
-APP_VERSION = "0.54.0"
+APP_VERSION = "0.55.0"
 
 # スコアの較正（市場内の相対位置へ写す）。詳細は topic_score の
 # calibration_stats を参照。False にすると素の感情スコアがそのまま出るが、

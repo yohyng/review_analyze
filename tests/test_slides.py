@@ -335,7 +335,13 @@ def test_slide2_shows_rank_distribution_and_top3(tmp_path):
         assert t in html, t
     assert f'/ {b["total_fac"]}施設中' in html
     assert "低評価" in html and "高評価" in html
-    assert "市場平均" in html
+    # 基準の呼び名は bundle の baseline_label に従うこと。_bundle() は
+    # peers_override 付き＝競合モードなので「選択競合の平均」が正しい。
+    # v0.55.0 以前はここに「市場平均」と決め打ちで書かれていて、
+    # このテストがその誤りを固定してしまっていた。
+    assert b["baseline_label"] == "選択競合の平均"
+    assert "選択競合の平均" in html
+    assert "市場平均" not in html
 
 
 def test_slide2_percentile_matches_rank(tmp_path):
@@ -1282,3 +1288,30 @@ def test_llm_prompt_asks_for_a_summary():
     assert '"summary"' in src
     assert "書かれていない事実を足さない" in src
     assert "創作してはいけません" in src
+
+
+def test_top3_baseline_label_follows_the_actual_comparison(tmp_path):
+    """強み/弱みTOP3 の基準の呼び名が、比較モードによって変わること。
+
+    SLIDE 2 は最も引用されるスライド。競合2社を選んで作った資料に
+    「市場平均 2.50」と書いてあると、読み手は市場全体と比べた結果だと
+    受け取るが、実際は選んだ2社との比較になる。
+    """
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    names = ["target"] + [f"peer{i}" for i in range(5)]
+    for nm in names:
+        db.upsert_facility(conn, nm, ftype="comparison", category="美術館")
+    matrix = {nm: _result(0.5 + 0.03 * i) for i, nm in enumerate(names)}
+
+    market = preview.build_bundle(conn, "target", matrix, None, None)
+    comp = preview.build_bundle(conn, "target", matrix, None, None,
+                                peers_override=names[1:3])
+
+    assert market["baseline_label"] == "全体平均"
+    assert comp["baseline_label"] == "選択競合の平均"
+
+    m_html = slides.slide2_market_position(market)
+    c_html = slides.slide2_market_position(comp)
+    assert "全体平均" in m_html and "選択競合の平均" not in m_html
+    assert "選択競合の平均" in c_html and "全体平均" not in c_html

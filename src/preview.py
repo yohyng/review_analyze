@@ -113,6 +113,18 @@ def build_bundle(
     strengths = diffs_sorted[:5]
     weaknesses = list(reversed(diffs_sorted[-5:])) if len(diffs_sorted) >= 1 else []
 
+    # 観点ごとの「言及量」。ホバーの根拠カードで
+    #   「その数字、何件の口コミから言ってるの？」に答えるために持たせる。
+    # salience は平均トピック確率（Σ=1）なので、1/22 = 4.5% が「何も言及が
+    # 無いときの水準」。これを下回る観点は実質「測れていない」。
+    #   （較正はそういう観点にも施設全体の平均感情を配ってしまうので、
+    #     未測定の軸が強み/弱みとして描かれる。数値の脇に言及量を出して
+    #     読み手が割り引けるようにする。静的な表示でも白抜きにする。）
+    topic_salience: dict[str, float] = {}
+    if ts and not ts.empty:
+        topic_salience = {t.name: t.salience_pct for t in ts.topics}
+    salience_floor = round(100.0 / len(topic_salience), 1) if topic_salience else 0.0
+
     overall_score = ts.weighted_sentiment_100 if (ts and not ts.empty) else None
 
     # 全体順位・全体平均との差（トピック総合スコアで）
@@ -353,6 +365,8 @@ def build_bundle(
         "market_trend_good": market_trend_good,
         "market_trend_bad": market_trend_bad,
         "overall_topic": overall_topic,
+        "topic_salience": topic_salience,
+        "salience_floor": salience_floor,
         "peer_topic_scores": peer_topic_scores,
         "monthly_pos_neg": monthly_pos_neg,
         "monthly_series": monthly_series,

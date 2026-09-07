@@ -31,7 +31,7 @@ def canvas(header: str, body: str, foot: str) -> str:
     こうしておくと本文の中身が増えてもフッターの位置がずれない。
     """
     return (
-        f'<div style="position:relative;width:100%;aspect-ratio:{T.ASPECT_RATIO};'
+        f'<div class="vb-cv" style="position:relative;width:100%;aspect-ratio:{T.ASPECT_RATIO};'
         f'background:{T.PAGE_BG};border:1px solid {T.CARD_LINE};'
         f'border-radius:{T.SLIDE_RADIUS};overflow:hidden;container-type:inline-size;'
         f'box-shadow:{T.SLIDE_SHADOW};font-family:{T.FONT_STACK};color:{T.INK};'
@@ -288,9 +288,77 @@ def plot_dots(pts: list[tuple[float, float]], *, size: float, color: str,
 #     "down"  … 下に出す（上端にあるもの向け）
 #     "right" / "left" … 横に出す（左右の軸ラベル向け）
 # --------------------------------------------------------------------------- #
-TOOLTIP_CSS = f"""
+def _topic_index(name: str) -> int | None:
+    """観点名 → 通し番号。:has() の相互ハイライト用の CSS 安全な識別子。
+
+    日本語の観点名は属性セレクタに直接書けなくはないが、生成した CSS に
+    ユーザー由来ではない固定文字列とはいえ日本語を大量に埋めると読みづらい。
+    DEFAULT_TOPICS の並び順は安定しているので番号で引く。
+    """
+    from . import topic_score  # noqa: PLC0415
+
+    for i, t in enumerate(topic_score.DEFAULT_TOPICS):
+        if t.name == name:
+            return i
+    return None
+
+
+def _highlight_rules() -> str:
+    """同じ観点を指す要素どうしを、ホバー/フォーカスで結ぶ CSS。
+
+    1枚のスライドの中に、同じ観点が「レーダーの軸」「ヒートマップの行」
+    「強みTOP3」と何度も出てくる。片方を指したときにもう片方が光れば、
+    3枚の別々の図ではなく1つの図として読める。
+
+    :has() は実測で Streamlit 経由でも効く（probe 済み）。
+    起点を .vb-cv（スライド1枚）に取るので、隣のスライドには波及しない。
+    """
+    from . import topic_score  # noqa: PLC0415
+
+    out = []
+    for i in range(len(topic_score.DEFAULT_TOPICS)):
+        out.append(
+            f'.vb-cv:has([data-t="{i}"]:hover) [data-t="{i}"],'
+            f'.vb-cv:has([data-t="{i}"]:focus-visible) [data-t="{i}"]'
+            f'{{background:{T.ACCENT_SOFT};border-radius:.3cqw;'
+            f'box-shadow:0 0 0 .18cqw {T.ACCENT};}}'
+        )
+    return "".join(out)
+
+
+def _css_min(css: str) -> str:
+    """CSS を1行に潰す。**空行とコメントを残すと途中で切れる**。
+
+    st.markdown は文字列を先に Markdown として解釈する。CommonMark では
+    空行が HTML ブロックの終わりなので、空行を挟むと以降は「HTML では
+    ない段落」と見なされて捨てられる。実測では 6,049 文字の <style> が
+    2,113 文字で切れ、:has() の相互ハイライトと .vb-unmeasured が丸ごと
+    消えていた（前半だけ効くので気づきにくい）。
+
+    ついでに 1枚あたり数KBの重複も減る（CSS は 11枚それぞれに入るため）。
+    """
+    out = []
+    for line in css.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        out.append(line)
+    txt = " ".join(out)
+    # /* ... */ を落とす（複数行にまたがるものも1行化済みなので単純に取れる）
+    while "/*" in txt and "*/" in txt:
+        a = txt.index("/*")
+        b = txt.index("*/", a) + 2
+        txt = txt[:a] + txt[b:]
+    return " ".join(txt.split())
+
+
+_TOOLTIP_CSS_SRC = f"""
 <style>
+/* ── ホバー/タップで出る根拠カード ──────────────────────────────── */
 .vb-tip{{position:relative;cursor:help;border-bottom:1px dotted {T.INK_FAINT};}}
+/* tabindex を付けた要素のブラウザ既定の枠は自前の指示子に置き換える */
+.vb-tip:focus{{outline:none;}}
+.vb-tip:focus-visible{{outline:.18cqw solid {T.ACCENT};outline-offset:.15cqw;}}
 .vb-tip>.vb-tipbody{{
   visibility:hidden;opacity:0;transition:opacity .12s;
   position:absolute;z-index:60;width:16cqw;
@@ -299,7 +367,10 @@ TOOLTIP_CSS = f"""
   text-align:left;white-space:normal;
   box-shadow:0 .3cqw 1.2cqw rgba(20,30,40,.28);
 }}
-.vb-tip:hover>.vb-tipbody{{visibility:visible;opacity:1;}}
+/* hover はマウスだけのもの。タブレットとキーボードには focus で届かせる。 */
+.vb-tip:hover>.vb-tipbody,
+.vb-tip:focus>.vb-tipbody,
+.vb-tip:focus-within>.vb-tipbody{{visibility:visible;opacity:1;}}
 .vb-tip>.vb-tipbody.up{{bottom:calc(100% + .5cqw);left:50%;transform:translateX(-50%);}}
 .vb-tip>.vb-tipbody.down{{top:calc(100% + .5cqw);left:50%;transform:translateX(-50%);}}
 .vb-tip>.vb-tipbody.right{{left:calc(100% + .5cqw);top:50%;transform:translateY(-50%);}}
@@ -310,8 +381,32 @@ TOOLTIP_CSS = f"""
 .vb-tip>.vb-tipbody.down-l{{top:calc(100% + .5cqw);left:0;transform:none;}}
 .vb-tip>.vb-tipbody.down-r{{top:calc(100% + .5cqw);right:0;left:auto;transform:none;}}
 .vb-tipkw{{display:block;margin-top:.4cqw;color:{T.LAUREL};font-size:.85cqw;}}
+
+/* ── 根拠の明細（スコア / 基準 / 言及量）────────────────────────── */
+.vb-tipname{{display:block;font-weight:800;font-size:1.02cqw;margin-bottom:.15cqw;}}
+.vb-tiprule{{display:block;height:1px;background:rgba(255,255,255,.22);
+  margin:.5cqw 0 .45cqw;}}
+.vb-tipfact{{display:flex;justify-content:space-between;gap:.6cqw;
+  font-size:.9cqw;line-height:1.55;}}
+.vb-tipfact>i{{font-style:normal;color:rgba(255,255,255,.66);flex:0 0 auto;}}
+.vb-tipfact>b{{font-weight:700;text-align:right;}}
+.vb-tipwarn{{display:block;margin-top:.45cqw;font-size:.85cqw;
+  color:{T.STAR};font-weight:700;}}
+
+/* ── 言及が下限を割る（＝実質測れていない）観点の静的な指示子 ──────
+   ホバーしないと分からない情報にはしない。スクショにも印刷にも残る。 */
+.vb-unmeasured{{opacity:.55;}}
+
+/* ── 同じ観点どうしの相互ハイライト（:has()）──────────────────── */
+{_highlight_rules()}
 </style>
 """
+
+TOOLTIP_CSS = _css_min(_TOOLTIP_CSS_SRC)
+
+
+def _fact(label: str, value: str) -> str:
+    return f'<span class="vb-tipfact"><i>{escape(label)}</i><b>{escape(value)}</b></span>'
 
 
 def tooltip(label: str, desc: str, *, place: str = "up",
@@ -326,19 +421,133 @@ def tooltip(label: str, desc: str, *, place: str = "up",
     kw = (f'<span class="vb-tipkw">拾う語: '
           f'{escape("・".join(keywords[:8]))}</span>' if keywords else "")
     return (
-        f'<span class="vb-tip">{escape(label)}'
+        f'<span class="vb-tip" tabindex="0">{escape(label)}'
         f'<span class="vb-tipbody {place}">{escape(desc)}{kw}</span></span>'
     )
 
 
-def topic_tooltip(name: str, *, place: str = "up") -> str:
-    """観点名を、その定義（説明＋拾う語）付きで返す。"""
+def topic_attrs(name: str, b: dict | None = None, *, extra: str = "") -> str:
+    """観点を指す要素に付ける共通属性。
+
+    - class="vb-tip"      … 吹き出しの器
+    - tabindex="0"        … タップ・キーボードでも吹き出しに届かせる
+    - data-t="{番号}"     … 同じ観点どうしの相互ハイライト（:has()）の目印
+    - class="vb-unmeasured" … 言及が下限を割る観点（静的に薄く出す）
+    """
+    cls = "vb-tip" + (f" {extra}" if extra else "")
+    if b is not None and _is_unmeasured(name, b):
+        cls += " vb-unmeasured"
+    idx = _topic_index(name)
+    attr = f' data-t="{idx}"' if idx is not None else ""
+    return f'class="{cls}" tabindex="0"{attr}'
+
+
+def topic_tooltip(name: str, *, place: str = "up", b: dict | None = None) -> str:
+    """観点名を、その定義と根拠付きで返す。
+
+    b（bundle）を渡すと、定義だけでなく「スコア / 基準との差 / 言及量」
+    まで出す。客先で必ず聞かれる「その数字どこから出てるの」に一手で
+    答えるため。渡さなければ従来どおり定義だけ。
+    """
+    body = _topic_tip_body(name, place, b)
+    if not body:
+        return escape(name)
+    return f'<span {topic_attrs(name, b)}>{escape(name)}{body}</span>'
+
+
+def _mentions(name: str, b: dict) -> int | None:
+    """その観点に触れたとみなせる文の数。分からなければ None。"""
+    sal = (b.get("topic_salience") or {}).get(name)
+    if sal is None:
+        return None
+    n_sent = b.get("n_sentences") or 0
+    return round(n_sent * sal / 100) if n_sent else 0
+
+
+def _is_unmeasured(name: str, b: dict) -> bool:
+    """静的に薄く出す観点＝**言及が1文も無い**もの。
+
+    ここは誤検知を出せない。スクショにも PPTX にも残る表示で、しかも
+    「この数字は読むな」と言うに等しいため。だから閾値を置かず、
+    推定言及数が 0 のときだけにする。
+
+    「平均より下」を基準にしてはいけない。salience は平均トピック確率で
+    Σ=1 なので、平均はちょうど 1/観点数。それを下回る観点は定義上ほぼ
+    半分あり、スライドの半分が灰色になる（一度そう書いて気づいた）。
+    平均前後の観点への注意喚起は吹き出しの中だけで行う（_is_thin）。
+    """
+    n = _mentions(name, b)
+    return n == 0
+
+
+def _is_thin(name: str, b: dict) -> bool:
+    """言及が「情報が無いときの水準」以下か＝吹き出しでだけ注意を出す。
+
+    トピック確率は、どの観点にも当たらない文では一様（1/観点数）に配られる。
+    そこを超えていない観点は「その観点に触れた証拠が無い」に等しい。
+    較正はそういう観点にも施設全体の平均感情を配ってしまうので、強み/弱み
+    として読むと事故になる。ただし定義上おおよそ半数が該当するので、
+    静的な見た目は変えず、根拠カードの中でだけ伝える。
+    """
+    sal = (b.get("topic_salience") or {}).get(name)
+    floor = b.get("salience_floor") or 0.0
+    return sal is not None and floor > 0 and sal <= floor
+
+
+def _topic_tip_body(name: str, place: str, b: dict | None = None) -> str:
+    """観点の吹き出しの中身（ラベル本体は呼び出し側が描く）。"""
     from . import topic_score  # noqa: PLC0415
 
     d = next((t for t in topic_score.DEFAULT_TOPICS if t.name == name), None)
-    if not d:
-        return escape(name)
-    return tooltip(name, getattr(d, "desc", ""), place=place, keywords=d.keywords)
+    if not d or not getattr(d, "desc", ""):
+        return ""
+
+    head = f'<span class="vb-tipname">{escape(name)}</span>'
+    desc = escape(d.desc)
+    kw = (f'<span class="vb-tipkw">拾う語: '
+          f'{escape("・".join(d.keywords[:8]))}</span>')
+
+    facts = ""
+    if b is not None:
+        facts = _topic_facts(name, b)
+
+    return f'<span class="vb-tipbody {place}">{head}{desc}{kw}{facts}</span>'
+
+
+def _topic_facts(name: str, b: dict) -> str:
+    """スコア・基準・言及量の明細。bundle に無いものは黙って省く。"""
+    rows = ""
+
+    scores = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
+    tv = scores.get(name)
+    if tv is not None:
+        rows += _fact("スコア", f"{tv / 20:.2f} / 5")
+
+    base = (b.get("overall_topic") or {}).get(name)
+    if tv is not None and base is not None:
+        lbl = b.get("baseline_label") or "基準"
+        rows += _fact(lbl, f"{base / 20:.2f}（{(tv - base) / 20:+.2f}）")
+
+    sal = (b.get("topic_salience") or {}).get(name)
+    if sal is not None:
+        n_sent = b.get("n_sentences") or 0
+        hit = _mentions(name, b) or 0
+        rows += _fact("言及", f"{hit:,}文 / {n_sent:,}文（{sal:.1f}%）")
+
+    if not rows:
+        return ""
+
+    warn = ""
+    if _is_unmeasured(name, b):
+        warn = ('<span class="vb-tipwarn">'
+                'この観点に触れた口コミがありません。'
+                'スコアは全体の平均から埋めた値なので、'
+                '強み・弱みとして読まないでください。</span>')
+    elif _is_thin(name, b):
+        warn = ('<span class="vb-tipwarn">'
+                '言及が少なく、他の観点と比べられる水準にありません。'
+                '参考値として扱ってください。</span>')
+    return f'<span class="vb-tiprule"></span>{rows}{warn}'
 
 
 def _tip_dir(lx: float, ly: float, cx: float, cy: float) -> str:
@@ -354,22 +563,10 @@ def _tip_dir(lx: float, ly: float, cx: float, cy: float) -> str:
     return "right" if lx < cx else "left"
 
 
-def _topic_tip_body(name: str, place: str) -> str:
-    """観点の説明だけを返す（ラベル本体は呼び出し側が描く）。"""
-    from . import topic_score  # noqa: PLC0415
-
-    d = next((t for t in topic_score.DEFAULT_TOPICS if t.name == name), None)
-    if not d or not getattr(d, "desc", ""):
-        return ""
-    kw = (f'<span class="vb-tipkw">拾う語: '
-          f'{escape("・".join(d.keywords[:8]))}</span>')
-    return f'<span class="vb-tipbody {place}">{escape(d.desc)}{kw}</span>'
-
-
 def tilted_axis_labels(labels: list[str], xs: list[float], *, deg: float,
                        size: float, color: str | None = None,
                        prefix: list[str] | None = None,
-                       tips: bool = False) -> str:
+                       tips: bool = False, b: dict | None = None) -> str:
     """X軸の傾いたラベル（README §3：独自指標 -90°／19指標比較 -62°）。
 
     右端を軸の目盛りに合わせて、そこを支点に反時計回りへ倒す。
@@ -379,8 +576,17 @@ def tilted_axis_labels(labels: list[str], xs: list[float], *, deg: float,
     for i, (t, px) in enumerate(zip(labels, xs)):
         head = (f'{prefix[i]} ' if prefix and i < len(prefix) else "")
         place = "up-l" if px < 25 else ("up-r" if px > 75 else "up")
-        body = _topic_tip_body(t, place) if tips else ""
+        body = _topic_tip_body(t, place, b) if tips else ""
+        # 吹き出しは付けられない（-62°回転を子が継承して枠を抜ける）が、
+        # data-t だけは付けられる。同じスライドのヒートマップの指標名と
+        # 結びついて、どちらかを指すともう片方が光る。
+        # 「この指標、グラフのどれ？」を目で追わずに済む。
         cls = ' class="vb-tip"' if body else ""
+        if b is not None and not body:
+            idx = _topic_index(t)
+            if idx is not None:
+                mark = " vb-unmeasured" if _is_unmeasured(t, b) else ""
+                cls = f' class="vb-xlab{mark}" data-t="{idx}"'
         out += (
             f'<div{cls} style="position:absolute;left:{px:.2f}%;top:0;'
             f'transform:translateX(-100%) rotate({-abs(deg):.0f}deg);'
@@ -861,9 +1067,18 @@ def _distribution_body(b: dict) -> str:
     )
 
 
-def _top3_card(title: str, rows: list, accent: str, icon: str) -> str:
-    """強みTOP3 / 弱みTOP3 のカード。rows = [(指標名, 自施設100, 市場平均100), ...]"""
+def _top3_card(title: str, rows: list, accent: str, icon: str,
+               b: dict | None = None) -> str:
+    """強みTOP3 / 弱みTOP3 のカード。rows = [(指標名, 自施設100, 基準100), ...]
+
+    基準の呼び名は bundle の baseline_label（'全体平均' / '選択競合の平均' /
+    '中立(50)'）を使う。以前は「市場平均」と決め打ちで書いていたので、
+    競合2社を選んで作った資料にも「市場平均」と出ていた。読み手は市場全体と
+    比べた結果だと受け取るが、実際は選んだ2社との比較。SLIDE 2 は最も
+    引用されるスライドなので誤読の影響が大きい。
+    """
     rule = T.ACCENT_BORDER if accent == T.ACCENT else T.BLUE_BORDER
+    base_lbl = (b or {}).get("baseline_label") or "市場平均"
     items = ""
     for i, (name, mine, base) in enumerate(rows[:3], 1):
         items += (
@@ -874,12 +1089,13 @@ def _top3_card(title: str, rows: list, accent: str, icon: str) -> str:
             f'justify-content:center;font-size:1.25cqw;font-weight:700;">{i}</span>'
             f'<span style="flex:1;min-width:0;font-size:1.45cqw;font-weight:700;'
             f'color:{T.INK};white-space:nowrap;">'
-            f'{topic_tooltip(name, place="right")}</span>'
+            f'{topic_tooltip(name, place="right", b=b)}</span>'
             '<span style="text-align:right;flex:none;">'
             f'<span style="display:block;font-size:1.95cqw;font-weight:800;'
             f'color:{accent};line-height:1.1;">{_pt5(mine)}</span>'
             f'<span style="display:block;font-size:1.05cqw;color:{T.MUTED};'
-            f'white-space:nowrap;">市場平均 {_pt5(base)}</span></span></div>'
+            f'white-space:nowrap;">{escape(base_lbl)} {_pt5(base)}</span>'
+            '</span></div>'
         )
     if not rows:
         items = f'<div style="color:{T.SUB};font-size:1.16cqw;">該当なし</div>'
@@ -913,8 +1129,8 @@ def slide2_market_position(b: dict) -> str:
     right = (
         '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
         'gap:1.2cqw;min-height:0;">'
-        + _top3_card("強み TOP3", st, T.ACCENT, "▲")
-        + _top3_card("弱み TOP3", wk, T.BLUE, "▼")
+        + _top3_card("強み TOP3", st, T.ACCENT, "▲", b)
+        + _top3_card("弱み TOP3", wk, T.BLUE, "▼", b)
         + '</div>'
     )
     return canvas(
@@ -988,9 +1204,9 @@ def _indicator_chart(b: dict) -> str:
         f'<div style="font-size:0.88cqw;color:{T.INK};line-height:1.2;'
         'margin-bottom:.15cqw;">'
         f'{_CIRCLED[i] if i < len(_CIRCLED) else i + 1}</div>'
-        + f'<span class="vb-tip">{vertical_text(t, size=.66)}'
+        + f'<span {topic_attrs(t, b)}>{vertical_text(t, size=.66)}'
         + _topic_tip_body(
-            t, "up-l" if x(i) < 25 else ("up-r" if x(i) > 75 else "up"))
+            t, "up-l" if x(i) < 25 else ("up-r" if x(i) > 75 else "up"), b)
         + '</span></div>'
         for i, t in enumerate(topics)
     )
@@ -1176,7 +1392,8 @@ def _outcome_boxes(b: dict) -> str:
         'gap:.6cqw;padding:.3cqw;">'
         f'<span style="font-size:1.3cqw;">{icon}</span>'
         '<span style="text-align:center;">'
-        f'<div style="font-size:1.1cqw;font-weight:700;color:{T.INK_SUB};">{name}</div>'
+        f'<div style="font-size:1.1cqw;font-weight:700;color:{T.INK_SUB};">'
+        f'{topic_tooltip(name, place="down", b=b)}</div>'
         f'<div style="font-size:1.7cqw;font-weight:800;color:{T.ACCENT};'
         f'line-height:1.1;">{_pt5(mine.get(name))}</div>'
         '</span></div>'
@@ -1349,7 +1566,8 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
     #   ラベルは -62° 回転しているので、子として吹き出しを置くと一緒に傾いて
     #   カードを抜ける。説明は同じスライドのヒートマップ（横書きの指標名）に
     #   任せ、ここには付けない。
-    xlabs = tilted_axis_labels(topics, [x(i) for i in range(n)], deg=62, size=.75)
+    xlabs = tilted_axis_labels(topics, [x(i) for i in range(n)], deg=62,
+                               size=.75, b=b)
     legend = "".join(
         '<span style="display:flex;align-items:center;gap:.35cqw;">'
         f'<span style="width:1.3cqw;height:.25cqw;background:{col};'
@@ -1393,7 +1611,7 @@ def _compare_heatmap(b: dict, topics: list[str]) -> str:
         f'border-bottom:1px solid {T.TABLE_HEAD};">'
         f'<div style="flex:2;padding:0 .6cqw;font-size:1.07cqw;color:{T.INK};'
         'white-space:nowrap;">'
-        f'{topic_tooltip(t, place="right")}</div>'
+        f'{topic_tooltip(t, place="right", b=b)}</div>'
         + "".join(
             '<div style="flex:1;align-self:stretch;display:flex;align-items:center;'
             'justify-content:center;font-size:1.1cqw;'
@@ -1799,7 +2017,7 @@ def _radar(b: dict) -> str:
             f'transform:translate({shift},-50%);font-size:0.98cqw;font-weight:700;'
             f'color:{T.INK};text-align:{align};line-height:1.25;'
             f'width:8.6cqw;">{i + 1}. '
-            f'{topic_tooltip(t, place=_tip_dir(lx, ly, CX, CY))}</div>'
+            f'{topic_tooltip(t, place=_tip_dir(lx, ly, CX, CY), b=b)}</div>'
         )
     legend = "".join(
         '<div style="display:flex;align-items:center;gap:.45cqw;font-size:1.04cqw;'
@@ -1845,8 +2063,11 @@ def _space_table(b: dict, lo: int, hi: int) -> str:
     rows = "".join(
         f'<div style="flex:1;display:flex;border-top:1px solid {T.LINE};">'
         f'<div style="width:1.7cqw;flex:none;{cell}color:{T.SUB};">{i + 1}</div>'
+        # 上のレーダーの軸ラベルと同じ観点。data-t で結んでおくと、
+        # どちらかを指すともう片方が光る（表の行 ↔ レーダーの角）。
         f'<div style="flex:2.3;{cell}text-align:left;color:{T.INK};overflow:hidden;'
-        f'text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</div>'
+        f'text-overflow:ellipsis;white-space:nowrap;">'
+        f'{topic_tooltip(t, place="right", b=b)}</div>'
         + "".join(
             f'<div style="flex:1;{cell}font-weight:{"800" if k == 0 else "400"};'
             f'color:{col if k == 0 else T.INK};">{_pt5(sc.get(t, 50.0))}</div>'
