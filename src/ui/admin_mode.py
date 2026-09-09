@@ -966,6 +966,108 @@ def render():
             "差はさらに大きくなります。"
         )
 
+    # ── NMSI（来場体験の満足度指標）──────────────────────────────────── #
+    #    **課金する計算はここだけ**に置く。分析画面は未ログインで開けるので、
+    #    あちらから LLM 呼び出しが飛ぶ導線は作らない。レポート側は保存済みの
+    #    結果を読むだけにする（src/slides.py）。
+    elif _page == "nmsi":
+        from src.nmsi import run as nmsi_run  # noqa: PLC0415
+
+        _html('<div class="vb-step">STEP 5 — 体験満足度</div>')
+        _html('<h1 class="vb-h1">NMSI を計算する</h1>')
+        _html(
+            '<p class="vb-sub">来場体験を7フェーズ（来訪前／到着／展示／体験／'
+            'ショー交流／飲食物販／退出振り返り）に分けて、口コミの文ごとの感情から'
+            '満足度を 0〜100 で出します。22観点スコアとは<b>別の指標</b>で、'
+            '同じ5点満点ではないため直接は比べられません。</p>'
+        )
+
+        _names = analysis.facility_names(conn)
+        if not _names:
+            st.info("施設がまだありません。先に「📥 データ取り込み」から登録してください。")
+        else:
+            _key_set = bool(nmsi_run.api_key())
+            if not _key_set:
+                st.warning(
+                    "OPENAI_API_KEY が未設定です。計算はできませんが、"
+                    "保存済みの結果は下に表示されます。"
+                )
+
+            _sel = st.selectbox("施設", _names, key="nmsi_facility")
+            _plan = nmsi_run.plan(conn, _sel)
+
+            _c1, _c2, _c3, _c4 = st.columns(4)
+            _c1.metric("口コミ（本文あり）", f"{_plan.n_reviews:,} 件")
+            _c2.metric("文", f"{_plan.n_sentences:,}")
+            _c3.metric("LLM 呼び出し", f"{_plan.llm_calls:,} 回")
+            _c4.metric("モデル", _plan.model)
+
+            _hit = nmsi_run.get_result(conn, _sel)
+            if _hit:
+                _html("<div style='height:10px'></div>")
+                _html(
+                    '<div style="border:1.5px solid #E8386A;border-radius:12px;'
+                    'padding:18px 22px;background:#fff;">'
+                    '<div style="font-size:12px;font-weight:800;letter-spacing:.06em;'
+                    'color:#6B7280;">NMSI</div>'
+                    f'<div style="font-size:44px;font-weight:800;color:#E8386A;'
+                    f'line-height:1.1;">{_hit["nmsi"]:.1f}'
+                    '<span style="font-size:16px;color:#9AA0AE;"> / 100</span></div>'
+                    f'<div style="font-size:15px;font-weight:700;color:#1B2333;">'
+                    f'{escape(str(_hit["interpretation"]))}</div>'
+                    f'<div style="font-size:12px;color:#9AA0AE;margin-top:6px;">'
+                    f'{_hit["n_sentences"]:,} 文 ／ LLM {_hit["llm_calls"]:,} 回 ／ '
+                    f'{escape(str(_hit["created_at"]))} に計算</div></div>'
+                )
+                _phases = _hit.get("phases") or []
+                if _phases:
+                    st.dataframe(
+                        pd.DataFrame(_phases)[
+                            ["フェーズ", "重み", "E_i", "ポジティブ", "文数"]
+                        ].round(3),
+                        width="stretch", hide_index=True,
+                    )
+                with st.expander("内訳（補正値）"):
+                    st.json(_hit.get("summary") or {})
+            else:
+                st.info("この施設はまだ計算していません。")
+
+            _html("<div style='height:8px'></div>")
+            # 鍵が無い件は上の警告で一度言っている。ここで繰り返さない。
+            if _plan.n_sentences == 0:
+                st.error(_plan.reason or "実行できません。")
+            elif not _key_set:
+                pass
+            else:
+                _label = ("再計算する（保存済みを捨てる）" if _hit
+                          else f"NMSI を計算する（LLM {_plan.llm_calls:,} 回）")
+                _disabled = not _key_set or _plan.n_sentences == 0
+                if st.button(_label, type="primary", width="stretch",
+                             key="nmsi_run", disabled=_disabled):
+                    _bar = st.progress(0.0, text="準備中…")
+
+                    def _tick(stage, done, total):
+                        _bar.progress(done / max(total, 1),
+                                      text=f"{stage} {done}/{total}")
+
+                    try:
+                        _res = nmsi_run.analyze(conn, _sel, force=bool(_hit),
+                                                progress_cb=_tick)
+                        _bar.empty()
+                        st.success(
+                            f"NMSI {_res['nmsi']:.1f} — {_res['interpretation']}"
+                        )
+                        st.rerun()
+                    except Exception as _e:  # 失敗しても画面は保つ
+                        _bar.empty()
+                        st.error(f"計算に失敗しました: {_e}")
+
+            st.caption(
+                "結果は口コミ件数とモデルを鍵に保存され、口コミが増えるか"
+                "モデルを変えるまで再計算しません。レポート側は保存済みの結果を"
+                "読むだけなので、閲覧では課金されません。"
+            )
+
     elif _page == "dummy":
         _html('<div class="vb-step">検証</div>')
         _html('<h1 class="vb-h1">ダミーデータ</h1>')

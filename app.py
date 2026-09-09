@@ -276,6 +276,7 @@ else:
             ("📑 レポート出力", "report"),
             None,
             ("⚡ 分析の事前計算", "warmup"),
+            ("🧭 NMSI（体験満足度）", "nmsi"),
             ("🧪 ダミーデータ", "dummy"),
             ("🔬 CSVプロファイラ", "profiler"),
             ("📡 KAIZODE連携", "kaizode"),
