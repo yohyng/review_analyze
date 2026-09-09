@@ -22,6 +22,32 @@ from . import (analysis, config, db, discussion, text_analysis, timeline,
 # ═══════════════════════════════════════════════════════════════════════════
 # Data bundle
 # ═══════════════════════════════════════════════════════════════════════════
+def _reliability(conn, target: str) -> dict | None:
+    """有効件数と信頼区間。取れなければ None（レポートは従来どおり出る）。"""
+    try:
+        from . import reliability  # noqa: PLC0415
+
+        a = reliability.assess(conn, target)
+        f, iv = a.funnel, a.intervals
+        return {
+            "total": f.total, "with_text": f.with_text, "japanese": f.japanese,
+            "usable": f.usable, "sentences": f.sentences,
+            "empty": f.empty, "symbols": f.symbols, "foreign": f.foreign,
+            "short": f.short,
+            "usable_rate": f.usable_rate, "foreign_rate": f.foreign_rate,
+            "small_sample": a.small_sample,
+            "rating_mean": iv.rating_mean,
+            "rating_lo": iv.rating_lo, "rating_hi": iv.rating_hi,
+            "pos_rate": iv.pos_rate,
+            "pos_lo": iv.pos_lo, "pos_hi": iv.pos_hi,
+            "n_rated": iv.n_rated,
+            "flags": [{"key": x.key, "level": x.level, "text": x.text}
+                      for x in a.flags],
+        }
+    except Exception:
+        return None
+
+
 def _nmsi_cached(conn, target: str) -> dict | None:
     """保存済みの NMSI。無ければ None（計算はしない）。
 
@@ -378,6 +404,9 @@ def build_bundle(
         "outcome_map": outcome_map,
         "market_trend_good": market_trend_good,
         "market_trend_bad": market_trend_bad,
+        # この分析が何件に支えられているか。「4.50」と「4.70」を同じ見た目で
+        # 並べる以上、分母と誤差を一緒に出さないと順位が独り歩きする。
+        "reliability": _reliability(conn, target),
         # NMSI は**保存済みがあれば載せるだけ**。ここで計算しない。
         #   スライドは描画のたびに走るので、ここから LLM を呼ぶと歯止めが無い。
         #   計算は管理モード（ログイン必須）だけで行う。
