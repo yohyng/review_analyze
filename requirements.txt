@@ -20,6 +20,13 @@ openpyxl==3.1.5         # .xlsx reading
 plotly==6.8.0
 janome==0.5.0
 scikit-learn==1.9.0
+scipy==1.17.1           # NMSI/VFFI のクラスタ対応づけ（linear_sum_assignment）
+
+# --- NMSI / VFFI（src/nmsi・外部プロジェクトからの移植）---
+#   22観点スコアと違い、こちらは**生成AIを使う**。文ごとの属性付けを
+#   OpenAI 互換 API に投げるので、分析のたびに課金が乗る。
+pydantic==2.13.5        # LLM の構造化出力スキーマ
+openai==3.10.0           # OpenAI 互換 API クライアント
 
 # --- integrations (Turso HTTP / KAIZODE API / OSM・Wikidata) ---
 requests==2.33.1

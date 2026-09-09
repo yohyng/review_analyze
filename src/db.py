@@ -411,6 +411,25 @@ CREATE TABLE IF NOT EXISTS token_cache (
 
 CREATE INDEX IF NOT EXISTS idx_review_facility ON review(facility_id);
 CREATE INDEX IF NOT EXISTS idx_subscore_review ON review_subscore(review_db_id);
+
+-- NMSI（来場体験の満足度指標・src/nmsi）の結果。
+--   topic_score_cache と同じ考え方で「口コミ件数」を鍵に含める。件数が増え
+--   なければ結果を使い回す。ここは**LLM課金が乗る**計算なので、キャッシュが
+--   無いと画面を開き直すたびに費用がかかる（移植元にはキャッシュが無かった）。
+--   モデルを変えたら結果も変わるので model も鍵に入れる。
+CREATE TABLE IF NOT EXISTS nmsi_result (
+    facility_id   INTEGER NOT NULL REFERENCES facility(id) ON DELETE CASCADE,
+    n_reviews     INTEGER NOT NULL,
+    model         TEXT    NOT NULL DEFAULT '',
+    nmsi          REAL    NOT NULL,
+    interpretation TEXT   NOT NULL DEFAULT '',
+    summary_json  TEXT    NOT NULL DEFAULT '{}',
+    phase_json    TEXT    NOT NULL DEFAULT '[]',
+    n_sentences   INTEGER NOT NULL DEFAULT 0,
+    llm_calls     INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    DEFAULT (datetime('now')),
+    PRIMARY KEY (facility_id, n_reviews, model)
+);
 CREATE INDEX IF NOT EXISTS idx_score_facility ON score(facility_id);
 """
 
