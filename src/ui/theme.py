@@ -6,6 +6,8 @@ once, right after st.set_page_config().
 """
 import streamlit as st
 
+from .markup import html as _html
+
 from .. import report_theme
 
 ACCENT = "#B0338A"
@@ -16,7 +18,7 @@ ACCENT_RING = "rgba(176,51,138,0.22)"
 def inject_global_css() -> None:
     # レポート側の見出しは 800。Noto Sans JP の 800 を読まないと合成太字になり、
     # 和文だけ字面が崩れるので、URL は report_theme.FONT_URL に一本化する。
-    st.markdown(f"""
+    _html(f"""
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="{report_theme.FONT_URL}" rel="stylesheet">
@@ -198,5 +200,5 @@ def inject_global_css() -> None:
     .vb-step-label {{ font-size: 15px; font-weight: 700; color: #16202B; }}
     .vb-step-label-todo {{ font-size: 15px; font-weight: 600; color: #C5C4BC; }}
     </style>
-    """, unsafe_allow_html=True)
+    """)
 

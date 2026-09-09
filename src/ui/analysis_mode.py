@@ -19,6 +19,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from .markup import html as _html
+
 from src import (
     analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
     llm, onboard, places, preview, report, review_csv, score_excel, scoring, search,
@@ -120,7 +122,7 @@ def _kz_progress_tracker(conn, key: str, dataset_id: str, facility_name: str, qu
 
     # ── 完了チェック ─────────────────────────── #
     if status == kaizode.STATUS_DONE:
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        _html("<div style='height:8px'></div>")
         # 完了時は分析画面へ切り替えるため、ここだけはページ全体を rerun する
         if _kz_pull(conn, key, query):
             return
@@ -137,7 +139,7 @@ def _kz_progress_tracker(conn, key: str, dataset_id: str, facility_name: str, qu
     # scope="fragment" は「fragment の自動rerun中」でないと呼べない制約があり、
     # 初回描画直後にクリックされると例外になるため、素直に通常rerunにする
     # （自動更新（3秒毎）は run_every 側が fragment scope で滑らかに処理する）。
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+    _html("<div style='height:6px'></div>")
     if st.button("🔄 今すぐ確認", key="an_kz_check_now", width="stretch"):
         st.rerun()
 
@@ -154,7 +156,7 @@ def _kz_collect_section(conn, query: str) -> None:
     query = (query or "").strip()
     if not query:
         return
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    _html("<div style='height:10px'></div>")
 
     if not st.session_state.get("admin_authed"):
         st.info(f"「{query}」の口コミはまだありません。収集するにはログイン（管理者）が必要です。")
@@ -195,7 +197,7 @@ def _kz_collect_section(conn, query: str) -> None:
             _done = _m.get("status") == kaizode.STATUS_DONE
             _icon = "✅" if _done else "⏳"
             st.caption(f"{_icon} 「{_m.get('dataset_name')}」— {_lbl}")
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        _html("<div style='height:8px'></div>")
 
     # ── STEP 1: URL/施設名入力 ────────────────────────────────── #
     _ikey = f"an_kz_input::{query}"
@@ -289,7 +291,7 @@ def _onboard_panel(conn, p, meta: dict) -> None:
     **押すべきボタンを1つ**にする。押した先は最後まで自動で進む。
     """
     if p.action == onboard.AMBIGUOUS:
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        _html("<div style='height:6px'></div>")
         st.caption("どの施設ですか？")
         for _n in p.candidates:
             if st.button(f"{_n}　·　{meta.get(_n, '')}", key=f"an_sug_{_n}",
@@ -302,20 +304,17 @@ def _onboard_panel(conn, p, meta: dict) -> None:
         st.info("施設名を入力してください。")
         return
 
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    _html("<div style='height:10px'></div>")
 
     # 何を分析しようとしているのかを1行で見せる（発注は不可逆なので）
     _sub = p.address or meta.get(p.facility, "")
-    st.markdown(
-        '<div style="max-width:560px;margin:0 auto;text-align:center;">'
+    _html('<div style="max-width:560px;margin:0 auto;text-align:center;">'
         f'<div style="font-size:17px;font-weight:800;color:#16202B;">'
         f'{escape(p.display_name or p.facility)}</div>'
         + (f'<div style="font-size:13px;color:#8A9098;margin-top:4px;">'
            f'{escape(_sub)}</div>' if _sub else "")
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+        + "</div>")
+    _html("<div style='height:14px'></div>")
 
     _b1, _b2, _b3 = st.columns([1, 2, 1])
     with _b2:
@@ -812,13 +811,10 @@ def render():
 
     # ── No data yet ──────────────────────────────────────────────────────── #
     if not _names:
-        st.markdown('<div class="vb-step">STEP 0 — はじめに</div>', unsafe_allow_html=True)
-        st.markdown('<h1 class="vb-h1">データを登録しましょう</h1>', unsafe_allow_html=True)
-        st.markdown(
-            '<p class="vb-sub">口コミデータがまだありません。'
-            "右上の「⚙️ 管理」→「📥 データ取り込み」からCSVを投入してください。</p>",
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">STEP 0 — はじめに</div>')
+        _html('<h1 class="vb-h1">データを登録しましょう</h1>')
+        _html('<p class="vb-sub">口コミデータがまだありません。'
+            "右上の「⚙️ 管理」→「📥 データ取り込み」からCSVを投入してください。</p>")
         st.info(
             "**手順**: 画面左上の 「⚙️ 管理」→「📥 データ取り込み」→ CSVをアップロード → 施設を選んで保存"
         )
@@ -834,7 +830,7 @@ def render():
         # input を直接 height:60px にすると、Streamlit 側の器は既定の高さ
         # （約40px）のままなので、はみ出したぶんが次の要素に隠れて
         # 検索窓の下端が切れる（実際に切れていた）。
-        st.markdown("""
+        _html("""
         <style>
         /* 器の高さを枠に合わせて確保する（これが無いと下端が隠れる） */
         div[data-testid="stTextInput"]{ min-height:64px!important; }
@@ -868,18 +864,15 @@ def render():
           background:#fff!important;box-shadow:0 1px 2px rgba(20,30,40,.03)!important;min-height:56px;}
         [class*="st-key-an_sug_"] button:hover{background:#F7F3F6!important;border-color:#B0338A!important;}
         </style>
-        """, unsafe_allow_html=True)
+        """)
 
         _meta = _facility_meta()
         _sp, _mid, _sp2 = st.columns([1, 2.4, 1])
         with _mid:
-            st.markdown("<div style='height:8vh'></div>", unsafe_allow_html=True)
-            st.markdown('<div class="vb-hero-title">VoiceBAUM</div>', unsafe_allow_html=True)
-            st.markdown(
-                '<p class="vb-hero-sub">オープン後の来場者評価（口コミ）を活用した実態分析ツール</p>',
-                unsafe_allow_html=True,
-            )
-            st.markdown("<div style='height:30px'></div>", unsafe_allow_html=True)
+            _html("<div style='height:8vh'></div>")
+            _html('<div class="vb-hero-title">VoiceBAUM</div>')
+            _html('<p class="vb-hero-sub">オープン後の来場者評価（口コミ）を活用した実態分析ツール</p>')
+            _html("<div style='height:30px'></div>")
 
             _target = st.session_state.get("an_target")
 
@@ -897,13 +890,10 @@ def render():
                         conn, _qs, names=_names, gmaps_key=places.get_api_key())
                     _onboard_panel(conn, _plan, _meta)
                 else:
-                    st.markdown(
-                        '<div style="max-width:440px;margin:24px auto 0;'
+                    _html('<div style="max-width:440px;margin:24px auto 0;'
                         'text-align:center;background:#E4E3DD;color:#A7ABB0;'
                         'font-weight:700;font-size:15px;padding:16px;'
-                        'border-radius:12px;">この内容で分析する</div>',
-                        unsafe_allow_html=True,
-                    )
+                        'border-radius:12px;">この内容で分析する</div>')
 
             else:
                 # ── 選択済み：施設カード + 分析タイプ選択 + 実行ボタン ── #
@@ -911,8 +901,8 @@ def render():
                 _stats_ok = bool(_chk and _chk["n_reviews"] > 0)
                 _others = [n for n in _names if n != _target]
 
-                st.markdown(_selected_card_html(_target, _meta), unsafe_allow_html=True)
-                st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+                _html(_selected_card_html(_target, _meta))
+                _html("<div style='height:20px'></div>")
 
                 # ── 分析タイプ選択（2択カード）──────────────────────── #
                 _an_type = st.session_state.get("an_analysis_type", "competitor")
@@ -938,7 +928,7 @@ def render():
                         st.session_state["an_analysis_type"] = "market"
                         st.rerun()
 
-                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                _html("<div style='height:8px'></div>")
 
                 # 「指定競合」を選んだのに1件も選ばないまま実行すると、
                 # 警告なく市場全体比較のスライドが出る（順位も基準値もDB全施設）。
@@ -1002,7 +992,7 @@ def render():
                 # ── レポートの構成 ────────────────────────────────────── #
                 #    「（詳細）」の3枚はプランナー向けの掘り下げページ。
                 #    相手や場面によっては要らないので、ここで外せるようにする。
-                st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+                _html("<div style='height:10px'></div>")
                 _dc1, _dc2, _dc3 = st.columns([1, 2, 1])
                 with _dc2:
                     st.toggle(
@@ -1017,7 +1007,7 @@ def render():
                     st.caption(f"レポートは全 {_n_slides} 枚（＋冒頭の免責）になります")
 
                 # ── 実行ボタン ────────────────────────────────────────── #
-                st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+                _html("<div style='height:14px'></div>")
                 _rc1, _rc2, _rc3 = st.columns([1, 2, 1])
                 with _rc2:
                     if _stats_ok:
@@ -1074,7 +1064,7 @@ def render():
         # z-index:2147483000 の不透明な板を全面に敷くので、素直に描くと
         # ボタンはその**下**に入って物理的に押せない（v0.44.0 で足してから
         # ずっと押せていなかった）。
-        st.markdown(_RUNNING_CSS, unsafe_allow_html=True)
+        _html(_RUNNING_CSS)
 
         # ── Progress state key (unique per target so restarting a different
         #    facility doesn't collide with a stale background thread)
@@ -1128,13 +1118,10 @@ def render():
                     st.rerun()      # scope="app" → 上の ①／② が処理する
                     return
                 _started = _p.get("phase_started")
-                st.markdown(
-                    _loading_card_html(
+                _html(_loading_card_html(
                         _p.get("step", 2), _p.get("detail", ""),
                         server_secs=(time.time() - _started) if _started else None,
-                    ),
-                    unsafe_allow_html=True,
-                )
+                    ))
 
             _progress_ui()
 
@@ -1162,9 +1149,9 @@ def render():
             "SELECT COUNT(*) FROM review WHERE facility_id = ?", (_fid,)
         ).fetchone()[0]
         _ph0 = st.empty()
-        _ph0.markdown(
+        _html(
             _loading_card_html(0, f"「{_target}」の口コミ {_n_rev:,} 件をDBから読み込んでいます"),
-            unsafe_allow_html=True,
+            into=_ph0,
         )
         _rev_rows = conn.execute(
             "SELECT rating, text FROM review WHERE facility_id = ?", (_fid,)
@@ -1172,9 +1159,9 @@ def render():
         _revs = [(_r["rating"], _r["text"] or "") for _r in _rev_rows]
         _n_with_text = sum(1 for _, t in _revs if t.strip())
 
-        _ph0.markdown(
+        _html(
             _loading_card_html(1, f"口コミ {_n_rev:,} 件 ／ 本文あり {_n_with_text:,} 件 — 評点・ポジ率を集計中"),
-            unsafe_allow_html=True,
+            into=_ph0,
         )
         scoring.compute_and_store(conn, _fid)
 
@@ -1273,7 +1260,7 @@ def render():
             else:
                 st.error("レポートファイルが見つかりません。設定に戻って再実行してください。")
 
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        _html("<div style='height:8px'></div>")
 
         # ── Stacked 16:10 slide canvases ────────────────────────────────── #
         if _bundle:
@@ -1342,7 +1329,7 @@ def render():
                         hide_index=True, width="stretch",
                     )
 
-            st.markdown(slides.slide0_disclaimer(_bundle), unsafe_allow_html=True)
+            _html(slides.slide0_disclaimer(_bundle))
 
             # ── PROFILE：この場でインライン編集（写真アップ＋各項目の手入力）──── #
             #    ここは分析画面（ログイン不要）の中だが、中の3つのボタンは
@@ -1368,13 +1355,10 @@ def render():
 
             if _can_edit and st.session_state.get(_ekey):
                 with st.container(border=True):
-                    st.markdown(
-                        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">'
+                    _html('<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">'
                         f'<span style="font-size:11px;font-weight:800;letter-spacing:.06em;color:#fff;'
                         f'background:{ACCENT};padding:4px 10px;border-radius:6px;">PROFILE 編集</span>'
-                        '<span style="font-size:15px;font-weight:800;color:#16202B;">写真アップロードと情報の書き込み</span></div>',
-                        unsafe_allow_html=True,
-                    )
+                        '<span style="font-size:15px;font-weight:800;color:#16202B;">写真アップロードと情報の書き込み</span></div>')
                     _ecol1, _ecol2 = st.columns([2, 3], gap="large")
                     with _ecol1:
                         _up = st.file_uploader("施設写真（自動で長辺1200px/JPEGに縮小）",
@@ -1388,10 +1372,8 @@ def render():
                         if _photo_bytes:
                             st.image(_photo_bytes, width="stretch")
                         else:
-                            st.markdown(
-                                '<div style="aspect-ratio:1;border-radius:12px;background:#F1F0EA;'
-                                'display:flex;align-items:center;justify-content:center;color:#A7ABB0;">施設写真</div>',
-                                unsafe_allow_html=True)
+                            _html('<div style="aspect-ratio:1;border-radius:12px;background:#F1F0EA;'
+                                'display:flex;align-items:center;justify-content:center;color:#A7ABB0;">施設写真</div>')
                         _has_db_photo = bool(_fid and db.photo_updated_at(conn, _fid))
                         _b1, _b2 = st.columns(2)
                         with _b1:
@@ -1471,7 +1453,7 @@ def render():
                             st.session_state[_ekey] = False
                             st.rerun()
             else:
-                st.markdown(slides.slide1_facility_info(_bundle), unsafe_allow_html=True)
+                _html(slides.slide1_facility_info(_bundle))
                 _pe1, _pe2, _pe3 = st.columns([1, 1.4, 1])
                 with _pe2:
                     if _can_edit:
@@ -1494,7 +1476,7 @@ def render():
             for _slide in slides.report_slides(
                 detail=st.session_state.get("an_with_detail", True)
             )[1:]:                       # SLIDE 1 は上の PROFILE ブロックで描画済み
-                st.markdown(_slide(_bundle), unsafe_allow_html=True)
+                _html(_slide(_bundle))
         else:
             st.warning("分析結果がありません。設定に戻って再実行してください。")
 

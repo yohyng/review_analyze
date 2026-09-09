@@ -97,7 +97,9 @@ def _setup_css() -> str:
 
     src = Path(analysis_mode.__file__).read_text(encoding="utf-8")
     start = src.index("# Hero search field:")
-    return src[start:src.index('""", unsafe_allow_html=True)', start)]
+    # 生HTMLは _html()（= st.html）で流す。Markdown を通さないため。
+    # v0.56.0 以前は st.markdown(..., unsafe_allow_html=True) だった。
+    return src[start:src.index('""")', start)]
 
 
 def test_search_box_styles_the_wrapper_not_the_input():

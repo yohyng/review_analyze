@@ -16,6 +16,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from src.ui.markup import html as _html
+
 from src import (
     analysis,
     auth,
@@ -97,16 +99,13 @@ _is_an = st.session_state["app_mode"] == "analysis"
 # ─────────────────────────────────────────────────────────────────────────────
 if _is_an:
     # Hide the sidebar entirely so the analysis screen matches the hero design.
-    st.markdown(
-        "<style>[data-testid='stSidebar']{display:none!important;}"
-        "[data-testid='collapsedControl']{display:none!important;}</style>",
-        unsafe_allow_html=True,
-    )
+    _html("<style>[data-testid='stSidebar']{display:none!important;}"
+        "[data-testid='collapsedControl']{display:none!important;}</style>")
     # Header is hidden during the analysis run so the loading overlay stands alone.
     if st.session_state["an_screen"] != "running":
         _hc1, _hc2 = st.columns([2.3, 1])
         with _hc1:
-            st.markdown(f"""
+            _html(f"""
             <div style="display:flex;align-items:center;gap:11px;padding:2px 0 6px;">
               <div style="width:38px;height:38px;border-radius:11px;background:{ACCENT};
                           display:flex;align-items:center;justify-content:center;
@@ -116,7 +115,7 @@ if _is_an:
                 <div style="font-size:11.5px;color:#8A9098;">口コミから、施設の実力を可視化する</div>
               </div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
         with _hc2:
             _tt1, _tt2, _tt3 = st.columns([1, 1, 0.7])
             with _tt1:
@@ -128,7 +127,7 @@ if _is_an:
             with _tt3:
                 if st.button("EN", type="secondary", width="stretch", key="hdr_en"):
                     st.toast("英語表示は今後対応予定です。", icon="🌐")
-        st.markdown("<hr style='margin:6px 0 4px;'>", unsafe_allow_html=True)
+        _html("<hr style='margin:6px 0 4px;'>")
 
 else:
     # ── 管理モードはログイン必須（メール＋パスワードのアカウント制）── #
@@ -144,15 +143,12 @@ else:
         # 入口が一つも無い（登録もできない・非常口も無い・既存ユーザーも無い）ときだけロック
         _locked = (_n_users == 0 and not _has_signup and not _has_master)
 
-        st.markdown(
-            "<style>[data-testid='stSidebar']{display:none!important;}"
-            "[data-testid='collapsedControl']{display:none!important;}</style>",
-            unsafe_allow_html=True,
-        )
+        _html("<style>[data-testid='stSidebar']{display:none!important;}"
+            "[data-testid='collapsedControl']{display:none!important;}</style>")
         _sp1, _mid, _sp2 = st.columns([1, 1.1, 1])
         with _mid:
-            st.markdown("<div style='height:9vh'></div>", unsafe_allow_html=True)
-            st.markdown(f"""
+            _html("<div style='height:9vh'></div>")
+            _html(f"""
             <div style="text-align:center;margin-bottom:14px;">
               <div style="width:52px;height:52px;border-radius:14px;background:{ACCENT};
                           display:inline-flex;align-items:center;justify-content:center;
@@ -161,7 +157,7 @@ else:
               <div style="font-size:12.5px;color:#8A9098;margin-top:4px;">
                 管理モードへのアクセスにはログインが必要です</div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
             if _locked:
                 st.warning("管理画面はロックされています。招待コード（SIGNUP_CODE）を設定すると"
@@ -246,7 +242,7 @@ else:
         st.stop()
 
     with st.sidebar:
-        st.markdown(f"""
+        _html(f"""
         <div style="display:flex;align-items:center;gap:10px;padding:14px 4px 14px;">
           <div style="width:34px;height:34px;border-radius:9px;background:{ACCENT};
                       display:flex;align-items:center;justify-content:center;
@@ -256,7 +252,7 @@ else:
             <div style="font-size:11px;color:#8A9098;">管理コンソール</div>
           </div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
         _c1, _c2 = st.columns(2)
         with _c1:
@@ -266,7 +262,7 @@ else:
         with _c2:
             st.button("⚙️ 管理", width="stretch", type="primary", key="mode_adm")
 
-        st.markdown("<hr>", unsafe_allow_html=True)
+        _html("<hr>")
 
         _page = st.session_state["admin_page"]
         _NAV = [
@@ -288,11 +284,8 @@ else:
         ]
         for _item in _NAV:
             if _item is None:
-                st.markdown(
-                    "<div style='font-size:10.5px;font-weight:700;color:#A7ABB0;"
-                    "letter-spacing:.08em;padding:8px 0 2px;'>──────────────</div>",
-                    unsafe_allow_html=True,
-                )
+                _html("<div style='font-size:10.5px;font-weight:700;color:#A7ABB0;"
+                    "letter-spacing:.08em;padding:8px 0 2px;'>──────────────</div>")
             else:
                 _lbl, _key = _item
                 if st.button(
@@ -302,24 +295,18 @@ else:
                     st.session_state["admin_page"] = _key
                     st.rerun()
 
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        _html("<div style='height:8px'></div>")
         _who = st.session_state.get("admin_email")
         if _who:
-            st.markdown(
-                f"<div style='font-size:11px;color:#8A9098;padding:0 4px 4px;'>"
-                f"ログイン中: <b style='color:#16202B;'>{escape(str(_who))}</b></div>",
-                unsafe_allow_html=True,
-            )
+            _html(f"<div style='font-size:11px;color:#8A9098;padding:0 4px 4px;'>"
+                f"ログイン中: <b style='color:#16202B;'>{escape(str(_who))}</b></div>")
         if st.button("🔓 ログアウト", key="adm_logout", width="stretch"):
             st.session_state["admin_authed"] = False
             st.session_state["admin_email"] = None
             st.session_state["app_mode"] = "analysis"
             st.rerun()
 
-        st.markdown(
-            f"<div style='padding:20px 4px 4px;font-size:11px;color:#C5C4BC;'>v{config.APP_VERSION}</div>",
-            unsafe_allow_html=True,
-        )
+        _html(f"<div style='padding:20px 4px 4px;font-size:11px;color:#C5C4BC;'>v{config.APP_VERSION}</div>")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

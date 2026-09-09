@@ -21,6 +21,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from .markup import html as _html
+
 from src import (
     analysis, auth, charts, config, csv_profiler, db, dummy_data, geocode,
     images, kaizode, llm, preview, report, review_csv, score_excel, scoring,
@@ -51,11 +53,8 @@ def render():
     # ダッシュボード
     # ══════════════════════════════════════════════════════════════════════ #
     if _page == "dashboard":
-        st.markdown(
-            '<div class="vb-step">管理モード</div>'
-            '<h1 class="vb-h1">ダッシュボード</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">管理モード</div>'
+            '<h1 class="vb-h1">ダッシュボード</h1>')
 
         overview = db.facility_overview(conn)
         n_fac = len(overview)
@@ -103,11 +102,8 @@ def render():
     # 施設管理
     # ══════════════════════════════════════════════════════════════════════ #
     elif _page == "facilities":
-        st.markdown(
-            '<div class="vb-step">管理モード</div>'
-            '<h1 class="vb-h1">施設管理</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">管理モード</div>'
+            '<h1 class="vb-h1">施設管理</h1>')
         overview = db.facility_overview(conn)
         if not overview:
             st.info("まだデータがありません。")
@@ -126,7 +122,7 @@ def render():
             with _dc1:
                 _del_target = st.selectbox("操作対象の施設", _del_names, key="del_target")
             with _dc2:
-                st.markdown("<br>", unsafe_allow_html=True)
+                _html("<br>")
                 if st.button("🗑️ 削除", key="del_btn", type="secondary"):
                     st.session_state["del_confirm"] = _del_target
 
@@ -154,11 +150,8 @@ def render():
     # データ取り込み
     # ══════════════════════════════════════════════════════════════════════ #
     elif _page == "import":
-        st.markdown(
-            '<div class="vb-step">管理モード</div>'
-            '<h1 class="vb-h1">データ取り込み</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">管理モード</div>'
+            '<h1 class="vb-h1">データ取り込み</h1>')
         tab_csv, tab_excel = st.tabs(["📄 口コミ CSV", "📊 スコア Excel"])
 
         # ── CSV tab ─────────────────────────────────────────────────────── #
@@ -512,11 +505,8 @@ def render():
     # トピックスコア（独自指標）
     # ══════════════════════════════════════════════════════════════════════ #
     elif _page == "topic":
-        st.markdown(
-            '<div class="vb-step">独自指標</div>'
-            '<h1 class="vb-h1">感情・トピック統合スコア</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">独自指標</div>'
+            '<h1 class="vb-h1">感情・トピック統合スコア</h1>')
         st.caption(
             "口コミを文単位でポジ／ネガ評価し、トピック確率で重み付けした独自指標。"
             "各トピック（指標軸）ごとに「どれだけ語られ、どう評価されているか」を可視化します。"
@@ -597,11 +587,8 @@ def render():
     # 強み・弱み分析
     # ══════════════════════════════════════════════════════════════════════ #
     elif _page == "score":
-        st.markdown(
-            '<div class="vb-step">詳細分析</div>'
-            '<h1 class="vb-h1">強み・弱み分析</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">詳細分析</div>'
+            '<h1 class="vb-h1">強み・弱み分析</h1>')
 
         mat = analysis.score_matrix(conn)
         if mat.empty:
@@ -690,11 +677,8 @@ def render():
     # テキスト分析 & インサイト
     # ══════════════════════════════════════════════════════════════════════ #
     elif _page == "text":
-        st.markdown(
-            '<div class="vb-step">詳細分析</div>'
-            '<h1 class="vb-h1">テキスト分析 & インサイト</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">詳細分析</div>'
+            '<h1 class="vb-h1">テキスト分析 & インサイト</h1>')
 
         all_names = analysis.facility_names(conn)
         if not all_names:
@@ -831,11 +815,8 @@ def render():
     # レポート出力
     # ══════════════════════════════════════════════════════════════════════ #
     elif _page == "report":
-        st.markdown(
-            '<div class="vb-step">詳細分析</div>'
-            '<h1 class="vb-h1">レポート出力 (PPTX)</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">詳細分析</div>'
+            '<h1 class="vb-h1">レポート出力 (PPTX)</h1>')
         st.caption("分析結果を PowerPoint にまとめてダウンロードします。")
 
         all_names = analysis.facility_names(conn)
@@ -881,15 +862,12 @@ def render():
     # CSVプロファイラ
     # ══════════════════════════════════════════════════════════════════════ #
     elif _page == "warmup":
-        st.markdown('<div class="vb-step">運用</div>', unsafe_allow_html=True)
-        st.markdown('<h1 class="vb-h1">分析の事前計算</h1>', unsafe_allow_html=True)
-        st.markdown(
-            '<p class="vb-sub">分析で使う重い計算をここで済ませておきます。'
+        _html('<div class="vb-step">運用</div>')
+        _html('<h1 class="vb-h1">分析の事前計算</h1>')
+        _html('<p class="vb-sub">分析で使う重い計算をここで済ませておきます。'
             "利用者が分析を実行したときに待たされなくなります。"
             "一度に全部やると途中で切られることがあるので、数施設ずつ進めます。"
-            "途中でやめても、進んだぶんは残ります。</p>",
-            unsafe_allow_html=True,
-        )
+            "途中でやめても、進んだぶんは残ります。</p>")
 
         _wc = conn.execute("SELECT COUNT(*) FROM token_cache").fetchone()[0]
         _todo, _n_fac = warmup.survey(conn)
@@ -989,15 +967,12 @@ def render():
         )
 
     elif _page == "dummy":
-        st.markdown('<div class="vb-step">検証</div>', unsafe_allow_html=True)
-        st.markdown('<h1 class="vb-h1">ダミーデータ</h1>', unsafe_allow_html=True)
-        st.markdown(
-            '<p class="vb-sub">分析が意図どおり動いているかを確かめるための'
+        _html('<div class="vb-step">検証</div>')
+        _html('<h1 class="vb-h1">ダミーデータ</h1>')
+        _html('<p class="vb-sub">分析が意図どおり動いているかを確かめるための'
             'ダミー施設を投入します。施設ごとに「正解の強み・弱み」を決めて'
             'から、その通りの口コミを生成しているので、分析結果が正解を'
-            "再現できるかで判定できます。</p>",
-            unsafe_allow_html=True,
-        )
+            "再現できるかで判定できます。</p>")
 
         _n_fac = len(dummy_data.FACILITIES)
         _n_rev = sum(f["n"] for f in dummy_data.FACILITIES)
@@ -1091,11 +1066,8 @@ def render():
         )
 
     elif _page == "profiler":
-        st.markdown(
-            '<div class="vb-step">ツール</div>'
-            '<h1 class="vb-h1">CSVプロファイラ</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">ツール</div>'
+            '<h1 class="vb-h1">CSVプロファイラ</h1>')
         st.caption(
             "CSVをアップロードするとデータ構造（列・型・統計・サンプル）を解析し、"
             "Claude に貼り付けられるプロンプトを生成します。"
@@ -1144,11 +1116,8 @@ def render():
     # KAIZODE連携（発注・状況確認・DB取り込み）※ログイン後のみ到達
     # ══════════════════════════════════════════════════════════════════════ #
     elif _page == "kaizode":
-        st.markdown(
-            '<div class="vb-step">連携</div>'
-            '<h1 class="vb-h1">KAIZODE連携</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">連携</div>'
+            '<h1 class="vb-h1">KAIZODE連携</h1>')
         st.caption(
             "KAIZODEにレビュー収集を発注し、解析完了分をDBへ取り込みます。"
             "レート制限（20リクエスト/分）には自動で対応します。"
@@ -1226,7 +1195,7 @@ def render():
                          "上限に達すると、その月は取り込みが停止します。",
                 )
             with _lc2:
-                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                _html("<div style='height:28px'></div>")
                 if st.button("保存", type="primary", width="stretch",
                              key="kz_limit_save"):
                     _saved = kaizode.set_monthly_limit(conn, int(_new_lim))
@@ -1342,7 +1311,7 @@ def render():
                     "category（任意）", key="kz_cat", placeholder="例: 企業ミュージアム",
                 )
             with _sc2:
-                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                _html("<div style='height:28px'></div>")
                 _kz_full = st.checkbox("全件取り直し（通常は差分）", key="kz_full")
             if st.button("⬇️ 解析完了分をDBへ取り込む", type="primary", key="kz_sync"):
                 _logbox = st.container(height=260)
@@ -1376,11 +1345,8 @@ def render():
     # 連携設定
     # ══════════════════════════════════════════════════════════════════════ #
     elif _page == "integration":
-        st.markdown(
-            '<div class="vb-step">ツール</div>'
-            '<h1 class="vb-h1">連携設定</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">ツール</div>'
+            '<h1 class="vb-h1">連携設定</h1>')
 
         # DB connection status
         _turso_url = os.environ.get("TURSO_URL")
@@ -1391,7 +1357,7 @@ def render():
                 _turso_url = None
 
         if _turso_url:
-            st.markdown(f"""
+            _html(f"""
             <div style="display:flex;align-items:center;gap:12px;padding:16px 18px;
                         background:#fff;border:1px solid #E9E8E2;border-radius:12px;
                         margin-bottom:16px;">
@@ -1401,9 +1367,9 @@ def render():
                 <div style="font-size:12px;color:#8A9098;margin-top:2px;">{_turso_url}</div>
               </div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
         else:
-            st.markdown(f"""
+            _html(f"""
             <div style="display:flex;align-items:center;gap:12px;padding:16px 18px;
                         background:#fff;border:1px solid #E9E8E2;border-radius:12px;
                         margin-bottom:16px;">
@@ -1415,7 +1381,7 @@ def render():
                 </div>
               </div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
         tab_schema, tab_guide = st.tabs(["📋 テーブルスキーマ", "📖 接続ガイド"])
 
@@ -1528,16 +1494,13 @@ GOOGLE_MAPS_API_KEY = "AIza..."
         )
 
     elif _page == "account":
-        st.markdown(
-            '<div class="vb-step">ツール</div>'
-            '<h1 class="vb-h1">アカウント</h1>',
-            unsafe_allow_html=True,
-        )
+        _html('<div class="vb-step">ツール</div>'
+            '<h1 class="vb-h1">アカウント</h1>')
 
         _me = st.session_state.get("admin_email") or "—"
         _gate_signup = bool(auth.signup_code())
         _gate_master = bool(auth.admin_password())
-        st.markdown(f"""
+        _html(f"""
         <div style="display:flex;align-items:center;gap:12px;padding:16px 18px;
                     background:#fff;border:1px solid #E9E8E2;border-radius:12px;
                     margin-bottom:16px;">
@@ -1550,7 +1513,7 @@ GOOGLE_MAPS_API_KEY = "AIza..."
             </div>
           </div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
         tab_users, tab_add, tab_pw = st.tabs(
             ["👥 ユーザー一覧", "➕ ユーザー追加", "🔑 自分のパスワード変更"]
@@ -1571,17 +1534,11 @@ GOOGLE_MAPS_API_KEY = "AIza..."
                 for _u in _users:
                     _uc1, _uc2, _uc3 = st.columns([3, 2, 1])
                     with _uc1:
-                        st.markdown(
-                            f"<div style='padding:8px 0;font-weight:600;color:#16202B;'>"
-                            f"{escape(_u['email'])}</div>",
-                            unsafe_allow_html=True,
-                        )
+                        _html(f"<div style='padding:8px 0;font-weight:600;color:#16202B;'>"
+                            f"{escape(_u['email'])}</div>")
                     with _uc2:
-                        st.markdown(
-                            f"<div style='padding:8px 0;font-size:12px;color:#8A9098;'>"
-                            f"{escape(str(_u.get('created_at') or ''))[:10]}</div>",
-                            unsafe_allow_html=True,
-                        )
+                        _html(f"<div style='padding:8px 0;font-size:12px;color:#8A9098;'>"
+                            f"{escape(str(_u.get('created_at') or ''))[:10]}</div>")
                     with _uc3:
                         _is_self = (auth.normalize_email(str(_me)) == _u["email"])
                         if st.button("削除", key=f"deluser_{_u['email']}",
