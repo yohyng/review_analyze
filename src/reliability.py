@@ -114,6 +114,7 @@ class Funnel:
     symbols: int = 0
     empty: int = 0
     short: int = 0
+    mixed: int = 0           # 和欧混在。日本語として扱うが内訳では分けて出す
 
     @property
     def usable_rate(self) -> float:
@@ -122,6 +123,20 @@ class Funnel:
     @property
     def foreign_rate(self) -> float:
         return self.foreign / self.total if self.total else 0.0
+
+    def language_mix(self) -> list[tuple[str, int]]:
+        """本文の言語内訳。合計は必ず total に一致する。
+
+        「全件を分析しました」と言えないことを、この内訳で示す。
+        """
+        ja_only = self.japanese - self.mixed
+        return [
+            ("日本語", ja_only),
+            ("和欧混在", self.mixed),
+            ("日本語以外", self.foreign),
+            ("記号・数字のみ", self.symbols),
+            ("本文なし", self.empty),
+        ]
 
 
 def _reviews(conn, facility_name: str) -> list[tuple]:
@@ -155,6 +170,8 @@ def funnel(conn, facility_name: str) -> Funnel:
         if kind == "foreign":
             f.foreign += 1
             continue
+        if kind == "mixed":
+            f.mixed += 1     # 和文が混じっていれば観点判定は効くので使う
         f.japanese += 1
         if len(text.strip()) < SHORT_CHARS:
             f.short += 1

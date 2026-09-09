@@ -2743,7 +2743,7 @@ def slide8_nmsi(b: dict) -> str:
             f'<div style="width:3.2cqw;flex:none;font-size:.92cqw;'
             f'color:{T.INK_FAINT};text-align:right;">重み{w * 100:.0f}%</div>'
             f'<div style="flex:1;position:relative;height:1.75cqw;'
-            f'background:{T.LINE_SOFT if hasattr(T, "LINE_SOFT") else T.LINE};'
+            f'background:{T.LINE};'
             'border-radius:.25cqw;">'
             f'<div style="position:absolute;left:50%;top:0;bottom:0;'
             f'width:1px;background:{T.INK_FAINT};"></div>'
@@ -2806,6 +2806,195 @@ def slide8_nmsi(b: dict) -> str:
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 9「このデータについて」— 分母と誤差を最後に置く
+#   本編は「4.50」のような数字を並べて順位をつける。それが4件から出たのか
+#   5,877件から出たのかを示さないと、順位だけが独り歩きする。
+# ═══════════════════════════════════════════════════════════════════════════
+# 言語内訳の色。日本語＝アクセント、外側へ行くほど淡く。
+_LANG_COLORS = {
+    "日本語": T.ACCENT,
+    "和欧混在": T.BAR_PINK,
+    "日本語以外": T.BLUE,
+    "記号・数字のみ": T.BAR_BLUE,
+    "本文なし": T.LINE,
+}
+
+
+def _funnel_rows(r: dict) -> str:
+    """全件からどう減るか。棒の長さは全件に対する比。"""
+    total = max(int(r.get("total") or 0), 1)
+    steps = [
+        ("口コミ 全件", r.get("total"), T.INK_FAINT),
+        ("本文あり", r.get("with_text"), T.SERIES_AVG),
+        ("日本語（混在含む）", r.get("japanese"), T.BAR_PINK),
+        ("観点判定に使えた", r.get("usable"), T.ACCENT),
+    ]
+    out = ""
+    for label, v, col in steps:
+        n = int(v or 0)
+        pct = n / total
+        out += (
+            '<div style="display:flex;align-items:center;gap:.7cqw;'
+            'padding:.42cqw 0;">'
+            f'<div style="width:9.4cqw;flex:none;font-size:1.02cqw;'
+            f'font-weight:700;color:{T.INK};">{escape(label)}</div>'
+            f'<div style="flex:1;height:1.6cqw;background:{T.LINE};'
+            'border-radius:.25cqw;overflow:hidden;">'
+            f'<div style="height:100%;width:{pct * 100:.1f}%;background:{col};'
+            'border-radius:.25cqw;"></div></div>'
+            f'<div style="width:4.6cqw;flex:none;text-align:right;'
+            f'font-size:1.12cqw;font-weight:800;color:{T.INK};'
+            f'font-variant-numeric:tabular-nums;">{n:,}</div>'
+            f'<div style="width:3.2cqw;flex:none;text-align:right;'
+            f'font-size:.92cqw;color:{T.INK_FAINT};">{pct:.0%}</div></div>'
+        )
+    return out
+
+
+def _lang_bar(r: dict) -> str:
+    """本文の言語内訳。合計は必ず全件に一致する。"""
+    mix = [(k, int(v or 0)) for k, v in (r.get("language_mix") or []) if v]
+    total = sum(v for _k, v in mix)
+    if not total:
+        return ""
+    seg = "".join(
+        f'<div style="width:{v / total * 100:.2f}%;background:'
+        f'{_LANG_COLORS.get(k, T.LINE)};" title="{escape(k)} {v:,}"></div>'
+        for k, v in mix
+    )
+    legend = "".join(
+        '<span style="display:inline-flex;align-items:center;gap:.35cqw;'
+        'margin-right:1cqw;white-space:nowrap;font-size:.92cqw;">'
+        f'<span style="width:.9cqw;height:.9cqw;border-radius:.15cqw;'
+        f'background:{_LANG_COLORS.get(k, T.LINE)};flex:none;"></span>'
+        f'<span style="color:{T.INK_SUB};">{escape(k)}</span>'
+        f'<b style="color:{T.INK};font-variant-numeric:tabular-nums;">'
+        f'{"<1%" if 0 < v / total < 0.005 else f"{v / total:.0%}"}</b></span>'
+        for k, v in mix
+    )
+    return (
+        f'<div style="display:flex;height:1.9cqw;border-radius:.3cqw;'
+        f'overflow:hidden;border:1px solid {T.CARD_LINE};">{seg}</div>'
+        f'<div style="margin-top:.6cqw;line-height:1.9;">{legend}</div>'
+    )
+
+
+def _ci_row(label: str, value: float | None, lo: float | None,
+            hi: float | None, *, lo_end: float, hi_end: float,
+            fmt: str = "{:.2f}") -> str:
+    """点推定と95%信頼区間を1本の目盛りの上に置く。"""
+    if value is None or lo is None or hi is None:
+        return ""
+    span = max(hi_end - lo_end, 1e-9)
+    x = lambda v: max(0.0, min(100.0, (v - lo_end) / span * 100))  # noqa: E731
+    return (
+        '<div style="padding:.5cqw 0;">'
+        '<div style="display:flex;justify-content:space-between;'
+        'align-items:baseline;margin-bottom:.3cqw;">'
+        f'<span style="font-size:1.02cqw;font-weight:700;color:{T.INK};">'
+        f'{escape(label)}</span>'
+        f'<span style="font-size:1.02cqw;color:{T.INK_SUB};'
+        'font-variant-numeric:tabular-nums;">'
+        f'<b style="color:{T.ACCENT};font-size:1.25cqw;">{fmt.format(value)}</b>'
+        f'　95%CI {fmt.format(lo)} – {fmt.format(hi)}</span></div>'
+        f'<div style="position:relative;height:1.1cqw;background:{T.LINE};'
+        'border-radius:.2cqw;">'
+        # 区間の帯。件数が多いと区間は正しく細くなるが、目盛り上で消えると
+        # 「描けていない」ように見えるので下限を置く。
+        f'<div style="position:absolute;left:{x(lo):.2f}%;'
+        f'width:{max(x(hi) - x(lo), 1.6):.2f}%;top:.2cqw;bottom:.2cqw;'
+        f'background:{T.BAR_PINK};border-radius:.15cqw;"></div>'
+        # 両端のキャップ。幅が最小に張り付いたときでも「区間である」と分かる。
+        f'<div style="position:absolute;left:{x(lo):.2f}%;top:0;bottom:0;'
+        f'width:.14cqw;background:{T.BAR_PINK};transform:translateX(-50%);'
+        '"></div>'
+        f'<div style="position:absolute;left:{x(hi):.2f}%;top:0;bottom:0;'
+        f'width:.14cqw;background:{T.BAR_PINK};transform:translateX(-50%);'
+        '"></div>'
+        f'<div style="position:absolute;left:{x(value):.2f}%;top:-.15cqw;'
+        f'bottom:-.15cqw;width:.26cqw;background:{T.ACCENT};'
+        'transform:translateX(-50%);border-radius:.1cqw;"></div>'
+        '</div>'
+        # 目盛りの両端を書く。何のスケール上に置かれているかが分からないと
+        # 帯の細さが読めない。
+        '<div style="display:flex;justify-content:space-between;'
+        f'font-size:.82cqw;color:{T.INK_FAINT};margin-top:.1cqw;">'
+        f'<span>{fmt.format(lo_end)}</span><span>{fmt.format(hi_end)}</span>'
+        '</div></div>'
+    )
+
+
+def slide9_data_quality(b: dict) -> str:
+    """このデータについて。r が無い、または口コミ0件なら出さない。"""
+    r = b.get("reliability")
+    if not r or not int(r.get("total") or 0):
+        return ""
+
+    total = int(r["total"])
+    usable = int(r.get("usable") or 0)
+
+    left = panel(
+        "分析に使えた口コミ",
+        f'<div style="flex:1;display:flex;flex-direction:column;'
+        f'justify-content:space-evenly;min-height:0;">{_funnel_rows(r)}</div>'
+        f'<div style="flex:none;font-size:.95cqw;color:{T.INK_FAINT};'
+        'padding-top:.5cqw;">'
+        f'全 {total:,} 件のうち、観点の判定に使えたのは '
+        f'<b style="color:{T.ACCENT};">{usable:,} 件（{r.get("usable_rate", 0):.0%}）</b>。'
+        f'本編のスコアはこの {usable:,} 件から出ています。</div>',
+        style="flex:1.15", pad=".9cqw",
+    )
+
+    lang = _lang_bar(r)
+    ci = (
+        _ci_row("平均星評価", r.get("rating_mean"), r.get("rating_lo"),
+                r.get("rating_hi"), lo_end=1.0, hi_end=5.0)
+        + _ci_row("ポジティブ率", r.get("pos_rate"), r.get("pos_lo"),
+                  r.get("pos_hi"), lo_end=0.0, hi_end=1.0, fmt="{:.0%}")
+    )
+
+    right = panel(
+        "本文の言語と、数値の幅",
+        f'<div style="flex:none;">'
+        f'<div style="font-size:1cqw;font-weight:800;color:{T.ACCENT};'
+        'margin-bottom:.45cqw;">本文の言語</div>'
+        f'{lang}</div>'
+        f'<div style="flex:1;display:flex;flex-direction:column;'
+        'justify-content:center;min-height:0;">'
+        f'<div style="font-size:1cqw;font-weight:800;color:{T.ACCENT};'
+        'margin-bottom:.2cqw;">95%信頼区間</div>'
+        f'{ci}</div>',
+        style="flex:1", pad=".9cqw",
+    )
+
+    notes = [f["text"] for f in (r.get("flags") or [])]
+    warn = ""
+    if notes:
+        warn = (
+            f'<div style="flex:none;border:1.5px solid {T.ACCENT};'
+            f'background:{T.ACCENT_SOFT};border-radius:{T.CARD_RADIUS};'
+            'padding:.7cqw 1cqw;margin-top:.8cqw;">'
+            + "".join(
+                f'<div style="font-size:1.02cqw;color:{T.INK};'
+                'line-height:1.5;">▲ ' + escape(t) + '</div>'
+                for t in notes[:3])
+            + '</div>'
+        )
+
+    return canvas(
+        slide_header("9", "このデータについて",
+                     f"全 {total:,} 件 ／ 分析に使えた {usable:,} 件",
+                     sub_title="スコアの分母と、数値の幅"),
+        body_area(
+            '<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
+            '<div style="flex:1;display:flex;gap:1.2cqw;min-height:0;">'
+            f'{left}{right}</div>{warn}</div>', column=True),
+        footer("※信頼区間は口コミ単位の95%区間。比率は Wilson score interval",
+               tagline="顧客の声を、戦略と成長へ。"),
+    )
+
+
 _ALL_SLIDES = (
     "slide1_facility_info",
     "slide2_market_position",
@@ -2821,7 +3010,7 @@ _ALL_SLIDES = (
 
 # 条件つきで増える枚。データが無ければ出ないので _ALL_SLIDES には入れない
 # （report_slides() の「10枚 / 7枚」という契約を動かさないため）。
-OPTIONAL_SLIDES = ("slide8_nmsi",)
+OPTIONAL_SLIDES = ("slide8_nmsi", "slide9_data_quality")
 
 
 def report_slides(*, detail: bool = True) -> list:

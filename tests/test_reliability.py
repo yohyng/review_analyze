@@ -179,3 +179,111 @@ def test_no_reviews_is_handled(tmp_path):
     assert a.funnel.total == 0
     assert a.intervals.rating_mean is None
     assert a.funnel.usable_rate == 0.0
+
+
+# ── スライド（SLIDE 9「このデータについて」）─────────────────────────── #
+def _bundle(tmp_path, rows):
+    from src import preview, topic_score
+
+    topics = [t.name for t in topic_score.DEFAULT_TOPICS]
+    w = 1.0 / len(topics)
+
+    def res(v):
+        return topic_score.TopicScoreResult(
+            topics=[topic_score.TopicScore(name=t, weight=w, avg_score=v * w,
+                                           total_score=v * w, salience=w,
+                                           sentiment=v) for t in topics],
+            overall_score=v, n_reviews=len(rows), n_sentences=len(rows) * 2,
+            empty=False)
+
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    names = ["target"] + [f"peer{i}" for i in range(3)]
+    for nm in names:
+        fid = db.upsert_facility(conn, nm, ftype="comparison", category="美術館")
+        src = rows if nm == "target" else [(5, "とても良い展示でした。")] * 50
+        for i, (rating, text) in enumerate(src):
+            conn.execute(
+                "INSERT INTO review(facility_id, review_id, rating, text,"
+                " review_date) VALUES (?,?,?,?,?)",
+                (fid, f"{nm}-{i}", rating, text, "2025-04-01"))
+    conn.commit()
+    return preview.build_bundle(
+        conn, "target", {n: res(0.5 + 0.02 * i) for i, n in enumerate(names)},
+        None, None)
+
+
+def test_slide9_renders_with_every_token_that_exists(tmp_path):
+    """存在しないテーマトークンを参照していないこと。
+
+    T.LINE_SOFT を使って AttributeError で落ちた。OPTIONAL_SLIDES は
+    report_slides() に入らないので、既存の総ざらいテストの網に掛からない。
+    """
+    from src import slides
+
+    b = _bundle(tmp_path, [(5, "展示がとても良かったです。また来ます。")] * 80
+                + [(4, "Great museum with nice staff")] * 20)
+    html = slides.slide9_data_quality(b)
+    assert html.startswith("<div") and html.rstrip().endswith("</div>")
+    assert "このデータについて" in html
+
+
+@pytest.mark.parametrize("fn_name", ["slide8_nmsi", "slide9_data_quality"])
+def test_optional_slides_are_safe_on_empty_input(fn_name):
+    from src import slides
+
+    fn = getattr(slides, fn_name)
+    assert fn({}) == ""
+    assert fn({"reliability": None, "nmsi": None}) == ""
+
+
+def test_slide9_is_absent_when_there_are_no_reviews(tmp_path):
+    from src import slides
+
+    b = _bundle(tmp_path, [])
+    assert b["reliability"]["total"] == 0
+    assert slides.slide9_data_quality(b) == ""
+    assert slides.deck_size(b) == 10
+
+
+def test_slide9_shows_the_funnel_and_the_language_mix(tmp_path):
+    from src import slides
+
+    b = _bundle(tmp_path, [(5, "展示がとても良かったです。また来ます。")] * 70
+                + [(5, "Great museum with very nice staff")] * 30)
+    html = slides.slide9_data_quality(b)
+
+    for label in ("口コミ 全件", "本文あり", "観点判定に使えた",
+                  "本文の言語", "日本語以外", "95%信頼区間"):
+        assert label in html, label
+    assert "100" in html          # 全件
+    assert "70" in html           # 有効
+    # 非日本語が3割なので警告が出る
+    assert "日本語以外です" in html
+
+
+def test_slide9_language_mix_sums_to_total(tmp_path):
+    b = _bundle(tmp_path, [(5, "とても良い展示でした。")] * 40
+                + [(5, "Nice place to visit")] * 10
+                + [(3, "、。！")] * 5 + [(4, "")] * 5)
+    mix = dict(b["reliability"]["language_mix"])
+    assert sum(mix.values()) == b["reliability"]["total"] == 60
+    assert mix["日本語以外"] == 10 and mix["記号・数字のみ"] == 5
+    assert mix["本文なし"] == 5
+
+
+def test_small_sample_warning_reaches_the_slide(tmp_path):
+    from src import slides
+
+    b = _bundle(tmp_path, [(5, "とても良い展示でした。")] * 4)
+    html = slides.slide9_data_quality(b)
+    assert "参考値" in html, "件数不足の警告がスライドに出ていない"
+
+
+def test_deck_grows_by_one_with_the_data_slide(tmp_path):
+    from src import slides
+
+    b = _bundle(tmp_path, [(5, "とても良い展示でした。")] * 50)
+    d = slides.deck(b)
+    assert len(d) == 11 and slides.deck_size(b) == 11
+    assert d[:10] == [fn(b) for fn in slides.report_slides()]
