@@ -75,3 +75,99 @@ def test_nmsi_page_is_reachable_only_from_the_admin_nav():
     assert '("🧭 NMSI（体験満足度）", "nmsi")' in app
     # 管理モードのナビは、app.py の認証ゲートより後ろで組まれる
     assert app.index('if not st.session_state.get("admin_authed")') < app.index('"nmsi")')
+
+
+# ── スライドへの反映 ──────────────────────────────────────────────── #
+def _bundle_with_nmsi(tmp_path, nmsi=None):
+    from src import db, preview, topic_score
+
+    topics = [t.name for t in topic_score.DEFAULT_TOPICS]
+    w = 1.0 / len(topics)
+
+    def _res(v):
+        return topic_score.TopicScoreResult(
+            topics=[topic_score.TopicScore(name=t, weight=w, avg_score=v * w,
+                                           total_score=v * w, salience=w,
+                                           sentiment=v) for t in topics],
+            overall_score=v, n_reviews=20, n_sentences=200, empty=False)
+
+    conn = db.get_conn(tmp_path / "t.db")
+    db.init_db(conn)
+    names = ["target"] + [f"peer{i}" for i in range(5)]
+    for nm in names:
+        db.upsert_facility(conn, nm, ftype="comparison", category="美術館")
+    if nmsi is not None:
+        from src.nmsi import run as nmsi_run
+        nmsi_run.save_result(conn, "target", nmsi["summary"], nmsi["phases"],
+                             n_sentences=nmsi["n_sentences"], llm_calls=3)
+    return preview.build_bundle(
+        conn, "target", {n: _res(0.5 + 0.02 * i) for i, n in enumerate(names)},
+        None, None)
+
+
+_NMSI_FIXTURE = {
+    "summary": {"NMSI": 72.4, "解釈": "高満足", "記憶補正_M": 0.31,
+                "再訪推奨補正_R": 0.44, "摩擦補正_F": 0.18},
+    "phases": [
+        {"phase": "arrival", "フェーズ": "到着", "重み": 0.30, "E_i": -0.22,
+         "ポジティブ": 0.39, "文数": 40},
+        {"phase": "exhibition", "フェーズ": "展示", "重み": 0.45, "E_i": 0.61,
+         "ポジティブ": 0.80, "文数": 120},
+        {"phase": "experience", "フェーズ": "体験", "重み": 0.25, "E_i": 0.33,
+         "ポジティブ": 0.66, "文数": 55},
+    ],
+    "n_sentences": 215,
+}
+
+
+def test_deck_is_unchanged_when_nmsi_was_never_computed(tmp_path):
+    """未計算なら今までの10枚が1枚も変わらないこと。"""
+    from src import slides
+
+    b = _bundle_with_nmsi(tmp_path)
+    assert b["nmsi"] is None
+
+    fixed = [fn(b) for fn in slides.report_slides()]
+    assert slides.deck(b) == fixed
+    assert len(slides.deck(b)) == 10
+    assert len(slides.deck(b, detail=False)) == 7
+    assert slides.deck_size(b) == 10
+
+
+def test_deck_gains_one_slide_when_nmsi_exists(tmp_path, monkeypatch):
+    from src import slides
+
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "m")
+    b = _bundle_with_nmsi(tmp_path, _NMSI_FIXTURE)
+    assert b["nmsi"] and b["nmsi"]["nmsi"] == 72.4
+
+    d = slides.deck(b)
+    assert len(d) == 11
+    assert slides.deck_size(b) == 11
+    # 先頭10枚は未計算のときと同じ
+    assert d[:10] == [fn(b) for fn in slides.report_slides()]
+
+    last = d[-1]
+    assert "72.4" in last and "高満足" in last
+    assert "展示" in last and "到着" in last
+    # 22観点と混同させない注記
+    assert "直接は比較できません" in last
+
+
+def test_nmsi_slide_is_empty_without_data():
+    from src import slides
+    assert slides.slide8_nmsi({}) == ""
+    assert slides.slide8_nmsi({"nmsi": None}) == ""
+
+
+def test_phases_with_no_sentences_are_dropped(tmp_path, monkeypatch):
+    """観測されなかったフェーズの帯を描かないこと（空の行が並ぶため）。"""
+    from src import slides
+
+    monkeypatch.setenv("OPENAI_TEXT_MODEL", "m")
+    fx = dict(_NMSI_FIXTURE)
+    fx["phases"] = _NMSI_FIXTURE["phases"] + [
+        {"phase": "food_retail", "フェーズ": "飲食・物販", "重み": 0.0,
+         "E_i": 0.0, "ポジティブ": 0.5, "文数": 0}]
+    b = _bundle_with_nmsi(tmp_path, fx)
+    assert "飲食・物販" not in slides.slide8_nmsi(b)

@@ -2684,6 +2684,128 @@ DETAIL_SLIDES = (
     "slide5_space_detail",        # 空間体験分析（詳細）
 )
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 8「体験満足度（NMSI）」— 計算済みのときだけ出る
+#   22観点スコア（キーワード＋TF-IDF）とは別の指標。同じ5点満点ではないので、
+#   並べて「どっちが正しい」と読まれないよう、注記で棲み分けを明示する。
+# ═══════════════════════════════════════════════════════════════════════════
+_PHASE_JA = {
+    "pre_visit": "来訪前", "arrival": "到着", "exhibition": "展示",
+    "experience": "体験", "show_interaction": "ショー・交流",
+    "food_retail": "飲食・物販", "exit_reflection": "退出・振り返り",
+}
+
+
+def slide8_nmsi(b: dict) -> str:
+    """来場体験の満足度（NMSI）。b["nmsi"] が無ければ空文字を返す。"""
+    n = b.get("nmsi")
+    if not n:
+        return ""
+
+    score = float(n.get("nmsi") or 0.0)
+    interp = str(n.get("interpretation") or "")
+    summary = n.get("summary") or {}
+    phases = [p for p in (n.get("phases") or []) if p.get("文数")]
+
+    # 大きな数字（左）
+    gauge_w = 12.0
+    big = (
+        f'<div style="width:{gauge_w}cqw;flex:none;display:flex;'
+        'flex-direction:column;justify-content:center;align-items:center;'
+        f'border-right:1px solid {T.LINE};padding-right:1.2cqw;">'
+        f'<div style="font-size:1.05cqw;font-weight:800;color:{T.INK_MUTE};'
+        'letter-spacing:.06em;">NMSI</div>'
+        f'<div style="font-size:5.2cqw;font-weight:800;color:{T.ACCENT};'
+        'line-height:1.05;font-variant-numeric:tabular-nums;">'
+        f'{score:.1f}</div>'
+        f'<div style="font-size:1cqw;color:{T.INK_FAINT};">/ 100</div>'
+        f'<div style="font-size:1.25cqw;font-weight:700;color:{T.INK};'
+        f'text-align:center;margin-top:.5cqw;">{escape(interp)}</div></div>'
+    )
+
+    # フェーズ別の帯
+    rows = ""
+    for p in phases:
+        key = str(p.get("phase", ""))
+        name = _PHASE_JA.get(key, str(p.get("フェーズ", key)))
+        eff = float(p.get("E_i") or 0.0)          # -1〜+1
+        w = float(p.get("重み") or 0.0)
+        cnt = int(p.get("文数") or 0)
+        # 中央を 50% に置いて、正負で左右に伸ばす
+        half = abs(eff) * 50.0
+        left = 50.0 - half if eff < 0 else 50.0
+        col = T.ACCENT if eff >= 0 else T.BLUE
+        rows += (
+            '<div style="display:flex;align-items:center;gap:.6cqw;'
+            'padding:.32cqw 0;">'
+            f'<div style="width:7.6cqw;flex:none;font-size:1.02cqw;'
+            f'font-weight:700;color:{T.INK};">{escape(name)}</div>'
+            f'<div style="width:3.2cqw;flex:none;font-size:.92cqw;'
+            f'color:{T.INK_FAINT};text-align:right;">重み{w * 100:.0f}%</div>'
+            f'<div style="flex:1;position:relative;height:1.75cqw;'
+            f'background:{T.LINE_SOFT if hasattr(T, "LINE_SOFT") else T.LINE};'
+            'border-radius:.25cqw;">'
+            f'<div style="position:absolute;left:50%;top:0;bottom:0;'
+            f'width:1px;background:{T.INK_FAINT};"></div>'
+            f'<div style="position:absolute;left:{left:.2f}%;top:.18cqw;'
+            f'bottom:.18cqw;width:{half:.2f}%;background:{col};'
+            'border-radius:.2cqw;"></div></div>'
+            f'<div style="width:3.4cqw;flex:none;font-size:.95cqw;'
+            f'color:{T.INK_SUB};text-align:right;'
+            f'font-variant-numeric:tabular-nums;">{eff:+.2f}</div>'
+            f'<div style="width:3.6cqw;flex:none;font-size:.88cqw;'
+            f'color:{T.INK_FAINT};text-align:right;">{cnt:,}文</div></div>'
+        )
+
+    chart = (
+        '<div style="flex:1;display:flex;flex-direction:column;'
+        'padding-left:1.2cqw;min-width:0;">'
+        f'<div style="flex:none;font-size:1.05cqw;font-weight:800;color:{T.ACCENT};'
+        'margin-bottom:.5cqw;">フェーズ別の効果（左=ネガティブ／右=ポジティブ）</div>'
+        # 行は残りの高さに均等に配る。中央寄せにすると上下に死んだ余白が残る。
+        '<div style="flex:1;display:flex;flex-direction:column;'
+        f'justify-content:space-evenly;min-height:0;">{rows}</div></div>'
+    )
+
+    # 補正の内訳
+    def _corr(label: str, key: str, sign: str) -> str:
+        v = summary.get(key)
+        v = float(v) if isinstance(v, (int, float)) else 0.0
+        return (
+            '<div style="flex:1;border:1px solid ' + T.CARD_LINE
+            + f';border-radius:{T.CARD_RADIUS};padding:.6cqw .8cqw;'
+            'background:#fff;text-align:center;">'
+            f'<div style="font-size:.92cqw;color:{T.INK_MUTE};'
+            f'font-weight:700;">{escape(label)}</div>'
+            f'<div style="font-size:1.7cqw;font-weight:800;color:{T.INK};'
+            f'line-height:1.2;font-variant-numeric:tabular-nums;">'
+            f'{sign}{v:.2f}</div></div>'
+        )
+
+    corr = (
+        '<div style="flex:none;display:flex;gap:.8cqw;margin-top:.8cqw;">'
+        + _corr("記憶に残ったか", "記憶補正_M", "+")
+        + _corr("再訪・推奨", "再訪推奨補正_R", "+")
+        + _corr("摩擦（待ち・混雑ほか）", "摩擦補正_F", "−")
+        + '</div>'
+    )
+
+    n_sent = int(n.get("n_sentences") or 0)
+    return canvas(
+        slide_header("8", "体験満足度", f"対象：口コミ本文 {n_sent:,} 文",
+                     sub_title="来場体験を7フェーズに分けた満足度指標"),
+        body_area(
+            f'<div style="flex:1;display:flex;flex-direction:column;min-height:0;">'
+            f'<div style="flex:1;display:flex;min-height:0;">{big}{chart}</div>'
+            f'{corr}</div>',
+            column=True),
+        footer(
+            "※NMSI は 0〜100。22観点スコア（5点満点）とは別の指標で、"
+            "算出方法が違うため直接は比較できません",
+            tagline="顧客の声を、戦略と成長へ。"),
+    )
+
+
 _ALL_SLIDES = (
     "slide1_facility_info",
     "slide2_market_position",
@@ -2697,6 +2819,10 @@ _ALL_SLIDES = (
     "slide7_discussion",
 )
 
+# 条件つきで増える枚。データが無ければ出ないので _ALL_SLIDES には入れない
+# （report_slides() の「10枚 / 7枚」という契約を動かさないため）。
+OPTIONAL_SLIDES = ("slide8_nmsi",)
+
 
 def report_slides(*, detail: bool = True) -> list:
     """レポートに載せるスライド描画関数を順番に返す。
@@ -2708,3 +2834,21 @@ def report_slides(*, detail: bool = True) -> list:
         n for n in _ALL_SLIDES if n not in DETAIL_SLIDES
     )
     return [globals()[n] for n in names]
+
+
+def deck(b: dict, *, detail: bool = True) -> list[str]:
+    """バンドルから実際に出す HTML を順に返す。
+
+    固定の10枚（detail=False なら7枚）に続けて、データが揃っている
+    OPTIONAL_SLIDES だけを足す。NMSI が未計算なら空文字が返るので落とす。
+    **今までの10枚は、NMSI があってもなくても1枚も変わらない。**
+    """
+    out = [fn(b) for fn in report_slides(detail=detail)]
+    out += [globals()[n](b) for n in OPTIONAL_SLIDES]
+    return [h for h in out if h and h.strip()]
+
+
+def deck_size(b: dict, *, detail: bool = True) -> int:
+    """描く前に枚数を知りたいとき（設定画面の「全N枚」表示）。"""
+    n = len(report_slides(detail=detail))
+    return n + sum(1 for k in OPTIONAL_SLIDES if globals()[k](b).strip())

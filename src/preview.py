@@ -22,6 +22,20 @@ from . import (analysis, config, db, discussion, text_analysis, timeline,
 # ═══════════════════════════════════════════════════════════════════════════
 # Data bundle
 # ═══════════════════════════════════════════════════════════════════════════
+def _nmsi_cached(conn, target: str) -> dict | None:
+    """保存済みの NMSI。無ければ None（計算はしない）。
+
+    src.nmsi は openai を要求しうるので、遅延 import して失敗しても
+    スライド全体を落とさない（NMSI はレポートの付加情報であって主役ではない）。
+    """
+    try:
+        from .nmsi import run as nmsi_run  # noqa: PLC0415
+
+        return nmsi_run.get_result(conn, target)
+    except Exception:
+        return None
+
+
 def build_bundle(
     conn: sqlite3.Connection,
     target: str,
@@ -364,6 +378,10 @@ def build_bundle(
         "outcome_map": outcome_map,
         "market_trend_good": market_trend_good,
         "market_trend_bad": market_trend_bad,
+        # NMSI は**保存済みがあれば載せるだけ**。ここで計算しない。
+        #   スライドは描画のたびに走るので、ここから LLM を呼ぶと歯止めが無い。
+        #   計算は管理モード（ログイン必須）だけで行う。
+        "nmsi": _nmsi_cached(conn, target),
         "overall_topic": overall_topic,
         "topic_salience": topic_salience,
         "salience_floor": salience_floor,

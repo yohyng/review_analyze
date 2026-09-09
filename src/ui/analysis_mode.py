@@ -1002,8 +1002,16 @@ def render():
                         help="市場内ポジション（詳細）／指定競合との比較（詳細）／"
                              "空間体験分析（詳細）の3枚。オフにすると7枚構成になります。",
                     )
+                    # NMSI が計算済みならレポートは1枚増える。押す前に
+                    # 見える枚数と実際が食い違わないようにする。
                     _n_slides = len(slides.report_slides(
                         detail=st.session_state.get("an_with_detail", True)))
+                    try:
+                        from src.nmsi import run as _nmsi_run  # noqa: PLC0415
+                        if _nmsi_run.get_result(conn, _target):
+                            _n_slides += 1
+                    except Exception:
+                        pass
                     st.caption(f"レポートは全 {_n_slides} 枚（＋冒頭の免責）になります")
 
                 # ── 実行ボタン ────────────────────────────────────────── #
@@ -1473,10 +1481,12 @@ def render():
             # ── 分析レポート本体（PDF「20260726_VoiceBAUM_v1」p3〜p12 準拠）──── #
             #    SLIDE 1 は上の PROFILE 編集ブロック側で描いている（編集中は
             #    フォームに差し替わるため）。ここは SLIDE 2 以降。
-            for _slide in slides.report_slides(
-                detail=st.session_state.get("an_with_detail", True)
+            #    deck() は固定の枚に続けて、データが揃っている分だけ足す
+            #    （NMSI は計算済みのときだけ増える）。
+            for _slide_html in slides.deck(
+                _bundle, detail=st.session_state.get("an_with_detail", True)
             )[1:]:                       # SLIDE 1 は上の PROFILE ブロックで描画済み
-                _html(_slide(_bundle))
+                _html(_slide_html)
         else:
             st.warning("分析結果がありません。設定に戻って再実行してください。")
 
