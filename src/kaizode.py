@@ -303,6 +303,15 @@ def sync_datasets(
         reviews = _batch[:budget]
         fetched += len(reviews)
 
+        # **取得した直後に帳簿へ付ける。**
+        # 以前は関数の最後で fetched をまとめて加算していたので、途中で
+        # 例外（ネットワーク断・Turso の 502・取り込み失敗）が出ると、
+        # すでにKAIZODEから引いた件数が帳簿に一切残らなかった。
+        # 契約枠は「引いた時点」で消費されるので、帳簿もそこで進めないと
+        # 実使用が上限を超える。DBに取り込めたかどうかとは別の話。
+        if reviews:
+            add_monthly_usage(conn, len(reviews), month)
+
         if not reviews:
             log("　　新着なし")
             set_last_sync(conn, dsid, name, since)
@@ -325,7 +334,6 @@ def sync_datasets(
         if truncated:
             # 上限で途中まで取得 → last_sync は進めない（次回同じ since から続きを取得）
             log("　　⚠️ 今月の上限に達したため途中で停止（続きは翌月/枠回復後に取得）")
-            add_monthly_usage(conn, fetched, month)
             return {"inserted": total_ins, "skipped_dup": total_skip,
                     "datasets_synced": synced, "datasets_skipped": skipped,
                     "fetched": fetched, "limit_reached": True,
@@ -336,7 +344,7 @@ def sync_datasets(
         set_last_sync(conn, dsid, name, last_pub)
         synced += 1
 
-    used = add_monthly_usage(conn, fetched, month)
+    used = get_monthly_usage(conn, month)   # 加算は取得の直後に済ませている
     return {"inserted": total_ins, "skipped_dup": total_skip,
             "datasets_synced": synced, "datasets_skipped": skipped,
             "fetched": fetched, "limit_reached": limit_reached,
@@ -356,9 +364,13 @@ def get_last_sync(conn, dataset_id: str) -> Optional[str]:
 
 def set_last_sync(conn, dataset_id: str, dataset_name: str, last_published_at: Optional[str]) -> None:
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    conn.execute("DELETE FROM kaizode_sync WHERE dataset_id = ?", (dataset_id,))
+    # DELETE → INSERT の2文にすると、Turso では間に失敗の窓が開く
+    # （1文=1往復・トランザクション無し）。行が消えると次回は since=None に
+    # なって**全件を再ダウンロード**し、新規0件のまま月枠だけを焼く。
+    # 1文の冪等な UPSERT にすれば窓が消え、往復も2→1に減る。
     conn.execute(
-        "INSERT INTO kaizode_sync(dataset_id, dataset_name, last_published_at, synced_at) "
+        "INSERT OR REPLACE INTO kaizode_sync"
+        "(dataset_id, dataset_name, last_published_at, synced_at) "
         "VALUES (?, ?, ?, ?)",
         (dataset_id, dataset_name, last_published_at, ts),
     )
