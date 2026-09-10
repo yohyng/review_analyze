@@ -2995,6 +2995,61 @@ def slide9_data_quality(b: dict) -> str:
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SLIDE 10「各ページの要点」— LLM が書いた1ページ1行のまとめ
+#   既存11枚のレイアウトは触らない。要約は生成済みのときだけ1枚増える。
+# ═══════════════════════════════════════════════════════════════════════════
+def slide10_summary(b: dict) -> str:
+    """各ページが何を示しているかを1枚に集めたもの。無ければ出さない。"""
+    from . import slide_summary as _ss  # noqa: PLC0415
+
+    got = b.get("slide_summaries") or {}
+    # 実際に出したページの順に並べる（出していないページの要点は載せない）
+    order = [f.__name__ for f in report_slides()] + list(OPTIONAL_SLIDES)
+    rows = [(n, got[n]) for n in order
+            if got.get(n) and (got[n].get("headline") or got[n].get("body"))]
+    if not rows:
+        return ""
+
+    # 章番号はスライド名の先頭の数字（slide2_… → 2）
+    def _num(name: str) -> str:
+        for ch in name.replace("slide", ""):
+            if ch.isdigit():
+                return ch
+        return "・"
+
+    items = ""
+    for name, v in rows:
+        title = _ss.SLIDE_TITLES.get(name, name)
+        items += (
+            '<div style="display:flex;gap:.9cqw;align-items:flex-start;'
+            f'padding:.5cqw 0;border-top:1px solid {T.LINE};">'
+            f'<span style="flex:none;width:2.1cqw;height:2.1cqw;border-radius:.4cqw;'
+            f'background:{T.ACCENT_SOFT};color:{T.ACCENT};font-size:1.15cqw;'
+            'font-weight:800;display:flex;align-items:center;'
+            f'justify-content:center;">{_num(name)}</span>'
+            '<span style="flex:1;min-width:0;">'
+            f'<span style="display:block;font-size:1.18cqw;font-weight:800;'
+            f'color:{T.INK};">{escape(v.get("headline") or title)}</span>'
+            f'<span style="display:block;font-size:1.02cqw;color:{T.INK_SUB};'
+            f'line-height:1.5;">{escape(v.get("body") or "")}</span>'
+            f'<span style="display:block;font-size:.86cqw;color:{T.INK_FAINT};">'
+            f'{escape(title)}</span></span></div>'
+        )
+
+    return canvas(
+        slide_header("10", "各ページの要点",
+                     f"{len(rows)} ページ分",
+                     sub_title="このレポートが示していること"),
+        body_area(
+            '<div style="flex:1;display:flex;flex-direction:column;'
+            f'min-height:0;overflow:hidden;">{items}</div>', column=True),
+        footer("※各ページが示している数字から生成した要約です。"
+               "数字の解釈であり、新しい分析ではありません",
+               tagline="顧客の声を、戦略と成長へ。"),
+    )
+
+
 _ALL_SLIDES = (
     "slide1_facility_info",
     "slide2_market_position",
@@ -3011,6 +3066,8 @@ _ALL_SLIDES = (
 # 条件つきで増える枚。データが無ければ出ないので _ALL_SLIDES には入れない
 # （report_slides() の「10枚 / 7枚」という契約を動かさないため）。
 OPTIONAL_SLIDES = ("slide8_nmsi", "slide9_data_quality")
+# 要点まとめは他の全ページを参照するので、必ず最後に置く。
+OPTIONAL_TAIL_SLIDES = ("slide10_summary",)
 
 
 def report_slides(*, detail: bool = True) -> list:
@@ -3034,10 +3091,12 @@ def deck(b: dict, *, detail: bool = True) -> list[str]:
     """
     out = [fn(b) for fn in report_slides(detail=detail)]
     out += [globals()[n](b) for n in OPTIONAL_SLIDES]
+    out += [globals()[n](b) for n in OPTIONAL_TAIL_SLIDES]
     return [h for h in out if h and h.strip()]
 
 
 def deck_size(b: dict, *, detail: bool = True) -> int:
     """描く前に枚数を知りたいとき（設定画面の「全N枚」表示）。"""
     n = len(report_slides(detail=detail))
-    return n + sum(1 for k in OPTIONAL_SLIDES if globals()[k](b).strip())
+    return n + sum(1 for k in OPTIONAL_SLIDES + OPTIONAL_TAIL_SLIDES
+                   if globals()[k](b).strip())

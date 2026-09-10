@@ -49,6 +49,26 @@ def _reliability(conn, target: str) -> dict | None:
         return None
 
 
+def _slide_summaries(conn, target: str) -> dict:
+    """スライド名 → {headline, body}。無ければ空の辞書。**通信しない**。"""
+    try:
+        from . import slide_summary  # noqa: PLC0415
+
+        rows = conn.execute(
+            "SELECT s.slide, s.headline, s.body FROM slide_summary s "
+            "JOIN facility f ON f.id = s.facility_id "
+            "WHERE f.name = ? AND s.model = ?",
+            (target, slide_summary.model_name()),
+        ).fetchall()
+    except Exception:
+        return {}
+    out = {}
+    for r in rows:
+        g = (lambda k, i: r[k] if not isinstance(r, tuple) else r[i])
+        out[g("slide", 0)] = {"headline": g("headline", 1), "body": g("body", 2)}
+    return out
+
+
 def _nmsi_cached(conn, target: str) -> dict | None:
     """保存済みの NMSI。無ければ None（計算はしない）。
 
@@ -408,6 +428,9 @@ def build_bundle(
         # この分析が何件に支えられているか。「4.50」と「4.70」を同じ見た目で
         # 並べる以上、分母と誤差を一緒に出さないと順位が独り歩きする。
         "reliability": _reliability(conn, target),
+        # 各ページの要約も**保存済みを読むだけ**。生成は管理モードで事前に行う。
+        #   スライドは描画のたびに走るので、ここから LLM を呼ぶと歯止めが無い。
+        "slide_summaries": _slide_summaries(conn, target),
         # NMSI は**保存済みがあれば載せるだけ**。ここで計算しない。
         #   スライドは描画のたびに走るので、ここから LLM を呼ぶと歯止めが無い。
         #   計算は管理モード（ログイン必須）だけで行う。

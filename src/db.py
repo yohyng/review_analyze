@@ -417,6 +417,22 @@ CREATE INDEX IF NOT EXISTS idx_subscore_review ON review_subscore(review_db_id);
 --   なければ結果を使い回す。ここは**LLM課金が乗る**計算なので、キャッシュが
 --   無いと画面を開き直すたびに費用がかかる（移植元にはキャッシュが無かった）。
 --   モデルを変えたら結果も変わるので model も鍵に入れる。
+-- スライドごとの「このページが示していること」（LLM生成）。
+--   スライドは描画のたびに走るので、生成は事前に1回だけ行って
+--   ここから読むだけにする（描画から課金が飛ぶ経路を作らない）。
+--   鍵は (施設, スライド, 事実のハッシュ, モデル)。
+--   元になった数字が変われば fact_hash が変わり、自然に作り直される。
+CREATE TABLE IF NOT EXISTS slide_summary (
+    facility_id INTEGER NOT NULL REFERENCES facility(id) ON DELETE CASCADE,
+    slide       TEXT    NOT NULL,
+    fact_hash   TEXT    NOT NULL,
+    model       TEXT    NOT NULL DEFAULT '',
+    headline    TEXT    NOT NULL DEFAULT '',
+    body        TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    DEFAULT (datetime('now')),
+    PRIMARY KEY (facility_id, slide, fact_hash, model)
+);
+
 CREATE TABLE IF NOT EXISTS nmsi_result (
     facility_id   INTEGER NOT NULL REFERENCES facility(id) ON DELETE CASCADE,
     n_reviews     INTEGER NOT NULL,

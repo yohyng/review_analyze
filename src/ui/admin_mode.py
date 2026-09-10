@@ -1068,6 +1068,113 @@ def render():
                 "読むだけなので、閲覧では課金されません。"
             )
 
+    # ── 各ページの要約（LLM生成）─────────────────────────────────── #
+    #    NMSI と同じ線。**課金する生成はここだけ**で、レポート側は
+    #    保存済みを読むだけ。描画から LLM が飛ぶ経路は作らない。
+    elif _page == "summary":
+        from src import preview as _preview  # noqa: PLC0415
+        from src import slide_summary as _ss  # noqa: PLC0415
+
+        # render() 内の別の分岐が `preview` を DataFrame に再代入しているため、
+        # モジュールの `preview` は関数全体でローカル扱いになり、ここから
+        # 参照すると UnboundLocalError になる。別名で入れ直す。
+
+        _html('<div class="vb-step">STEP 6 — レポートの要約</div>')
+        _html('<h1 class="vb-h1">各ページの要点を作る</h1>')
+        _html(
+            '<p class="vb-sub">レポートの各ページが「何を示しているか」を'
+            f'{escape(_ss.model_name())} に書かせて保存します。'
+            'レポート側は保存済みを読むだけなので、閲覧では課金されません。'
+            '元になった数字が変わると自動で作り直しの対象になります。</p>'
+        )
+
+        _names = analysis.facility_names(conn)
+        if not _names:
+            st.info("施設がまだありません。")
+        else:
+            _lk = llm.get_api_key()
+            if not _lk:
+                st.warning(
+                    "Gemini の API キーが未設定です。"
+                    "「🔗 連携設定」で設定すると生成できます。"
+                )
+            _sel = st.selectbox("施設", _names, key="sum_facility")
+
+            # 生成済みの一覧は DB を直接引く。**バンドルを組み立てない**。
+            #   build_bundle は全施設のトピック行列を要求するので、ページを
+            #   開いただけで数十秒かかる（46施設・32,497件で実測）。
+            #   組み立てるのは押したときだけにする。
+            _rows = conn.execute(
+                "SELECT s.slide, s.headline, s.body FROM slide_summary s "
+                "JOIN facility f ON f.id = s.facility_id "
+                "WHERE f.name = ? AND s.model = ?",
+                (_sel, _ss.model_name()),
+            ).fetchall()
+            _have = {}
+            for _r in _rows:
+                _g = (lambda k, i: _r[k] if not isinstance(_r, tuple) else _r[i])
+                _have[_g("slide", 0)] = {"headline": _g("headline", 1),
+                                         "body": _g("body", 2)}
+
+            if True:
+                _all = list(_ss.SLIDE_TITLES)
+                _c1, _c2, _c3 = st.columns(3)
+                _c1.metric("対象ページ", f"{len(_all)}")
+                _c2.metric("生成済み", f"{len(_have)}")
+                _c3.metric("未生成", f"{max(0, len(_all) - len(_have)):,}")
+
+                _todo = [n for n in _all if n not in _have]
+                if st.button(
+                    (f"未生成 {len(_todo)} ページを作る" if _todo
+                     else "すべて作り直す"),
+                    type="primary", width="stretch", key="sum_run",
+                    disabled=not _lk,
+                ):
+                    _bar = st.progress(0.0, text="分析データを組み立て中…")
+
+                    def _tick(i, n, slide):
+                        _bar.progress(i / max(n, 1),
+                                      text=f"{i}/{n} {_ss.SLIDE_TITLES.get(slide, slide)}")
+
+                    try:
+                        _ts = data.topic_matrix_cached(data.topic_sig())
+                        _bundle_for_sum = _preview.build_bundle(
+                            conn, _sel, _ts, None, None)
+                    except Exception as _e:
+                        _bar.empty()
+                        st.error(f"分析データを組み立てられません: {_e}")
+                        st.stop()
+
+                    _res = _ss.build_all(
+                        conn, _sel, _bundle_for_sum, _lk,
+                        slides=(_todo or None), force=not _todo,
+                        progress_cb=_tick)
+                    _bar.empty()
+                    st.success(
+                        f"生成 {_res['created']} / 既存 {_res['cached']}"
+                        + (f" / 失敗 {len(_res['failed'])}"
+                           if _res["failed"] else "")
+                    )
+                    for _sl, _why in _res["failed"][:5]:
+                        st.warning(f"{_ss.SLIDE_TITLES.get(_sl, _sl)}: {_why}")
+                    st.rerun()
+
+                if _have:
+                    st.dataframe(
+                        pd.DataFrame([
+                            {"ページ": _ss.SLIDE_TITLES.get(n, n),
+                             "見出し": v.get("headline", ""),
+                             "本文": v.get("body", "")}
+                            for n, v in _have.items()
+                        ]),
+                        width="stretch", hide_index=True,
+                    )
+
+            st.caption(
+                f"1施設あたり {len(_ss.SLIDE_TITLES)} 回の呼び出し。"
+                "入力は各ページが示している数字だけ（HTMLは送りません）。"
+            )
+
     elif _page == "dummy":
         _html('<div class="vb-step">検証</div>')
         _html('<h1 class="vb-h1">ダミーデータ</h1>')
