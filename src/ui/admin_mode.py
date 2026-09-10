@@ -1415,6 +1415,57 @@ def render():
             with _sc2:
                 _html("<div style='height:28px'></div>")
                 _kz_full = st.checkbox("全件取り直し（通常は差分）", key="kz_full")
+            # ── 引く前に件数を調べる ─────────────────────────────── #
+            #    全件引いてから「上限に当たりました」では遅い。
+            #    1データセットにつき1件だけ引いて総数を読む。
+            if st.button("🔍 取得できそうな件数を調べる", key="kz_plan"):
+                with st.spinner("KAIZODE に件数を問い合わせ中…"):
+                    st.session_state["_kz_plan"] = kaizode.plan_sync(
+                        _kz_client, conn, full=_kz_full)
+                st.rerun()
+
+            _plan = st.session_state.get("_kz_plan")
+            if _plan is not None:
+                _pc1, _pc2, _pc3 = st.columns(3)
+                _pc1.metric("取得できそう", f"{_plan.available:,} 件")
+                _pc2.metric("今月の残枠", f"{_plan.remaining:,} 件")
+                _pc3.metric("実際に引かれる", f"{_plan.will_fetch:,} 件")
+
+                if _plan.exceeds:
+                    st.warning(
+                        f"⚠️ 残枠に **{_plan.shortfall:,} 件** 収まりません。"
+                        f"実行すると {_plan.will_fetch:,} 件で打ち切られ、"
+                        "残りは翌月/枠回復後になります。"
+                        "対象を絞るか、上限を見直してください。"
+                    )
+                elif _plan.available == 0:
+                    st.info("新しく取得できる口コミはありません。")
+                else:
+                    st.success(
+                        f"✅ 残枠に収まります（実行後の残り "
+                        f"{_plan.remaining - _plan.will_fetch:,} 件）。")
+
+                if _plan.unknown:
+                    st.caption(
+                        f"※ {_plan.unknown} 件のデータセットは件数を返しませんでした。"
+                        "見積りには 0 件として数えています（実際はもっと引かれる"
+                        "可能性があります）。")
+
+                _rows = [
+                    {"データセット": d.name or d.dataset_id,
+                     "状態": kaizode.STATUS_LABELS.get(d.status, d.status),
+                     "取得できそう": ("—" if d.available is None
+                                 else f"{d.available:,}"),
+                     "差分の起点": d.since or "（全件）"}
+                    for d in _plan.datasets
+                ]
+                if _rows:
+                    st.dataframe(pd.DataFrame(_rows), width="stretch",
+                                 hide_index=True)
+                st.caption(
+                    f"件数の確認で {_plan.probe_cost:,} 件（1データセットにつき1件）"
+                    "を引いています。枠に計上済みです。")
+
             if st.button("⬇️ 解析完了分をDBへ取り込む", type="primary", key="kz_sync"):
                 _logbox = st.container(height=260)
                 try:
@@ -1435,6 +1486,7 @@ def render():
                             f"⚠️ 今月の取得上限（{_res.get('monthly_limit', _kz_lim):,}件）"
                             "に達したため途中で停止しました。続きは翌月/枠回復後に取得されます。"
                         )
+                    st.session_state.pop("_kz_plan", None)  # 見積りは古くなる
                     _topic_matrix_cached.clear()
                     data.clear_list_caches()
                 except kaizode.KaizodeError as _e:

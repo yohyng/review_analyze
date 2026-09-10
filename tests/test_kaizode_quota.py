@@ -176,3 +176,158 @@ def test_last_sync_round_trips(tmp_path):
     n = conn.execute("SELECT COUNT(*) FROM kaizode_sync WHERE dataset_id='a'"
                      ).fetchone()[0]
     assert n == 1
+
+
+# ── 引く前の見積り ───────────────────────────────────────────────── #
+class _CountingClient(_Client):
+    """count_reviews を持つフェイク。何件返すかを指定できる。"""
+
+    def __init__(self, datasets, totals=None, **kw):
+        super().__init__(datasets, **kw)
+        self._totals = totals or {}
+        self.probes = []
+
+    def count_reviews(self, dsid, published_since=None):
+        self.probes.append((dsid, published_since))
+        return self._totals.get(dsid)      # 未指定は None＝不明
+
+
+def test_plan_reports_what_would_be_fetched(tmp_path):
+    conn = _conn(tmp_path)
+    kaizode.set_monthly_limit(conn, 10_000)
+    client = _CountingClient([_ds("a"), _ds("b")], totals={"a": 300, "b": 200})
+
+    plan = kaizode.plan_sync(client, conn)
+    assert plan.available == 500
+    assert not plan.exceeds
+    assert plan.will_fetch == 500
+    assert plan.shortfall == 0
+    assert plan.unknown == 0
+
+
+def test_plan_warns_before_blowing_the_cap(tmp_path):
+    """全件引いてから「上限に当たりました」では遅い。"""
+    conn = _conn(tmp_path)
+    kaizode.set_monthly_limit(conn, 400)
+    client = _CountingClient([_ds("a"), _ds("b")], totals={"a": 3000, "b": 5000})
+
+    plan = kaizode.plan_sync(client, conn)
+    assert plan.available == 8000
+    assert plan.exceeds
+    assert plan.will_fetch < plan.available
+    assert plan.shortfall == 8000 - plan.remaining
+
+
+def test_plan_costs_one_review_per_dataset_and_records_it(tmp_path):
+    """件数の確認でも1件は引く。黙って枠を減らさない。"""
+    conn = _conn(tmp_path)
+    kaizode.set_monthly_limit(conn, 10_000)
+    client = _CountingClient([_ds("a"), _ds("b"), _ds("c")],
+                             totals={"a": 10, "b": 20, "c": 30})
+
+    plan = kaizode.plan_sync(client, conn)
+    assert plan.probe_cost == 3
+    assert kaizode.get_monthly_usage(conn) == 3, "確認で引いたぶんが帳簿に無い"
+    assert plan.remaining == 10_000 - 3
+
+
+def test_plan_skips_datasets_that_are_not_ready(tmp_path):
+    conn = _conn(tmp_path)
+    client = _CountingClient(
+        [_ds("done"), {"dataset_id": "busy", "dataset_name": "収集中",
+                       "status": 10}],
+        totals={"done": 50})
+    plan = kaizode.plan_sync(client, conn)
+    assert len(plan.datasets) == 2
+    assert len(plan.ready_datasets) == 1
+    assert plan.available == 50
+    assert client.probes == [("done", None)], "未完了のデータセットまで叩いている"
+
+
+def test_unknown_counts_are_reported_not_guessed(tmp_path):
+    """APIが件数を返さないことがある。0扱いにするが、その旨を出す。"""
+    conn = _conn(tmp_path)
+    client = _CountingClient([_ds("a"), _ds("b")], totals={"a": 100})
+    plan = kaizode.plan_sync(client, conn)
+    assert plan.available == 100      # 不明ぶんは足さない（下振れ側に倒す）
+    assert plan.unknown == 1
+
+
+def test_plan_uses_the_incremental_start_point(tmp_path):
+    """差分同期なら、前回以降の件数だけを数えること。"""
+    conn = _conn(tmp_path)
+    kaizode.set_last_sync(conn, "a", "A", "2025-04-01T00:00:00")
+    client = _CountingClient([_ds("a")], totals={"a": 7})
+
+    kaizode.plan_sync(client, conn)
+    assert client.probes == [("a", "2025-04-01T00:00:00")]
+
+    client2 = _CountingClient([_ds("a")], totals={"a": 999})
+    kaizode.plan_sync(client2, conn, full=True)
+    assert client2.probes == [("a", None)], "全件取り直しなら起点なしで数える"
+
+
+def test_plan_survives_a_probe_failure(tmp_path):
+    conn = _conn(tmp_path)
+
+    class _Broken(_CountingClient):
+        def count_reviews(self, dsid, published_since=None):
+            raise RuntimeError("問い合わせ失敗")
+
+    plan = kaizode.plan_sync(_Broken([_ds("a")]), conn)
+    assert plan.available == 0 and plan.unknown == 1
+    assert plan.datasets[0].available is None
+
+
+def test_plan_can_skip_the_probe(tmp_path):
+    conn = _conn(tmp_path)
+    client = _CountingClient([_ds("a")], totals={"a": 5})
+    plan = kaizode.plan_sync(client, conn, count_probe=False)
+    assert client.probes == [], "count_probe=False なのに通信している"
+    assert plan.probe_cost == 0
+    assert kaizode.get_monthly_usage(conn) == 0
+
+
+def test_count_reviews_asks_for_one_row(tmp_path):
+    """総数だけ知りたいので limit=1。全件引いてから数えない。"""
+    from src.kaizode import KaizodeClient
+
+    class _Sess:
+        def __init__(self): self.calls = []
+
+        def request(self, method, url, headers=None, params=None, json=None,
+                    timeout=None):
+            self.calls.append(params)
+
+            class R:
+                status_code = 200
+                text = ""
+                @staticmethod
+                def json():
+                    return {"data": [{"review_id": "x"}],
+                            "pagination": {"total_items": 4242}}
+            return R()
+
+    sess = _Sess()
+    c = KaizodeClient(api_key="K", session=sess, min_interval=0)
+    assert c.count_reviews("d1", published_since="2025-01-01") == 4242
+    assert sess.calls[0]["limit"] == 1
+    assert sess.calls[0]["page"] == 0
+    assert sess.calls[0]["published_since"] == "2025-01-01"
+
+
+def test_count_reviews_returns_none_when_unavailable():
+    from src.kaizode import KaizodeClient
+
+    class _Sess:
+        def request(self, *a, **k):
+            class R:
+                status_code = 200
+                text = ""
+                @staticmethod
+                def json():
+                    return {"data": []}          # pagination なし
+            return R()
+
+    c = KaizodeClient(api_key="K", session=_Sess(), min_interval=0)
+    assert c.count_reviews("d1") is None

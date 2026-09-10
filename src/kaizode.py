@@ -20,6 +20,7 @@ import itertools
 import os
 import time
 import urllib.parse
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
@@ -157,6 +158,34 @@ class KaizodeClient:
     # ------------------------------------------------------------------ #
     # レビュー（ページネーション＋差分取得）
     # ------------------------------------------------------------------ #
+    def count_reviews(
+        self,
+        dataset_id: str,
+        published_since: Optional[str] = None,
+    ) -> Optional[int]:
+        """取得できる件数を**引く前に**調べる。分からなければ None。
+
+        1ページ目を limit=1 で引いて pagination.total_items を読むだけ。
+        データセット一覧（list_datasets）は件数を持っていないので、
+        ここが唯一の手がかり。
+
+        **この呼び出しでも1件は引かれる**ので、呼び出し側は帳簿に
+        付けること（plan_sync がやっている）。全件を引いてから
+        「上限に当たりました」と言うより、1件で済ませたほうがよい。
+        """
+        params = {"limit": 1, "page": 0}
+        if published_since:
+            params["published_since"] = published_since
+        body = self._request("GET", f"/datasets/{dataset_id}/reviews",
+                             params=params)
+        total = (body.get("pagination") or {}).get("total_items")
+        if total is None:
+            return None
+        try:
+            return int(total)
+        except (TypeError, ValueError):
+            return None
+
     def iter_reviews(
         self,
         dataset_id: str,
@@ -236,6 +265,108 @@ def match_datasets(datasets: list[dict], query: str) -> list[dict]:
 # ---------------------------------------------------------------------- #
 # 同期の本体（CLI と 管理画面の両方から使う）
 # ---------------------------------------------------------------------- #
+@dataclass
+class DatasetPlan:
+    """1データセットぶんの見積り。"""
+    dataset_id: str
+    name: str
+    status: int
+    available: Optional[int]   # 取得できる件数。None は不明（APIが返さなかった）
+    since: Optional[str]       # 差分の起点。None は全件
+    ready: bool                # status が解析完了か
+
+
+@dataclass
+class SyncPlan:
+    """同期する前の見積り。**引かずに**どうなるかを見せるためのもの。
+
+    無限に取って一発で上限に当たる、という事故を避けるのが目的。
+    """
+    datasets: list = field(default_factory=list)
+    limit: int = 0
+    used: int = 0
+    remaining: int = 0
+    probe_cost: int = 0        # 件数を調べるのに実際に引いた件数
+
+    @property
+    def ready_datasets(self) -> list:
+        return [d for d in self.datasets if d.ready]
+
+    @property
+    def available(self) -> int:
+        """取得できそうな合計。不明なぶんは 0 として数える（下振れ側に倒す）。"""
+        return sum(d.available or 0 for d in self.ready_datasets)
+
+    @property
+    def unknown(self) -> int:
+        """件数が分からなかったデータセットの数。"""
+        return sum(1 for d in self.ready_datasets if d.available is None)
+
+    @property
+    def will_fetch(self) -> int:
+        """実際に引かれる見込み（残枠で頭打ち）。"""
+        return min(self.available, self.remaining)
+
+    @property
+    def exceeds(self) -> bool:
+        """残枠に収まらないか。"""
+        return self.available > self.remaining
+
+    @property
+    def shortfall(self) -> int:
+        return max(0, self.available - self.remaining)
+
+
+def plan_sync(
+    client: "KaizodeClient",
+    conn,
+    *,
+    dataset_id: Optional[str] = None,
+    full: bool = False,
+    count_probe: bool = True,
+) -> SyncPlan:
+    """同期する前に「何件来るか」と「枠に収まるか」を出す。
+
+    件数の確認そのものが1データセットにつき1件を引くので、その分は
+    帳簿に付ける。全件引いてから上限に当たるより桁違いに安い。
+
+    count_probe=False にすると通信せず、件数は不明のまま枠だけ返す。
+    """
+    month = current_month()
+    limit_n = monthly_limit(conn)
+    plan = SyncPlan(limit=limit_n, used=get_monthly_usage(conn, month),
+                    remaining=monthly_remaining(conn, month, limit_n))
+
+    datasets = client.list_datasets()
+    if dataset_id:
+        datasets = [d for d in datasets if d.get("dataset_id") == dataset_id]
+
+    probed = 0
+    for ds in datasets:
+        dsid = ds.get("dataset_id")
+        status = ds.get("status")
+        ready = status == STATUS_DONE
+        since = None if full else get_last_sync(conn, dsid)
+        available = None
+        if ready and count_probe:
+            try:
+                available = client.count_reviews(dsid, published_since=since)
+                probed += 1
+            except Exception:
+                available = None      # 件数が読めなくても計画自体は返す
+        plan.datasets.append(DatasetPlan(
+            dataset_id=dsid, name=ds.get("dataset_name", ""), status=status,
+            available=available, since=since, ready=ready))
+
+    if probed:
+        # 件数の確認で引いた1件×データセット数。黙って枠を減らさない。
+        plan.probe_cost = probed
+        add_monthly_usage(conn, probed, month)
+        plan.used = get_monthly_usage(conn, month)
+        plan.remaining = monthly_remaining(conn, month, limit_n)
+    return plan
+
+
 def sync_datasets(
     client: "KaizodeClient",
     conn,
