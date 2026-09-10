@@ -134,9 +134,12 @@ def test_fetch_photo_returns_a_resource_name_never_a_keyed_url(monkeypatch):
     monkeypatch.setattr(requests, "get", _get)
     p = places.fetch_photo("ChIJxyz", "KEY", max_px=600)
 
-    # 住所は同じ呼び出しに相乗りさせる（photos を要求した時点で Pro 階層に
-    # なるので、formattedAddress を足しても課金は変わらない）
-    assert seen["headers"]["X-Goog-FieldMask"] == "photos,formattedAddress"
+    # 住所・総評価数・平均評価は同じ呼び出しに相乗りさせる。photos を要求した
+    # 時点で Pro 階層になるので、同階層のフィールドを足しても課金は変わらない。
+    # **1回の呼び出しに収めること**（別呼び出しにすると回数ぶん課金が増える）。
+    _mask = seen["headers"]["X-Goog-FieldMask"].split(",")
+    assert set(_mask) == {"photos", "formattedAddress", "userRatingCount",
+                          "rating"}, _mask
 
     # Photo が持つのはリソース名だけ。ここに媒体URLやAPIキーを入れると、
     # <img src> 経由でログイン不要のページのHTMLにキーが載る。

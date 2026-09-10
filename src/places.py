@@ -18,6 +18,7 @@
   - place_id の検索は Text Search の「ID のみ」= 一番安いSKU。
     しかも place_id は保存できるので **施設あたり生涯1回**で済む。
   - Place Details は photos フィールドを要求した時点で Pro 階層（無料枠 5,000/月）。
+    同じ階層の formattedAddress / userRatingCount / rating は相乗りできる（追加課金なし）。
   - Place Photos は別SKU。
   レポート1回の閲覧で 6施設 × (Details 1 + Photos 1) = 12 呼び出し。
 
@@ -163,6 +164,11 @@ class Details:
     """表示に使う施設情報。いずれも保存せず、都度取得する。"""
     photo: Photo | None = None
     address: str = ""
+    # Google マップ上の総評価数と平均。KAIZODE がどれだけ拾えているかの分母。
+    #   **保存しないこと**（規約上、無期限に保存してよいのは place_id だけ）。
+    #   表示のたびに取り直す。
+    review_count: int | None = None
+    rating: float | None = None
 
 
 def fetch_details(place_id: str, api_key: str, *,
@@ -176,12 +182,24 @@ def fetch_details(place_id: str, api_key: str, *,
     if not place_id or not api_key:
         return Details()
     try:
+        # userRatingCount / rating は photos と同じ Pro 階層なので、
+        # ここに足しても課金は変わらない（住所と同じ相乗り）。
         data = _get(_DETAILS_URL.format(place_id=place_id), api_key,
-                    "photos,formattedAddress")
+                    "photos,formattedAddress,userRatingCount,rating")
     except Exception:
         return Details()
 
-    out = Details(address=data.get("formattedAddress", "") or "")
+    def _num(v, cast):
+        try:
+            return cast(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    out = Details(
+        address=data.get("formattedAddress", "") or "",
+        review_count=_num(data.get("userRatingCount"), int),
+        rating=_num(data.get("rating"), float),
+    )
     photos = data.get("photos") or []
     if photos and photos[0].get("name"):
         first = photos[0]
