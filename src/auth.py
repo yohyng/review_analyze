@@ -70,6 +70,24 @@ def check_signup_code(provided: str) -> bool:
     return hmac.compare_digest((provided or "").encode("utf-8"), code.encode("utf-8"))
 
 
+AUTH_DISABLED_ENV = "VOICEBAUM_DISABLE_AUTH"
+
+
+def auth_disabled() -> bool:
+    """管理ログインを一時的に外しているか。
+
+    **既定では絶対に外れない**（環境変数を明示的に 1/true にしたときだけ）。
+    外れている間、管理画面は誰でも開ける。そこでできることは:
+      - 施設写真の削除・差し替え（配布物に載る）
+      - KAIZODE への収集発注（月間の取得枠を消費する）
+      - NMSI の実行（OpenAI に課金される）
+    だから、切り分けのために一時的に外す用途に限る。戻し忘れを防ぐため、
+    有効な間は画面に出し続ける（app.py のバナー）。
+    """
+    v = (_secret(AUTH_DISABLED_ENV) or "").strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+
 def admin_password() -> str:
     """非常口のマスターパスワード（未設定なら空文字）。"""
     return _secret("ADMIN_PASSWORD")

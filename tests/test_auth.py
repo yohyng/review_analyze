@@ -154,3 +154,36 @@ def test_ensure_users_table_standalone():
     auth.ensure_users_table(c)
     auth.create_user(c, "solo@b.com", "password123")
     assert auth.authenticate(c, "solo@b.com", "password123") is not None
+
+
+# ── ログインを一時的に外す（切り分け用）─────────────────────────── #
+def test_auth_is_never_disabled_by_default(monkeypatch):
+    """既定で外れないこと。ここが緩むと管理画面が丸ごと露出する。"""
+    monkeypatch.delenv(auth.AUTH_DISABLED_ENV, raising=False)
+    assert auth.auth_disabled() is False
+
+
+@pytest.mark.parametrize("value,expect", [
+    ("1", True), ("true", True), ("TRUE", True), ("yes", True), ("on", True),
+    ("0", False), ("false", False), ("", False), ("no", False),
+    ("maybe", False), (" ", False),
+])
+def test_auth_disable_needs_an_explicit_value(monkeypatch, value, expect):
+    monkeypatch.setenv(auth.AUTH_DISABLED_ENV, value)
+    assert auth.auth_disabled() is expect
+
+
+def test_the_gate_and_the_banner_are_wired_together():
+    """外している間は必ず画面に出ること（戻し忘れ防止）。"""
+    from pathlib import Path
+
+    src = Path("app.py").read_text(encoding="utf-8")
+    # ゲートを通す側
+    assert "auth.auth_disabled() and not st.session_state" in src
+    # 出し続ける側
+    assert src.count("auth.auth_disabled()") >= 2, "バナーが無い"
+    assert "ログインを外しています" in src
+    assert auth.AUTH_DISABLED_ENV in src, "戻し方が画面に書かれていない"
+    # バナーはゲートより後ろ（サイドバー側）にある
+    assert src.index("ログインを外しています") > src.index(
+        "auth.auth_disabled() and not st.session_state")

@@ -133,6 +133,12 @@ else:
     # ── 管理モードはログイン必須（メール＋パスワードのアカウント制）── #
     #   ・新規登録は招待コード SIGNUP_CODE を知っている人だけ（登録ゲート）
     #   ・ADMIN_PASSWORD は「最初の1人を作る/ロックアウト回避」用の非常口
+    # 一時的にログインを外している場合（切り分け用）。
+    # 既定では外れない。外れている間は画面に出し続けて、戻し忘れを防ぐ。
+    if auth.auth_disabled() and not st.session_state.get("admin_authed"):
+        st.session_state["admin_authed"] = True
+        st.session_state["admin_email"] = "（認証なし）"
+
     if not st.session_state.get("admin_authed"):
         try:
             _n_users = auth.count_users(conn)
@@ -242,6 +248,19 @@ else:
         st.stop()
 
     with st.sidebar:
+        if auth.auth_disabled():
+            _html(
+                '<div style="background:#B3261E;color:#fff;border-radius:8px;'
+                'padding:10px 12px;margin:8px 0 4px;font-size:12.5px;'
+                'font-weight:700;line-height:1.5;">'
+                '⚠️ ログインを外しています<br>'
+                '<span style="font-weight:400;">URLを知っている人は誰でも'
+                'この画面を開けます。写真の削除・KAIZODEの発注・NMSIの実行が'
+                'できるので、切り分けが済んだら '
+                '<code style="background:rgba(255,255,255,.2);padding:1px 4px;'
+                'border-radius:3px;">VOICEBAUM_DISABLE_AUTH</code> を外して'
+                'ください。</span></div>'
+            )
         _html(f"""
         <div style="display:flex;align-items:center;gap:10px;padding:14px 4px 14px;">
           <div style="width:34px;height:34px;border-radius:9px;background:{ACCENT};
