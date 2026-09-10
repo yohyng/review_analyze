@@ -40,16 +40,65 @@ class InsightResult:
 # --------------------------------------------------------------------------- #
 # API key resolution
 # --------------------------------------------------------------------------- #
+SESSION_KEY = "gemini_session_key"
+
+
 def get_api_key() -> str:
-    """Resolve key: env var GEMINI_API_KEY → streamlit secrets → ''."""
+    """環境変数 → Streamlit secrets → 管理画面でのセッション入力、の順に探す。
+
+    セッション入力も見るのは、恒久設定を持たない環境でも管理画面から
+    使えるようにするため（KAIZODE と同じ扱い）。DBやファイルには保存しない。
+    """
     key = os.environ.get("GEMINI_API_KEY", "")
     if key:
         return key
     try:
         import streamlit as st  # noqa: PLC0415
-        return st.secrets.get("GEMINI_API_KEY", "")
+
+        key = st.secrets.get("GEMINI_API_KEY", "") or ""
+        if key:
+            return key
+        return st.session_state.get(SESSION_KEY, "") or ""
     except Exception:
         return ""
+
+
+def api_key_source() -> str:
+    """どこから読めたか。画面に出して切り分けに使う。"""
+    if os.environ.get("GEMINI_API_KEY"):
+        return "環境変数"
+    try:
+        import streamlit as st  # noqa: PLC0415
+
+        if st.secrets.get("GEMINI_API_KEY", ""):
+            return "secrets"
+        if st.session_state.get(SESSION_KEY, ""):
+            return "セッション入力"
+    except Exception:
+        pass
+    return ""
+
+
+def ping(api_key: str) -> tuple[bool, str]:
+    """鍵が通るかだけ確かめる。**極小の呼び出し**（出力5トークン）。
+
+    設定できたつもりで通っていない、を画面で切り分けるため。
+    """
+    if not api_key:
+        return False, "APIキーが未設定です"
+    payload = {
+        "contents": [{"parts": [{"text": "ok とだけ返してください"}]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 5},
+    }
+    try:
+        resp = requests.post(GEMINI_ENDPOINT, params={"key": api_key},
+                             json=payload, timeout=20)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError:
+        return False, f"API エラー ({resp.status_code}): {_extract_api_error(resp)}"
+    except requests.exceptions.RequestException as e:
+        return False, f"通信エラー: {e}"
+    return True, f"接続できました（{GEMINI_MODEL}）"
 
 
 # --------------------------------------------------------------------------- #

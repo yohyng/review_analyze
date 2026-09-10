@@ -1723,6 +1723,53 @@ GOOGLE_MAPS_API_KEY = "AIza..."
             )
 
         st.divider()
+        # ── Gemini（LLMインサイト・ページ要約）────────────────────── #
+        #    KAIZODE と同じ形。恒久設定は secrets/環境変数を推奨し、
+        #    無ければ**セッション限り**の入力を受ける（DB・ファイルには残さない）。
+        st.markdown("#### 🤖 Gemini（LLMインサイト・ページ要約）")
+        _g_key = llm.get_api_key()
+        _g_src = llm.api_key_source()
+        if _g_key:
+            _gc1, _gc2, _gc3 = st.columns([3, 1, 1])
+            with _gc1:
+                st.caption(
+                    f"🔑 APIキー: 設定済み（{_g_src}・末尾 …{_g_key[-4:]}）"
+                    f"／ モデル {llm.GEMINI_MODEL}"
+                )
+            with _gc2:
+                if st.button("接続を確認", key="gm_ping", width="stretch"):
+                    _ok, _msg = llm.ping(_g_key)
+                    (st.success if _ok else st.error)(_msg)
+            with _gc3:
+                if _g_src == "セッション入力":
+                    if st.button("🔒 破棄", key="gm_clear", width="stretch"):
+                        st.session_state.pop(llm.SESSION_KEY, None)
+                        st.rerun()
+        else:
+            st.info(
+                "Gemini の APIキーが未設定です。恒久利用は secrets の "
+                "`GEMINI_API_KEY` を推奨。下で入力した場合は"
+                "**このセッション限り**で使用し、DBやファイルには保存しません。"
+                "キーは https://aistudio.google.com/ で取得できます。"
+            )
+            _g_in = st.text_input("Gemini APIキー（セッション限り）",
+                                  type="password", key="gm_key_input")
+            _gb1, _gb2 = st.columns([1, 3])
+            with _gb1:
+                if st.button("このセッションで使用する", type="primary",
+                             key="gm_key_use", width="stretch"):
+                    if _g_in.strip():
+                        st.session_state[llm.SESSION_KEY] = _g_in.strip()
+                        st.rerun()
+                    else:
+                        st.warning("APIキーを入力してください。")
+        st.caption(
+            "使いどころ: 変化点の説明・代表口コミの選定・ディスカッション"
+            "ポイント・各ページの要点。いずれも管理モードでの生成時だけ"
+            "呼び出し、レポートの閲覧では課金されません。"
+        )
+        st.divider()
+
         st.markdown("#### 🖼 施設写真の自動取得（Google Places）")
         _gm = places.get_api_key()
         if _gm:
