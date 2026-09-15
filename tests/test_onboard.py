@@ -180,9 +180,9 @@ def test_hero_uses_the_plan_instead_of_hand_rolled_branches():
 def test_collect_button_registers_orders_and_starts_the_analysis():
     """確認を通したあとは「登録 → 発注 → 自動で待つ → 分析」まで繋がること。"""
     flow = _flow_src()
-    assert "onboard.register(conn, p)" in flow
+    assert "onboard.register(conn, p, ftype=_ftype(role))" in flow
     assert "_kz_order(" in flow
-    assert '"auto_analyze": True' in flow
+    assert '"auto_analyze": role == "target"' in flow
     assert 'st.session_state["an_target"] = _reg' in flow
 
 
@@ -234,7 +234,7 @@ def test_unresolved_places_are_flagged_before_ordering():
     _id = next(c for c in pf.checks if c.key == "identity")
     assert not _id.ok
     assert "同名の別施設" in _id.detail
-    assert "残枠" in _flow_src()
+    assert "残枠" in _ui_src()
 
 
 def test_ready_path_does_not_touch_kaizode():

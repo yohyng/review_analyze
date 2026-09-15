@@ -137,18 +137,21 @@ def _review_count(conn, name: str) -> int:
     return int(row[0]) if row and row[0] else 0
 
 
-def register(conn, p: Plan) -> str:
+def register(conn, p: Plan, ftype: str = "target") -> str:
     """施設をDBに登録し、分かっていれば place_id も覚える。施設名を返す。
 
     収集を発注する前に登録しておく。発注が失敗しても施設は残るので、
     あとから手でCSVを入れる道も残る。
+
+    ftype は 'target' か 'comparison'。比較施設として足したものを
+    分析対象として登録しないためだけのもの（どちらでも口コミは入る）。
     """
     from . import db  # noqa: PLC0415
 
     name = (p.facility or p.query).strip()
     if not name:
         return ""
-    db.upsert_facility(conn, name, ftype="target")
+    db.upsert_facility(conn, name, ftype=ftype)
     if p.place_id:
         db.set_place_id(conn, name, p.place_id)
     return name

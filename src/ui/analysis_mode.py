@@ -77,6 +77,62 @@ def _kz_order(conn, key: str, url: str, name: str) -> str:
         return ""
 
 
+def _ftype(role: str) -> str:
+    return "comparison" if role == "peer" else "target"
+
+
+def _collect_label(role: str) -> str:
+    if role == "peer":
+        return "この施設を比較施設として集める"
+    return "この施設の口コミを集めて分析する"
+
+
+def _collect_note(role: str, remaining: int) -> str:
+    if role == "peer":
+        return (f"押すと、施設を登録 → 口コミを収集 → 取り込み → 比較施設に"
+                f"追加します（残枠 {remaining:,} 件）")
+    return (f"押すと、施設を登録 → 口コミを収集 → 取り込み → 分析まで"
+            f"自動で進みます（残枠 {remaining:,} 件）")
+
+
+PEER_SEARCH = "an_peer_search"
+PEER_NONCE = "an_peer_search_nonce"
+PEERS_KEY = "an_peers"
+PEERS_WIDGET = "an_peers_multi"
+MAX_PEERS = 5
+
+
+def peer_widget_key() -> str:
+    """比較施設の multiselect のキー。**追加のたびに変える**。
+
+    `an_peers` を書き換えても、同じ key のウィジェットは前の値に戻る。
+    session_state からキーを消しても駄目で、st.rerun() はフロント側が
+    持っているウィジェットの値をそのまま送り直してくる。
+    key 自体を変えて**別のウィジェットにする**しかない。
+
+    追従しないとどうなるか: multiselect が古い値（空）を返し、直後の
+    `an_peers = _selected_peers` がそれで上書きするので、
+    **足した比較施設がその場で消える**。
+    """
+    return f"{PEERS_WIDGET}_{int(st.session_state.get(PEER_NONCE, 0))}"
+
+
+def add_peer(name: str) -> bool:
+    """比較施設に1件足す。足せたら True。"""
+    name = (name or "").strip()
+    if not name:
+        return False
+    peers = list(st.session_state.get(PEERS_KEY) or [])
+    if name in peers or len(peers) >= MAX_PEERS:
+        return False
+    peers.append(name)
+    st.session_state[PEERS_KEY] = peers
+    st.session_state["an_mode"] = "compare"
+    # 検索欄と multiselect を組み直させるため、次の描画では別の key にする
+    st.session_state[PEER_NONCE] = int(st.session_state.get(PEER_NONCE, 0)) + 1
+    return True
+
+
 def _kz_pull(conn, key: str, query: str) -> bool:
     """完了分をKAIZODEから取り込み、対象施設が入れば分析対象にセット。成功時 True。"""
     try:
@@ -87,10 +143,18 @@ def _kz_pull(conn, key: str, query: str) -> bool:
         data.clear_list_caches()
         _stats = db.facility_stats(conn, query)
         if _stats and _stats["n_reviews"] > 0:
+            _ong = st.session_state.get(f"an_kz_ongoing::{query}") or {}
+            if _ong.get("role") == "peer":
+                # 比較施設として集めた場合は、**分析対象を差し替えない**。
+                # 選択中の比較施設に足して、設定画面に留まる。
+                st.session_state.pop(f"an_kz_ongoing::{query}", None)
+                add_peer(query)
+                st.success(f"✅ 「{query}」を比較施設に追加しました。")
+                st.rerun()
+                return True
             st.session_state["an_target"] = query
             # 「集めて分析する」から始めた場合は、取り込んだらそのまま分析へ。
             # ここで止めると、待った末にもう一度ボタンを押させることになる。
-            _ong = st.session_state.get(f"an_kz_ongoing::{query}") or {}
             if _ong.get("auto_analyze"):
                 st.session_state.pop(f"an_kz_ongoing::{query}", None)
                 st.session_state["an_screen"] = "running"
@@ -296,6 +360,91 @@ def _kz_collect_section(conn, query: str) -> None:
             st.rerun()
 
 
+def _peer_add_panel(conn, names: list, target: str, selected: list) -> None:
+    """比較施設を、対象施設と同じ道筋で足す。
+
+    これまでは **DBに入っている施設からしか選べなかった**。対象施設のほうは
+    「名前かURLを入れる → 口コミの有無を見る → 候補を選ぶ → 確認して集める」
+    まで通っているのに、比較施設だけ手前で止まっていた。
+    同じ onboard.plan / _collect_flow に載せて、判定から取得まで揃える。
+
+    対象施設と違うのは着地点だけ:
+      - すでに口コミがある     → その場で比較施設に追加
+      - 無い / DBにない       → 収集して、取り込めたら比較施設に追加
+      - 分析画面には遷移しない（設定を続けている最中なので）
+    """
+    if len(selected) >= MAX_PEERS:
+        st.caption(f"比較施設は最大 {MAX_PEERS} 件です。")
+        return
+
+    # 追加した直後は検索欄を空に戻す。残しておくと、次に開いたときに
+    # 前の施設名でまた検索が走る（候補検索は課金される）。
+    #   session_state からキーを消すだけでは戻らない。ウィジェットは
+    #   自前の状態を持っていて、同じ key なら前の値を復元する。
+    #   **key ごと変える**（＝別のウィジェットにする）のが確実。
+    _nonce = int(st.session_state.get(PEER_NONCE, 0))
+    _box = f"{PEER_SEARCH}_{_nonce}"
+    # Enter を押すと再実行されるので、expanded=False のままだと
+    # **検索するたびにパネルが閉じる**。入力が残っている間は開けておく。
+    _expanded = (bool((st.session_state.get(_box) or "").strip())
+                 or bool(st.session_state.pop("an_peer_reopen", False)))
+
+    with st.expander("➕ 比較施設を探して追加（DBに無い施設も）",
+                     expanded=_expanded):
+        _q = st.text_input(
+            "施設名 または Google マップのURL",
+            key=_box,
+            placeholder="施設名、または Google マップのURL（Enterで検索）",
+        )
+        _qs = (_q or "").strip()
+        if not _qs:
+            return
+        if _qs == target:
+            st.warning("分析対象と同じ施設です。")
+            return
+        if _qs in selected:
+            st.info(f"「{_qs}」はすでに比較施設に入っています。")
+            return
+
+        _plan = onboard.plan(conn, _qs, names=names,
+                             gmaps_key=places.get_api_key())
+
+        # すでに口コミがある → 集めずに足すだけ
+        if _plan.action == onboard.READY:
+            st.success(f"「{_plan.facility}」は口コミ {_plan.n_reviews:,} 件あります。")
+            if st.button(f"「{_plan.facility}」を比較施設に追加",
+                         type="primary", width="stretch", key="an_peer_add_ready"):
+                if add_peer(_plan.facility):
+                    st.session_state["an_peer_reopen"] = True
+                    st.rerun()
+                else:
+                    st.warning("追加できませんでした（上限か、すでに選択済み）。")
+            return
+
+        if _plan.action == onboard.AMBIGUOUS:
+            st.caption("どの施設ですか？")
+            for _n in _plan.candidates:
+                if st.button(_n, key=f"an_peer_sug_{_n}", width="stretch"):
+                    if add_peer(_n):
+                        st.session_state["an_peer_reopen"] = True
+                        st.rerun()
+            return
+
+        if _plan.action == onboard.NOT_FOUND:
+            st.info("施設名を入力してください。")
+            return
+
+        # ここから先は収集が要る（EMPTY / NEW）＝ 対象施設とまったく同じ道
+        if not st.session_state.get("admin_authed"):
+            st.info("この施設の収集にはログイン（管理者）が必要です。")
+            return
+        _kzkey = _resolve_kaizode_key()
+        if not _kzkey:
+            st.warning("KAIZODE APIキーが未設定です（管理 → 📡 KAIZODE連携）。")
+            return
+        _collect_flow(conn, _plan, _kzkey, role="peer")
+
+
 def _onboard_panel(conn, p, meta: dict) -> None:
     """onboard.plan の判定に従って、次の1手ぶんだけを出す。
 
@@ -370,7 +519,7 @@ def _candidate_card_html(c, chosen: bool = False) -> str:
     )
 
 
-def _url_flow(conn, p, kzkey: str, link, gmkey: str) -> None:
+def _url_flow(conn, p, kzkey: str, link, gmkey: str, role: str = "target") -> None:
     """Google マップの場所URLが貼られたときの確認 → 発注。
 
     URL は**そのまま**KAIZODE に渡す。こちらで place_id から組み直すと
@@ -415,25 +564,24 @@ def _url_flow(conn, p, kzkey: str, link, gmkey: str) -> None:
 
     if _pf.blocked:
         st.button("枠が足りません", disabled=True, width="stretch",
-                  key="an_url_blocked")
+                  key=f"an_url_blocked_{role}")
         return
-    if st.button("この施設の口コミを集めて分析する", type="primary",
-                 width="stretch", key="an_url_collect"):
+    if st.button(_collect_label(role), type="primary",
+                 width="stretch", key=f"an_url_collect_{role}"):
         p.facility = _name
         p.place_id = (_near.place_id if _near else link.place_id) or ""
-        _reg = onboard.register(conn, p)
+        _reg = onboard.register(conn, p, ftype=_ftype(role))
         _dsid = _kz_order(conn, kzkey, link.url, _reg)   # ← 貼られたURLをそのまま
         if _dsid:
             data.clear_list_caches()
             st.session_state[f"an_kz_ongoing::{_reg}"] = {
-                "dataset_id": _dsid, "facility_name": _reg, "auto_analyze": True,
+                "dataset_id": _dsid, "facility_name": _reg,
+                "auto_analyze": role == "target", "role": role,
             }
-            st.session_state["an_target"] = _reg
+            if role == "target":
+                st.session_state["an_target"] = _reg
             st.rerun()
-    st.caption(
-        f"押すと、施設を登録 → 口コミを収集 → 取り込み → 分析まで自動で進みます"
-        f"（残枠 {_pf.remaining:,} 件）"
-    )
+    st.caption(_collect_note(role, _pf.remaining))
 
 
 def _nearest(cands: list, link):
@@ -455,7 +603,7 @@ def _nearest(cands: list, link):
     return partial[0] if partial else None
 
 
-def _collect_flow(conn, p, kzkey: str) -> None:
+def _collect_flow(conn, p, kzkey: str, role: str = "target") -> None:
     """施設名 → Google で候補を検索 → 候補を選ぶ → 確認 → 発注。
 
     以前はボタン1つで「登録 → 発注 → 取り込み → 分析」まで走り切っていた。
@@ -463,14 +611,14 @@ def _collect_flow(conn, p, kzkey: str) -> None:
     誰も見ないまま**始まっていた。3→4 の間に確認を挟む。
     """
     _gmkey = places.get_api_key()
-    _pick_key = f"an_pick::{p.query}"
+    _pick_key = f"an_pick::{role}::{p.query}"
 
     # ── URL が貼られた場合 ─────────────────────────────────── #
     #   KAIZODE は「マップで施設を開いたときのURL」を正とする。
     #   貼られたものは**作り直さずそのまま**渡す。件数の確認だけ Places に聞く。
     _link = maps_link.parse(p.query)
     if _link:
-        _url_flow(conn, p, kzkey, _link, _gmkey)
+        _url_flow(conn, p, kzkey, _link, _gmkey, role)
         return
 
     # ── STEP 2-3: Google 上の候補 ───────────────────────────── #
@@ -489,7 +637,8 @@ def _collect_flow(conn, p, kzkey: str) -> None:
         st.caption("この施設で合っていますか？")
         for _i, _c in enumerate(_cands):
             _html(_candidate_card_html(_c))
-            if st.button("この施設にする", key=f"an_pick_{_i}", width="stretch"):
+            if st.button("この施設にする", key=f"an_pick_{role}_{_i}",
+                         width="stretch"):
                 st.session_state[_pick_key] = _c.place_id
                 st.rerun()
         return
@@ -516,35 +665,33 @@ def _collect_flow(conn, p, kzkey: str) -> None:
 
     _b_back, _b_go = st.columns([1, 2])
     with _b_back:
-        if st.button("選び直す", key="an_pick_back", width="stretch"):
+        if st.button("選び直す", key=f"an_pick_back_{role}", width="stretch"):
             st.session_state.pop(_pick_key, None)
             st.rerun()
     with _b_go:
         if _pf.blocked:
             st.button("枠が足りません", disabled=True, width="stretch",
-                      key="an_go_blocked")
-        elif st.button("この施設の口コミを集めて分析する", type="primary",
-                       width="stretch", key="an_go_collect"):
+                      key=f"an_go_blocked_{role}")
+        elif st.button(_collect_label(role), type="primary",
+                       width="stretch", key=f"an_go_collect_{role}"):
             if _sel:
                 p.place_id = _sel.place_id
                 p.facility = _name
                 p.maps_url = _sel.maps_url
-            _reg = onboard.register(conn, p)
+            _reg = onboard.register(conn, p, ftype=_ftype(role))
             _dsid = _kz_order(conn, kzkey, onboard.collect_url(p), _reg)
             if _dsid:
                 data.clear_list_caches()
                 st.session_state.pop(_pick_key, None)
-                # ここから先は自動: 収集を待つ → 取り込む → 分析を始める
+                # ここから先は自動: 収集を待つ → 取り込む → 分析（または比較施設へ追加）
                 st.session_state[f"an_kz_ongoing::{_reg}"] = {
                     "dataset_id": _dsid, "facility_name": _reg,
-                    "auto_analyze": True,
+                    "auto_analyze": role == "target", "role": role,
                 }
-                st.session_state["an_target"] = _reg
+                if role == "target":
+                    st.session_state["an_target"] = _reg
                 st.rerun()
-    st.caption(
-        f"押すと、施設を登録 → 口コミを収集 → 取り込み → 分析まで自動で進みます"
-        f"（残枠 {_pf.remaining:,} 件）"
-    )
+    st.caption(_collect_note(role, _pf.remaining))
 
 
 # ── Background thread: steps ③–⑥ ─────────────────────────────────────────── #
@@ -1142,12 +1289,13 @@ def render():
                             options=_others,
                             default=_prev_sel,
                             max_selections=5,
-                            key="an_peers_multi",
+                            key=peer_widget_key(),
                             placeholder="施設名を入力して絞り込む...",
                         )
                         st.session_state["an_peers"] = _selected_peers
                         st.session_state["an_mode"] = "compare" if _selected_peers else "single"
                         st.session_state["an_axis_label"] = "比較施設の平均"
+                        _peer_add_panel(conn, _names, _target, _selected_peers)
                         if not _selected_peers:
                             _run_block = (
                                 "比較する施設を1件以上選んでください。"
@@ -1156,9 +1304,13 @@ def render():
                                 "「📊 マーケット比較」を選んでください）。"
                             )
                     else:
-                        st.info("比較できる施設がありません。単体分析で実行します。")
+                        st.info(
+                            "DBに比較できる施設がまだありません。"
+                            "下から探して追加できます。"
+                        )
                         st.session_state["an_mode"] = "single"
                         st.session_state["an_peers"] = []
+                        _peer_add_panel(conn, _names, _target, [])
                 else:
                     st.caption(
                         f"比較対象: DB内の全施設（{len(_others)} 施設）"
