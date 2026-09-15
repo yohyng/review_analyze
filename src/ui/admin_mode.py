@@ -25,7 +25,8 @@ from .markup import html as _html
 
 from src import (
     analysis, auth, charts, config, csv_profiler, db, dummy_data, geocode,
-    images, kaizode, llm, preview, report, review_csv, score_excel, scoring,
+    images, kaizode, llm, places_usage, preview, report, review_csv,
+    score_excel, scoring,
     places, search, text_analysis, topic_score, topics, warmup,
 )
 from src.ui import components, data
@@ -1917,6 +1918,38 @@ GOOGLE_MAPS_API_KEY = "AIza..."
                         st.rerun()
                     else:
                         st.warning("APIキーを入力してください。")
+        # ── 呼び出し回数の帳簿 ──────────────────────────────── #
+        #    Google 側に「今月いくら使ったか」を安く聞く口が無いので、
+        #    呼んだ本人が数える。金額は断定しない（SKU階層は料金表が正）。
+        _pu = places_usage.usage(conn)
+        _pu_total = sum(_pu.values())
+        st.markdown(f"**今月の呼び出し: {_pu_total:,} 回**"
+                    f"（{places_usage.current_month()}・UTC基準）")
+        if _pu:
+            st.dataframe(
+                pd.DataFrame([
+                    {"呼び出しの種類": places.KIND_LABELS.get(_k, _k),
+                     "回数": _v}
+                    for _k, _v in sorted(_pu.items(), key=lambda kv: -kv[1])
+                ]),
+                width="stretch", hide_index=True,
+            )
+            _past = [_m for _m in places_usage.months(conn, 7)
+                     if _m != places_usage.current_month()]
+            if _past:
+                st.caption("過去の月: " + "　".join(
+                    f"{_m} {places_usage.total(conn, _m):,}回" for _m in _past))
+        else:
+            st.caption("まだ呼び出しの記録がありません。")
+        st.info(
+            "数えているのは**回数と、その形**だけです。金額はここでは出しません。"
+            "Places は 2025年3月から SKU 階層（Essentials / Pro / Enterprise）"
+            "ごとに単価と無料枠が分かれていて、どの階層になるかは要求した"
+            "フィールドで決まります。**実際の階層と金額は "
+            "Google Cloud の請求画面が正**なので、この回数と突き合わせて"
+            "確認してください。予算アラートの設定も勧めます。"
+        )
+
         st.checkbox(
             "分析プレビューで施設写真を自動取得する",
             value=st.session_state.get("use_places_photos", True),

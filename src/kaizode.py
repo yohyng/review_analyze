@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
-from .review_csv import ParsedReview
+from .review_csv import ParsedReview, disambiguate_ids, fallback_id
 
 DEFAULT_BASE_URL = "https://kaizode-v2.scorobo.ai/api/v1"
 
@@ -224,8 +224,14 @@ def to_parsed_review(r: dict) -> ParsedReview:
 
     published = (r.get("published_at") or "")[:19]
 
+    # review_id が空で返ってくることがある。空のままにすると、同じ施設の
+    # 2件目以降が UNIQUE(facility_id, review_id) に当たる（取り込み側で
+    # 弾くようにしたので、いまは**黙って skip される**＝口コミが消える）。
+    # CSV と同じ代用IDを振っておく。重なりは disambiguate_ids が分ける。
+    rid = str(r.get("review_id") or "").strip()
     return ParsedReview(
-        review_id=str(r.get("review_id") or ""),
+        review_id=rid or fallback_id(text, published,
+                                     (r.get("publisher_name") or "").strip()),
         rating=rating,
         text=text,
         review_date=published,
@@ -455,9 +461,9 @@ def sync_datasets(
 
         for fac_name, revs in sorted(by_fac.items()):
             fid = _db.upsert_facility(conn, fac_name, ftype=ftype, category=category)
-            ins, skip = _db.insert_reviews(
-                conn, fid, [to_parsed_review(r) for r in revs]
-            )
+            parsed = [to_parsed_review(r) for r in revs]
+            disambiguate_ids(parsed)     # 代用IDが重なったぶんを分ける
+            ins, skip = _db.insert_reviews(conn, fid, parsed)
             total_ins += ins
             total_skip += skip
             log(f"　　{fac_name}: {len(revs)}件 (新規{ins}/重複{skip})")

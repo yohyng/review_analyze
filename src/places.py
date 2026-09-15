@@ -80,6 +80,41 @@ def _session_key(name: str) -> str:
         return ""
 
 
+# 呼び出しの種類。FieldMask が SKU 階層を決めるので、**形ごとに分けて数える**。
+# （階層の対応は Google の料金表が正。ここでは断定しない）
+KIND_SEARCH_ID = "search_id"        # Text Search / places.id だけ
+KIND_SEARCH_BASIC = "search_basic"  # Text Search / 名前・住所
+KIND_SEARCH_FULL = "search_full"    # Text Search / 件数・評価・正規URL つき
+KIND_DETAILS = "details"            # Place Details / 写真・住所・件数
+KIND_PHOTO = "photo"                # Place Photos / 画像そのもの
+
+KIND_LABELS = {
+    KIND_SEARCH_ID: "施設ID検索（places.id のみ）",
+    KIND_SEARCH_BASIC: "施設検索（名前・住所）",
+    KIND_SEARCH_FULL: "候補検索（口コミ数・評価つき）",
+    KIND_DETAILS: "施設詳細（写真・住所・口コミ数）",
+    KIND_PHOTO: "写真の取得",
+}
+
+_recorder = None
+
+
+def set_recorder(fn) -> None:
+    """呼び出しを1回ぶん記録する関数を差す。places_usage.install() が呼ぶ。"""
+    global _recorder
+    _recorder = fn
+
+
+def _record(kind: str) -> None:
+    """**絶対に失敗させない**。帳簿のために写真や検索を止めては本末転倒。"""
+    if _recorder is None:
+        return
+    try:
+        _recorder(kind)
+    except Exception:
+        pass
+
+
 def get_api_key() -> str:
     """環境変数 → Streamlit secrets → 管理画面でのセッション入力、の順に探す。
 
@@ -193,6 +228,7 @@ def find_place_id(name: str, api_key: str) -> str | None:
     if not (name or "").strip() or not api_key:
         return None
     try:
+        _record(KIND_SEARCH_ID)
         data = _post(_SEARCH_URL, api_key, "places.id",
                      {"textQuery": name.strip(), "languageCode": "ja",
                       "maxResultCount": 1})
@@ -234,6 +270,7 @@ def resolve(name: str, api_key: str) -> Resolved | None:
     if not (name or "").strip() or not api_key:
         return None
     try:
+        _record(KIND_SEARCH_BASIC)
         data = _post(_SEARCH_URL, api_key,
                      "places.id,places.displayName,places.formattedAddress",
                      {"textQuery": name.strip(), "languageCode": "ja",
@@ -293,6 +330,7 @@ def search_candidates(name: str, api_key: str, *,
     if not (name or "").strip() or not api_key:
         return []
     try:
+        _record(KIND_SEARCH_FULL)
         data = _post(
             _SEARCH_URL, api_key,
             "places.id,places.displayName,places.formattedAddress,"
@@ -342,8 +380,12 @@ def fetch_details(place_id: str, api_key: str, *,
     if not place_id or not api_key:
         return Details()
     try:
-        # userRatingCount / rating は photos と同じ Pro 階層なので、
-        # ここに足しても課金は変わらない（住所と同じ相乗り）。
+        # formattedAddress は photos と同じ階層なので相乗りできる。
+        # userRatingCount / rating は**上の階層に入る可能性がある**
+        # （2025年3月からのSKU区分。この開発環境からは料金表に到達できず
+        #   確かめられなかった）。回数は places_usage に残るので、
+        #   実際の階層は Google Cloud の請求画面で突き合わせること。
+        _record(KIND_DETAILS)
         data = _get(_DETAILS_URL.format(place_id=place_id), api_key,
                     "photos,formattedAddress,userRatingCount,rating")
     except Exception:
@@ -392,6 +434,7 @@ def fetch_photo_data_uri(photo_name: str, api_key: str, *,
     import requests    # noqa: PLC0415
 
     try:
+        _record(KIND_PHOTO)
         resp = requests.get(
             _MEDIA_URL.format(photo_name=photo_name),
             params={"maxWidthPx": int(max_px)},

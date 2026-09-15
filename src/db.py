@@ -381,6 +381,14 @@ CREATE TABLE IF NOT EXISTS kaizode_usage (
     updated_at      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS places_usage (
+    month           TEXT NOT NULL,             -- 'YYYY-MM'
+    kind            TEXT NOT NULL,             -- 呼び出しの種類（places.KIND_*）
+    calls           INTEGER NOT NULL DEFAULT 0,
+    updated_at      TEXT,
+    PRIMARY KEY (month, kind)
+);
+
 CREATE TABLE IF NOT EXISTS topic_score_cache (
     facility_id   INTEGER NOT NULL REFERENCES facility(id) ON DELETE CASCADE,
     n_reviews     INTEGER NOT NULL,

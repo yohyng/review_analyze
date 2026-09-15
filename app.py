@@ -29,6 +29,7 @@ from src import (
     images,
     kaizode,
     llm,
+    places_usage,
     preview,
     report,
     review_csv,
@@ -66,6 +67,11 @@ theme.inject_global_css()
 from src.ui import admin_mode, analysis_mode, components, data
 
 conn = data.get_conn()
+
+# Google Places の呼び出し回数を数える先を繋ぐ。
+#   Google 側に「今月いくら使ったか」を安く聞く口が無いので、
+#   呼んだ本人（＝このアプリ）が数えるしかない。
+places_usage.install(conn)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

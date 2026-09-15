@@ -141,7 +141,7 @@ def _parse_subscores(cell: str) -> list[tuple[str, float]]:
 FALLBACK_PREFIX = "h:"
 
 
-def _fallback_id(text: str, date: str, reviewer: str) -> str:
+def fallback_id(text: str, date: str, reviewer: str) -> str:
     """review_id 列が無いCSV向けの代用ID。本文・日付・投稿者から作る。
 
     **ぶつかる**。「Good」「Nice」のような短い定型文は、同じ日に別の人が
@@ -271,7 +271,7 @@ def _extract_review(row: dict) -> Optional[ParsedReview]:
     date = _col(row, "review_date")
     # 'reviewer_name' (KAIZODE) or '投稿者' (simple JP format)
     reviewer = _col(row, "reviewer_name", "投稿者")
-    review_id = _col(row, "review_id") or _fallback_id(text, date, reviewer)
+    review_id = _col(row, "review_id") or fallback_id(text, date, reviewer)
     return ParsedReview(
         review_id=review_id,
         rating=_to_int(_col(row, "review_rating")),
