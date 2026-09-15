@@ -1723,6 +1723,70 @@ GOOGLE_MAPS_API_KEY = "AIza..."
             )
 
         st.divider()
+        # ── KAIZODE の取得枠 ────────────────────────────────────── #
+        #    帳簿はアプリ側で持っている（API 側ではない）。ズレたまま
+        #    残枠 0 で止まり続けることがあるので、ここで直せるようにする。
+        st.markdown("#### 📡 KAIZODE の取得枠（今月）")
+        _q_used = kaizode.get_monthly_usage(conn)
+        _q_lim = kaizode.monthly_limit(conn)
+        _q_rem = max(0, _q_lim - _q_used)
+        st.progress(min(1.0, _q_used / _q_lim) if _q_lim else 1.0,
+                    text=f"{_q_used:,} / {_q_lim:,} 件（残り {_q_rem:,}）")
+        st.caption(f"対象月: {kaizode.current_month()}（UTC基準・毎月1日に入れ替わる）")
+
+        # 残枠 0 のとき、原因は2つしかない。どちらかを名指しする。
+        if _q_lim == 0:
+            st.error("⛔ **上限が 0 件**なので新規取得は行われません。下で上げてください。")
+        elif _q_rem == 0:
+            st.error(
+                f"⚠️ **今月ぶんを使い切っています**（上限 {_q_lim:,} 件に対して "
+                f"{_q_used:,} 件）。取り込み済みの口コミ件数がそのまま計上されるため、"
+                "過去の一括取り込みで一度に超えることがあります。"
+                "枠を上げるか、下の「今月分を開放」で帳簿を 0 に戻してください。"
+            )
+
+        _ql1, _ql2 = st.columns([2, 1])
+        with _ql1:
+            _q_new = st.number_input(
+                "1か月に新規取得してよい口コミの件数",
+                min_value=kaizode.MONTHLY_LIMIT_MIN,
+                max_value=kaizode.MONTHLY_LIMIT_MAX,
+                value=_q_lim, step=1000, key="q_limit_input",
+                help="0 にすると新規取得を止められます。",
+            )
+        with _ql2:
+            _html("<div style='height:28px'></div>")
+            if st.button("上限を保存", type="primary", width="stretch",
+                         key="q_limit_save"):
+                _sv = kaizode.set_monthly_limit(conn, int(_q_new))
+                st.success(f"上限を {_sv:,} 件／月にしました。")
+                st.rerun()
+
+        _qr1, _qr2 = st.columns([2, 1])
+        with _qr1:
+            st.caption(
+                "**今月分を開放** … 今月の取得件数の帳簿を 0 に戻します。"
+                "KAIZODE 側の契約枠が減るわけではありません（数えているのは"
+                "このアプリだけです）。実際の契約枠を超えないか確認してから"
+                "実行してください。"
+            )
+        with _qr2:
+            _html("<div style='height:8px'></div>")
+            if st.session_state.get("q_reset_confirm"):
+                if st.button(f"🔓 {_q_used:,} 件を 0 に戻す", type="primary",
+                             width="stretch", key="q_reset_do"):
+                    kaizode.reset_monthly_usage(conn)
+                    st.session_state.pop("q_reset_confirm", None)
+                    st.success(f"今月分を開放しました（残枠 {_q_lim:,} 件）。")
+                    st.rerun()
+                if st.button("やめる", width="stretch", key="q_reset_no"):
+                    st.session_state.pop("q_reset_confirm", None)
+                    st.rerun()
+            elif st.button("今月分を開放", width="stretch", key="q_reset"):
+                st.session_state["q_reset_confirm"] = True
+                st.rerun()
+
+        st.divider()
         # ── Gemini（LLMインサイト・ページ要約）────────────────────── #
         #    KAIZODE と同じ形。恒久設定は secrets/環境変数を推奨し、
         #    無ければ**セッション限り**の入力を受ける（DB・ファイルには残さない）。

@@ -7,6 +7,8 @@ API 側に問い合わせる仕組みは無いので、ここが唯一の台帳�
 """
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from src import db, kaizode
@@ -331,3 +333,57 @@ def test_count_reviews_returns_none_when_unavailable():
 
     c = KaizodeClient(api_key="K", session=_Sess(), min_interval=0)
     assert c.count_reviews("d1") is None
+
+
+# --------------------------------------------------------------------------- #
+# 枠の開放（帳簿の手直し）
+# --------------------------------------------------------------------------- #
+def test_remaining_pins_to_zero_after_a_big_import(tmp_path):
+    """残枠が 0 のまま戻らなくなる筋道を、そのまま再現する。
+
+    一括で 32,497 件を取り込むと、上限 10,000 件を大きく超える。
+    帳簿は減らないので、その月はずっと残枠 0 で止まる。
+    """
+    conn = _conn(tmp_path)
+    kaizode.add_monthly_usage(conn, 32_497)
+    assert kaizode.monthly_remaining(conn) == 0
+    assert kaizode.get_monthly_usage(conn) == 32_497
+
+
+def test_reset_releases_this_month(tmp_path):
+    conn = _conn(tmp_path)
+    kaizode.add_monthly_usage(conn, 32_497)
+    assert kaizode.reset_monthly_usage(conn) == 0
+    assert kaizode.monthly_remaining(conn) == kaizode.monthly_limit(conn)
+
+
+def test_reset_touches_only_the_given_month(tmp_path):
+    """先月ぶんの記録は残す（実績として見たいので）。"""
+    conn = _conn(tmp_path)
+    kaizode.add_monthly_usage(conn, 500, month="2026-08")
+    kaizode.add_monthly_usage(conn, 900, month="2026-09")
+    kaizode.reset_monthly_usage(conn, month="2026-09")
+    assert kaizode.get_monthly_usage(conn, "2026-08") == 500
+    assert kaizode.get_monthly_usage(conn, "2026-09") == 0
+
+
+def test_set_usage_replaces_rather_than_adds(tmp_path):
+    conn = _conn(tmp_path)
+    kaizode.add_monthly_usage(conn, 900)
+    assert kaizode.set_monthly_usage(conn, 100) == 100
+    assert kaizode.set_monthly_usage(conn, -5) == 0       # 負は 0 に丸める
+
+
+def test_reset_is_confirmed_before_it_runs():
+    """一発で消えないこと（帳簿なので、押し間違いを戻せない）。"""
+    src = pathlib.Path("src/ui/admin_mode.py").read_text(encoding="utf-8")
+    assert 'st.session_state["q_reset_confirm"] = True' in src
+    assert src.index('st.session_state["q_reset_confirm"] = True') > \
+        src.index("kaizode.reset_monthly_usage(conn)")   # 確認が後段の分岐
+
+
+def test_zero_remaining_names_which_cause_it():
+    """上限 0 と使い切りは別物。画面でどちらかを名指しすること。"""
+    src = pathlib.Path("src/ui/admin_mode.py").read_text(encoding="utf-8")
+    assert "**上限が 0 件**" in src
+    assert "**今月ぶんを使い切っています**" in src

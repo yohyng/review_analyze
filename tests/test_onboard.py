@@ -164,6 +164,12 @@ def _panel_src() -> str:
     return src[src.index("def _onboard_panel"):src.index("# ── Background thread")]
 
 
+def _flow_src() -> str:
+    """候補を選んで確認してから発注する部分。"""
+    src = _ui_src()
+    return src[src.index("def _collect_flow"):src.index("# ── Background thread")]
+
+
 def test_hero_uses_the_plan_instead_of_hand_rolled_branches():
     src = _ui_src()
     assert "onboard.plan(" in src
@@ -172,12 +178,43 @@ def test_hero_uses_the_plan_instead_of_hand_rolled_branches():
 
 
 def test_collect_button_registers_orders_and_starts_the_analysis():
-    """1クリックで「登録 → 発注 → 自動で待つ → 分析」まで繋がっていること。"""
-    panel = _panel_src()
-    assert "onboard.register(conn, p)" in panel
-    assert "_kz_order(" in panel
-    assert '"auto_analyze": True' in panel
-    assert 'st.session_state["an_target"] = _name' in panel
+    """確認を通したあとは「登録 → 発注 → 自動で待つ → 分析」まで繋がること。"""
+    flow = _flow_src()
+    assert "onboard.register(conn, p)" in flow
+    assert "_kz_order(" in flow
+    assert '"auto_analyze": True' in flow
+    assert 'st.session_state["an_target"] = _reg' in flow
+
+
+def test_ordering_is_gated_on_the_preflight():
+    """枠が足りないときに発注ボタンを押させないこと。
+
+    発注は取り消せず、取り込みは月の枠を減らす。ここが外れると
+    「施設名を入れたら勝手に集まっていた」に戻る。
+    """
+    flow = _flow_src()
+    assert "precheck.build(" in flow
+    assert "if _pf.blocked:" in flow
+    # ブロック時の分岐が発注より先に来ていること（後ろだと素通りする）
+    assert flow.index("if _pf.blocked:") < flow.index("_kz_order(")
+
+
+def test_candidates_are_shown_before_ordering():
+    """施設名 → 候補（口コミ数つき）→ 選ぶ → 確認、の順であること。"""
+    flow = _flow_src()
+    assert "_gmaps_candidates(" in flow
+    assert "この施設にする" in flow
+    # 候補を出している間は発注まで進まない
+    assert "return" in flow[flow.index("この施設にする"):flow.index("precheck.build(")]
+
+
+def test_candidate_search_is_cached():
+    """Streamlit は操作のたびに全体を再実行する。素で呼ぶと毎回課金される。"""
+    src = _ui_src()
+    at = src.index("def _gmaps_candidates")
+    assert src[:at].rstrip().endswith(")") and "@st.cache_data(" in src[at - 200:at]
+    # 画面側が places.search_candidates を直に叩いていないこと
+    assert src.count("places.search_candidates(") == 1
 
 
 def test_import_chains_into_the_analysis_when_started_in_one_click():
@@ -190,9 +227,14 @@ def test_import_chains_into_the_analysis_when_started_in_one_click():
 
 def test_unresolved_places_are_flagged_before_ordering():
     """収集枠を使う操作なので、施設を特定できていないことは隠さない。"""
-    panel = _panel_src()
-    assert "同名の別施設を拾う可能性" in panel
-    assert "残枠" in panel
+    from src import precheck
+
+    pf = precheck.build(facility="X", place_id="", review_count=500,
+                        remaining=9000, limit=10000)
+    _id = next(c for c in pf.checks if c.key == "identity")
+    assert not _id.ok
+    assert "同名の別施設" in _id.detail
+    assert "残枠" in _flow_src()
 
 
 def test_ready_path_does_not_touch_kaizode():

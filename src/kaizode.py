@@ -541,6 +541,29 @@ def add_monthly_usage(conn, n: int, month: Optional[str] = None) -> int:
     return get_monthly_usage(conn, month)
 
 
+def set_monthly_usage(conn, n: int, month: Optional[str] = None) -> int:
+    """当月の取得件数を n に**置き換える**（加算ではない）。
+
+    帳簿はアプリ側で持っているので、KAIZODE 側の実績とはズレうる
+    （取り込みの途中でプロセスが落ちた、契約枠を買い増した、など）。
+    ズレたまま残枠 0 で止まり続けるのを人の手で直せるようにしておく。
+    """
+    month = month or current_month()
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT OR REPLACE INTO kaizode_usage(month, downloaded, updated_at) "
+        "VALUES (?, ?, ?)",
+        (month, max(0, int(n)), ts),
+    )
+    conn.commit()
+    return get_monthly_usage(conn, month)
+
+
+def reset_monthly_usage(conn, month: Optional[str] = None) -> int:
+    """当月の取得件数を 0 に戻す（＝枠を開放する）。戻した後の値を返す。"""
+    return set_monthly_usage(conn, 0, month)
+
+
 def monthly_limit(conn) -> int:
     """当月の新規取得上限。DBの設定を優先し、無ければ既定値。
 

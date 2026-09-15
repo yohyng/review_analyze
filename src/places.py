@@ -252,6 +252,74 @@ def resolve(name: str, api_key: str) -> Resolved | None:
 
 
 @dataclass
+class Candidate:
+    """検索で出てきた Google 上の施設の候補、1件ぶん。
+
+    「施設名を入れる → 候補を見る → これでいい、と決めてから集める」
+    ための材料。件数と評価を並べるのは、**KAIZODE に発注する前に**
+    同名の別施設や支店を取り違えていないかを人が確かめられるようにするため
+    （発注は取り消せないうえ、月の取得枠を減らす）。
+
+    review_count / rating は **保存しないこと**（place_id 以外は都度取得）。
+    """
+    place_id: str
+    name: str = ""
+    address: str = ""
+    review_count: int | None = None
+    rating: float | None = None
+    # Google 自身が返す、その施設の正規URL。
+    # KAIZODE は「マップで施設を開いたときのURL」を正とするため、
+    # こちらを優先して渡す（?q=place_id:… では拾えない場合がある）。
+    maps_uri: str = ""
+
+    @property
+    def maps_url(self) -> str:
+        return self.maps_uri or maps_url(self.place_id)
+
+
+def search_candidates(name: str, api_key: str, *,
+                      limit: int = 5) -> list["Candidate"]:
+    """施設名から候補を複数返す。件数の多い順。
+
+    resolve() は先頭1件を黙って採る。こちらは人に選ばせるためのもので、
+    同名の別館・支店を取り違えたまま発注する事故を防ぐのが目的。
+
+    **課金の注意**: userRatingCount / rating は Text Search の中でも上の
+    SKU 階層に入る可能性が高い（2025年3月からのSKU区分）。ここは
+    「集める前に1回」しか呼ばない前提で、呼び出し側でキャッシュすること。
+    実際にどの階層で課金されたかは Google Cloud の請求画面で確かめてほしい
+    （この開発環境からは料金表に到達できず、机上で断定できない）。
+    """
+    if not (name or "").strip() or not api_key:
+        return []
+    try:
+        data = _post(
+            _SEARCH_URL, api_key,
+            "places.id,places.displayName,places.formattedAddress,"
+            "places.userRatingCount,places.rating,places.googleMapsUri",
+            {"textQuery": name.strip(), "languageCode": "ja",
+             "maxResultCount": max(1, min(int(limit), 20))},
+        )
+    except Exception:
+        return []
+    out: list[Candidate] = []
+    for p in (data.get("places") or []):
+        if not p.get("id"):
+            continue
+        out.append(Candidate(
+            place_id=p["id"],
+            name=(p.get("displayName") or {}).get("text", "") or "",
+            address=p.get("formattedAddress", "") or "",
+            review_count=p.get("userRatingCount"),
+            rating=p.get("rating"),
+            maps_uri=p.get("googleMapsUri", "") or "",
+        ))
+    # 件数の多い順。不明は末尾に置く（選ばせる材料が無いので）。
+    out.sort(key=lambda c: (c.review_count is None, -(c.review_count or 0)))
+    return out
+
+
+@dataclass
 class Details:
     """表示に使う施設情報。いずれも保存せず、都度取得する。"""
     photo: Photo | None = None

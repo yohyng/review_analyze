@@ -23,7 +23,8 @@ from .markup import html as _html
 
 from src import (
     analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
-    llm, onboard, places, preview, report, review_csv, score_excel, scoring, search,
+    llm, maps_link, onboard, places, precheck, preview, report, review_csv,
+    score_excel, scoring, search,
     discussion, slides, text_analysis, timeline, topic_score, topics, voices,
 )
 from src.ui import components, data
@@ -50,6 +51,18 @@ def _status_to_progress(status: int) -> tuple[int, str]:
     }
     progress_map = {10: 33, 20: 66, 30: 100, 40: 0}
     return progress_map.get(status, 0), labels.get(status, "不明")
+
+
+@st.cache_data(ttl=1800, show_spinner="Google で施設を検索中…")
+def _gmaps_candidates(query: str, api_key: str) -> list:
+    """候補検索のキャッシュ。**素で呼ばないこと**。
+
+    Streamlit は操作のたびにスクリプト全体を再実行する。キャッシュしないと
+    ボタンを押すたび・入力欄を触るたびに Google に1回ずつ課金される
+    （しかも件数つきの検索は上のSKU階層に入る可能性が高い）。
+    api_key を引数に含めるのはキーを変えたら引き直すため。
+    """
+    return places.search_candidates(query, api_key)
 
 
 def _kz_order(conn, key: str, url: str, name: str) -> str:
@@ -337,27 +350,201 @@ def _onboard_panel(conn, p, meta: dict) -> None:
             st.warning("KAIZODE APIキーが未設定です（管理 → 📡 KAIZODE連携）。")
             return
 
-        if not p.place_id and p.action == onboard.NEW:
-            st.caption(
-                "⚠️ Google マップで施設を特定できませんでした。名前で検索して"
-                "収集するため、同名の別施設を拾う可能性があります。"
-            )
-        if st.button(p.label, type="primary", width="stretch", key="an_go_collect"):
-            _name = onboard.register(conn, p)
-            _dsid = _kz_order(conn, _kzkey, onboard.collect_url(p), _name)
+        _collect_flow(conn, p, _kzkey)
+
+
+def _candidate_card_html(c, chosen: bool = False) -> str:
+    """候補1件ぶんの見出し。件数を主役に置く（選ぶ材料がそれなので）。"""
+    _n = f"{c.review_count:,} 件" if c.review_count is not None else "件数不明"
+    _r = f"★{c.rating:.1f}" if c.rating is not None else ""
+    _bd = "#16202B" if chosen else "#E4E3DD"
+    return (
+        f'<div style="border:1.5px solid {_bd};border-radius:12px;'
+        f'padding:10px 14px;margin:0 0 8px;background:#FFF;text-align:left;">'
+        f'<div style="font-size:15px;font-weight:800;color:#16202B;">'
+        f'{escape(c.name or "(名称不明)")}</div>'
+        f'<div style="font-size:12px;color:#8A9098;margin-top:2px;">'
+        f'{escape(c.address or "")}</div>'
+        f'<div style="font-size:13px;font-weight:700;color:#16202B;margin-top:6px;">'
+        f'口コミ {_n}　{_r}</div></div>'
+    )
+
+
+def _url_flow(conn, p, kzkey: str, link, gmkey: str) -> None:
+    """Google マップの場所URLが貼られたときの確認 → 発注。
+
+    URL は**そのまま**KAIZODE に渡す。こちらで place_id から組み直すと
+    `/maps/place/?q=place_id:…` の形になり、KAIZODE が正とする形から外れる。
+    Places に聞くのは口コミ数だけで、発注先の URL には触らない。
+    """
+    if link.short:
+        st.warning(
+            "短縮URL（maps.app.goo.gl）です。展開しないと施設を確認できません。"
+            "マップでその施設を開き、アドレスバーの長いURLを貼ってください。"
+        )
+        return
+
+    _cands = _gmaps_candidates(link.name, gmkey) if (gmkey and link.name) else []
+    _near = _nearest(_cands, link)
+
+    _html(_candidate_card_html(_near, chosen=True) if _near else
+          '<div style="border:1.5px solid #E4E3DD;border-radius:12px;padding:10px 14px;'
+          'margin:0 0 8px;background:#FFF;text-align:left;">'
+          f'<div style="font-size:15px;font-weight:800;color:#16202B;">'
+          f'{escape(link.name or p.query)}</div>'
+          '<div style="font-size:12px;color:#8A9098;margin-top:4px;">'
+          '貼られたURLで発注します</div></div>')
+
+    _name = (_near.name if _near else "") or link.name or p.query
+    _pf = precheck.build(
+        facility=_name,
+        place_id=(_near.place_id if _near else link.place_id),
+        review_count=(_near.review_count if _near else None),
+        remaining=kaizode.monthly_remaining(conn),
+        limit=kaizode.monthly_limit(conn),
+        already=onboard._review_count(conn, _name),
+    )
+    if not link.precise:
+        st.caption("⚠️ **URLが施設を1件に指していません** — マップで施設を開いた"
+                   "ときの、`/maps/place/…/data=…` を含むURLを貼ってください")
+    for _c in _pf.checks:
+        _icon = "✅" if _c.ok else ("⛔" if _c.blocking else "⚠️")
+        st.caption(f"{_icon} **{_c.label}** — {_c.detail}")
+    st.text_input("KAIZODE に渡すURL（貼られたまま）", value=link.url,
+                  key="an_url_shown", disabled=True)
+
+    if _pf.blocked:
+        st.button("枠が足りません", disabled=True, width="stretch",
+                  key="an_url_blocked")
+        return
+    if st.button("この施設の口コミを集めて分析する", type="primary",
+                 width="stretch", key="an_url_collect"):
+        p.facility = _name
+        p.place_id = (_near.place_id if _near else link.place_id) or ""
+        _reg = onboard.register(conn, p)
+        _dsid = _kz_order(conn, kzkey, link.url, _reg)   # ← 貼られたURLをそのまま
+        if _dsid:
+            data.clear_list_caches()
+            st.session_state[f"an_kz_ongoing::{_reg}"] = {
+                "dataset_id": _dsid, "facility_name": _reg, "auto_analyze": True,
+            }
+            st.session_state["an_target"] = _reg
+            st.rerun()
+    st.caption(
+        f"押すと、施設を登録 → 口コミを収集 → 取り込み → 分析まで自動で進みます"
+        f"（残枠 {_pf.remaining:,} 件）"
+    )
+
+
+def _nearest(cands: list, link):
+    """貼られたURLの施設に当たる候補。**見つからなければ None**。
+
+    件数を出すために名前で引き直しているだけで、発注先は貼られたURLのまま。
+    だから「名前が合う候補が無い」ときに先頭で代用してはいけない。
+    代用すると、別の施設の口コミ数を、貼った施設の件数として見せることになる
+    （実際それで「グオコタワー」に「国立西洋美術館 8,200件」が付いた）。
+    分からないときは分からないままにして、確認項目の側で警告させる。
+    """
+    if not cands or not link.name:
+        return None
+    exact = [c for c in cands if (c.name or "").strip() == link.name]
+    if exact:
+        return exact[0]
+    partial = [c for c in cands
+               if link.name in (c.name or "") or (c.name or "") in link.name]
+    return partial[0] if partial else None
+
+
+def _collect_flow(conn, p, kzkey: str) -> None:
+    """施設名 → Google で候補を検索 → 候補を選ぶ → 確認 → 発注。
+
+    以前はボタン1つで「登録 → 発注 → 取り込み → 分析」まで走り切っていた。
+    発注は取り消せず、取り込みは月の枠を減らすのに、**何件取るのかを
+    誰も見ないまま**始まっていた。3→4 の間に確認を挟む。
+    """
+    _gmkey = places.get_api_key()
+    _pick_key = f"an_pick::{p.query}"
+
+    # ── URL が貼られた場合 ─────────────────────────────────── #
+    #   KAIZODE は「マップで施設を開いたときのURL」を正とする。
+    #   貼られたものは**作り直さずそのまま**渡す。件数の確認だけ Places に聞く。
+    _link = maps_link.parse(p.query)
+    if _link:
+        _url_flow(conn, p, kzkey, _link, _gmkey)
+        return
+
+    # ── STEP 2-3: Google 上の候補 ───────────────────────────── #
+    if not _gmkey:
+        st.warning(
+            "Google Maps APIキーが未設定のため、候補の検索と口コミ数の確認が"
+            "できません（管理 → 🔗 連携設定）。名前だけで発注すると、同名の"
+            "別施設を拾ったまま枠を使うおそれがあります。"
+        )
+        _cands = []
+    else:
+        _cands = _gmaps_candidates(p.query or p.facility, _gmkey)
+
+    _chosen = st.session_state.get(_pick_key)
+    if _cands and not _chosen:
+        st.caption("この施設で合っていますか？")
+        for _i, _c in enumerate(_cands):
+            _html(_candidate_card_html(_c))
+            if st.button("この施設にする", key=f"an_pick_{_i}", width="stretch"):
+                st.session_state[_pick_key] = _c.place_id
+                st.rerun()
+        return
+
+    _sel = next((c for c in _cands if c.place_id == _chosen), None)
+
+    # ── STEP 4: 確認 ───────────────────────────────────────── #
+    _name = (_sel.name if _sel else "") or p.facility
+    _already = onboard._review_count(conn, _name)
+    _pf = precheck.build(
+        facility=_name,
+        place_id=(_sel.place_id if _sel else p.place_id),
+        review_count=(_sel.review_count if _sel else None),
+        remaining=kaizode.monthly_remaining(conn),
+        limit=kaizode.monthly_limit(conn),
+        already=_already,
+    )
+
+    if _sel:
+        _html(_candidate_card_html(_sel, chosen=True))
+    for _c in _pf.checks:
+        _icon = "✅" if _c.ok else ("⛔" if _c.blocking else "⚠️")
+        st.caption(f"{_icon} **{_c.label}** — {_c.detail}")
+
+    _b_back, _b_go = st.columns([1, 2])
+    with _b_back:
+        if st.button("選び直す", key="an_pick_back", width="stretch"):
+            st.session_state.pop(_pick_key, None)
+            st.rerun()
+    with _b_go:
+        if _pf.blocked:
+            st.button("枠が足りません", disabled=True, width="stretch",
+                      key="an_go_blocked")
+        elif st.button("この施設の口コミを集めて分析する", type="primary",
+                       width="stretch", key="an_go_collect"):
+            if _sel:
+                p.place_id = _sel.place_id
+                p.facility = _name
+                p.maps_url = _sel.maps_url
+            _reg = onboard.register(conn, p)
+            _dsid = _kz_order(conn, kzkey, onboard.collect_url(p), _reg)
             if _dsid:
                 data.clear_list_caches()
+                st.session_state.pop(_pick_key, None)
                 # ここから先は自動: 収集を待つ → 取り込む → 分析を始める
-                st.session_state[f"an_kz_ongoing::{_name}"] = {
-                    "dataset_id": _dsid, "facility_name": _name,
+                st.session_state[f"an_kz_ongoing::{_reg}"] = {
+                    "dataset_id": _dsid, "facility_name": _reg,
                     "auto_analyze": True,
                 }
-                st.session_state["an_target"] = _name
+                st.session_state["an_target"] = _reg
                 st.rerun()
-        st.caption(
-            f"押すと、施設を登録 → 口コミを収集 → 取り込み → 分析まで自動で進みます"
-            f"（残枠 {kaizode.monthly_remaining(conn):,} 件）"
-        )
+    st.caption(
+        f"押すと、施設を登録 → 口コミを収集 → 取り込み → 分析まで自動で進みます"
+        f"（残枠 {_pf.remaining:,} 件）"
+    )
 
 
 # ── Background thread: steps ③–⑥ ─────────────────────────────────────────── #
@@ -881,7 +1068,8 @@ def render():
                 #   入力から「次に何をすべきか」を onboard.plan が1つに決める。
                 #   画面には、その1手ぶんのボタンだけを出す。
                 _q = st.text_input(
-                    "施設名を入力", placeholder="施設名を入力（Enterで検索）",
+                    "施設名を入力",
+                    placeholder="施設名、または Google マップのURL（Enterで検索）",
                     key="an_search", label_visibility="collapsed",
                 )
                 _qs = _q.strip()

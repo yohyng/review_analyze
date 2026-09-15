@@ -67,11 +67,27 @@ def plan(conn, query: str, *, names: list[str] | None = None,
     - DB に似た名前が複数ある               → AMBIGUOUS（選ばせる）
     - どこにも無い                          → NOT_FOUND
     """
-    from . import db, places, search  # noqa: PLC0415
+    from . import db, maps_link, places, search  # noqa: PLC0415
 
     q = (query or "").strip()
     if not q:
         return Plan(action=NOT_FOUND, query=q)
+
+    # マップのURLが貼られたとき。**Places に投げない**。
+    #   URL をそのまま textQuery にすると、意味のない検索に毎回課金される
+    #   （Streamlit は操作のたびに全体を再実行するので効いてくる）。
+    #   URL は KAIZODE にそのまま渡すのが正なので、ここでは名前だけ拾う。
+    link = maps_link.parse(q)
+    if link:
+        _nm = link.name or q
+        _ex = next((n for n in (names or []) if n == _nm), None)
+        if _ex:
+            _n_rev = _review_count(conn, _ex)
+            if _n_rev:
+                return Plan(action=READY, query=q, facility=_ex,
+                            n_reviews=_n_rev, display_name=_ex)
+        return Plan(action=NEW, query=q, facility=_nm, display_name=_nm,
+                    place_id=link.place_id, maps_url=link.url)
 
     if names is None:
         names = [r["name"] for r in
