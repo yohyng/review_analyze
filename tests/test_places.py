@@ -26,6 +26,11 @@ class _FakeResp:
         self.content = content
         self.headers = headers or {}
 
+    @property
+    def text(self):          # 本物の Response にはあるので、偽物にも持たせる
+        import json
+        return json.dumps(self._payload, ensure_ascii=False)
+
     def raise_for_status(self):
         if self.status_code >= 400:
             raise requests.exceptions.HTTPError(str(self.status_code))
@@ -427,3 +432,100 @@ def test_api_key_never_reaches_the_rendered_slide(monkeypatch):
     import json
     assert SECRET not in json.dumps(bundle, ensure_ascii=False)
     assert "key=" not in json.dumps(bundle, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------- #
+# APIキーの読み出し順と、管理画面での入力
+# --------------------------------------------------------------------------- #
+class _Boom:
+    """secrets.toml がどこにも無い環境の st.secrets。
+
+    Streamlit は get() でも StreamlitSecretNotFoundError を投げる
+    （空を返すのではない）。これが session_state の読み出しと同じ try に
+    入っていると、**入力した鍵が一度も読まれない**。
+    """
+
+    def get(self, *_a, **_k):
+        raise RuntimeError("No secrets found")
+
+
+@pytest.fixture
+def no_secrets(monkeypatch):
+    import streamlit as st
+
+    monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(st, "secrets", _Boom(), raising=False)
+    monkeypatch.setattr(st, "session_state", {}, raising=False)
+    return st
+
+
+def test_session_key_read_even_without_secrets_toml(no_secrets):
+    """secrets.toml が無くても、管理画面で入れた鍵が効くこと（回帰）。"""
+    assert places.get_api_key() == ""
+    assert places.api_key_source() == ""
+
+    no_secrets.session_state[places.SESSION_KEY] = "AIzaFromAdminScreen"
+    assert places.get_api_key() == "AIzaFromAdminScreen"
+    assert places.api_key_source() == "セッション入力"
+
+
+def test_gemini_session_key_read_even_without_secrets_toml(no_secrets):
+    """同じ形なので Gemini 側も一緒に守る。"""
+    from src import llm
+
+    assert llm.get_api_key() == ""
+    no_secrets.session_state[llm.SESSION_KEY] = "AIzaGeminiFromAdmin"
+    assert llm.get_api_key() == "AIzaGeminiFromAdmin"
+    assert llm.api_key_source() == "セッション入力"
+
+
+def test_env_beats_session(no_secrets, monkeypatch):
+    """恒久設定があるならそちらを使う（セッション入力は最後の手段）。"""
+    no_secrets.session_state[places.SESSION_KEY] = "AIzaSession"
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "AIzaEnv")
+    assert places.get_api_key() == "AIzaEnv"
+    assert places.api_key_source() == "環境変数"
+
+
+def test_ping_uses_cheapest_sku(monkeypatch):
+    """疎通確認は Text Search の「IDのみ」= 一番安いSKU で行うこと。"""
+    seen = {}
+
+    def _fake_post(url, json=None, timeout=None, headers=None):
+        seen["url"] = url
+        seen["mask"] = headers["X-Goog-FieldMask"]
+        seen["key"] = headers["X-Goog-Api-Key"]
+        return _FakeResp({"places": [{"id": "ChIJ_x"}]})
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+    ok, msg = places.ping("AIzaTest")
+    assert ok, msg
+    assert seen["url"].endswith("places:searchText")
+    assert seen["mask"] == "places.id"       # 写真やDetailsを要求しない
+    assert seen["key"] == "AIzaTest"
+
+
+def test_ping_reports_why_it_failed(monkeypatch):
+    """find_place_id は例外を握り潰すが、ping は理由を返すこと。"""
+    def _fake_post(url, json=None, timeout=None, headers=None):
+        return _FakeResp(
+            {"error": {"message": "Places API (New) has not been used"}},
+            status=403,
+        )
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+    ok, msg = places.ping("AIzaTest")
+    assert not ok
+    assert "403" in msg
+    assert "Places API (New) has not been used" in msg
+    assert "Places API (New) が有効か" in msg      # 403 のときだけ出す案内
+
+
+def test_ping_without_key_does_not_call_api(monkeypatch):
+    def _boom(*_a, **_k):
+        raise AssertionError("鍵が無いのに呼んではいけない")
+
+    monkeypatch.setattr(requests, "post", _boom)
+    ok, msg = places.ping("")
+    assert not ok and "未設定" in msg

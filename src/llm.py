@@ -43,6 +43,33 @@ class InsightResult:
 SESSION_KEY = "gemini_session_key"
 
 
+def _secret(name: str) -> str:
+    """secrets.toml から読む。**単独の try で囲むこと**。
+
+    secrets.toml がどこにも無い環境では st.secrets.get 自体が
+    StreamlitSecretNotFoundError を投げる。以前はこれを
+    セッション入力の読み出しと同じ try に入れていたため、
+    secrets 未設置の環境では**管理画面で入力した鍵が一度も読まれなかった**
+    （画面には「設定済み」と出ないので、入力しても効かないだけに見える）。
+    """
+    try:
+        import streamlit as st  # noqa: PLC0415
+
+        return st.secrets.get(name, "") or ""
+    except Exception:
+        return ""
+
+
+def _session_key(name: str) -> str:
+    """管理画面でのセッション入力。DBやファイルには保存しない。"""
+    try:
+        import streamlit as st  # noqa: PLC0415
+
+        return st.session_state.get(name, "") or ""
+    except Exception:
+        return ""
+
+
 def get_api_key() -> str:
     """環境変数 → Streamlit secrets → 管理画面でのセッション入力、の順に探す。
 
@@ -52,30 +79,17 @@ def get_api_key() -> str:
     key = os.environ.get("GEMINI_API_KEY", "")
     if key:
         return key
-    try:
-        import streamlit as st  # noqa: PLC0415
-
-        key = st.secrets.get("GEMINI_API_KEY", "") or ""
-        if key:
-            return key
-        return st.session_state.get(SESSION_KEY, "") or ""
-    except Exception:
-        return ""
+    return _secret("GEMINI_API_KEY") or _session_key(SESSION_KEY)
 
 
 def api_key_source() -> str:
     """どこから読めたか。画面に出して切り分けに使う。"""
     if os.environ.get("GEMINI_API_KEY"):
         return "環境変数"
-    try:
-        import streamlit as st  # noqa: PLC0415
-
-        if st.secrets.get("GEMINI_API_KEY", ""):
-            return "secrets"
-        if st.session_state.get(SESSION_KEY, ""):
-            return "セッション入力"
-    except Exception:
-        pass
+    if _secret("GEMINI_API_KEY"):
+        return "secrets"
+    if _session_key(SESSION_KEY):
+        return "セッション入力"
     return ""
 
 

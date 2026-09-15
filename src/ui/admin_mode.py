@@ -1771,14 +1771,45 @@ GOOGLE_MAPS_API_KEY = "AIza..."
         st.divider()
 
         st.markdown("#### 🖼 施設写真の自動取得（Google Places）")
+        #    Gemini と同じ形。恒久設定は secrets/環境変数を推奨し、
+        #    無ければ**セッション限り**の入力を受ける（DB・ファイルには残さない）。
         _gm = places.get_api_key()
+        _gm_src = places.api_key_source()
         if _gm:
-            st.success("✅ Google Maps API キーが設定されています。")
+            _mc1, _mc2, _mc3 = st.columns([3, 1, 1])
+            with _mc1:
+                st.caption(
+                    f"🔑 APIキー: 設定済み（{_gm_src}・末尾 …{_gm[-4:]}）"
+                )
+            with _mc2:
+                if st.button("接続を確認", key="pl_ping", width="stretch"):
+                    _ok, _msg = places.ping(_gm)
+                    (st.success if _ok else st.error)(_msg)
+            with _mc3:
+                if _gm_src == "セッション入力":
+                    if st.button("🔒 破棄", key="pl_clear", width="stretch"):
+                        st.session_state.pop(places.SESSION_KEY, None)
+                        st.rerun()
         else:
-            st.warning(
+            st.info(
                 "GOOGLE_MAPS_API_KEY が未設定です。設定すると、写真が登録されて"
-                "いない施設の枠を Google の写真で埋めます。"
+                "いない施設の枠を Google の写真で埋めます。恒久利用は secrets の "
+                "`GOOGLE_MAPS_API_KEY` を推奨。下で入力した場合は"
+                "**このセッション限り**で使用し、DBやファイルには保存しません。"
+                "キーは https://console.cloud.google.com/ で取得し、"
+                "**Places API (New)** を有効にしてください。"
             )
+            _gm_in = st.text_input("Google Maps APIキー（セッション限り）",
+                                   type="password", key="pl_key_input")
+            _mb1, _mb2 = st.columns([1, 3])
+            with _mb1:
+                if st.button("このセッションで使用する", type="primary",
+                             key="pl_key_use", width="stretch"):
+                    if _gm_in.strip():
+                        st.session_state[places.SESSION_KEY] = _gm_in.strip()
+                        st.rerun()
+                    else:
+                        st.warning("APIキーを入力してください。")
         st.checkbox(
             "分析プレビューで施設写真を自動取得する",
             value=st.session_state.get("use_places_photos", True),

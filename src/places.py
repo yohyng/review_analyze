@@ -57,16 +57,108 @@ class Photo:
         return bool(self.name)
 
 
+SESSION_KEY = "places_session_key"
+
+
+def _secret(name: str) -> str:
+    """secrets.toml から読む。**単独の try で囲むこと**（理由は llm._secret）。"""
+    try:
+        import streamlit as st  # noqa: PLC0415
+
+        return st.secrets.get(name, "") or ""
+    except Exception:
+        return ""
+
+
+def _session_key(name: str) -> str:
+    """管理画面でのセッション入力。DBやファイルには保存しない。"""
+    try:
+        import streamlit as st  # noqa: PLC0415
+
+        return st.session_state.get(name, "") or ""
+    except Exception:
+        return ""
+
+
 def get_api_key() -> str:
-    """env GOOGLE_MAPS_API_KEY → streamlit secrets → ''。"""
+    """環境変数 → Streamlit secrets → 管理画面でのセッション入力、の順に探す。
+
+    セッション入力も見るのは、恒久設定を持たない環境でも管理画面から
+    使えるようにするため（Gemini / KAIZODE と同じ扱い）。
+    **DBやファイルには保存しない**。
+    """
     key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
     if key:
         return key
+    return _secret("GOOGLE_MAPS_API_KEY") or _session_key(SESSION_KEY)
+
+
+def api_key_source() -> str:
+    """どこから読めたか。画面に出して切り分けに使う。"""
+    if os.environ.get("GOOGLE_MAPS_API_KEY"):
+        return "環境変数"
+    if _secret("GOOGLE_MAPS_API_KEY"):
+        return "secrets"
+    if _session_key(SESSION_KEY):
+        return "セッション入力"
+    return ""
+
+
+def ping(api_key: str) -> tuple[bool, str]:
+    """鍵が通るかだけ確かめる。**一番安いSKU**（Text Search の ID のみ）。
+
+    find_place_id() と同じ呼び出しだが、あちらは写真が飾りなので例外を
+    握り潰す。こちらは「設定できたつもりで通っていない」を切り分けるのが
+    目的なので、**失敗の理由をそのまま返す**。
+    """
+    if not api_key:
+        return False, "APIキーが未設定です"
+    import requests  # noqa: PLC0415
+
+    resp = None
     try:
-        import streamlit as st  # noqa: PLC0415
-        return st.secrets.get("GOOGLE_MAPS_API_KEY", "") or ""
+        resp = requests.post(
+            _SEARCH_URL,
+            json={"textQuery": "東京駅", "languageCode": "ja",
+                  "maxResultCount": 1},
+            timeout=_TIMEOUT,
+            headers={"X-Goog-Api-Key": api_key,
+                     "X-Goog-FieldMask": "places.id",
+                     "Content-Type": "application/json"},
+        )
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError:
+        detail = _extract_api_error(resp)
+        hint = ""
+        if resp is not None and resp.status_code == 403:
+            hint = ("／Places API (New) が有効か、キーの制限"
+                    "（HTTPリファラ・IP）を確認してください")
+        return False, f"API エラー ({resp.status_code}): {detail}{hint}"
+    except requests.exceptions.RequestException as e:
+        return False, f"通信エラー: {e}"
+    if not (resp.json().get("places") or []):
+        return False, "応答は返りましたが結果が空でした（FieldMask を確認）"
+    return True, "接続できました（Text Search・IDのみ）"
+
+
+def _extract_api_error(resp) -> str:
+    """エラー応答から人が読める理由を取り出す。
+
+    `.get("message", resp.text[:200])` と書かないこと。default は
+    **必ず評価される**ので、JSON が取れている場合でも本文の復号が走る。
+    """
+    if resp is None:
+        return "応答なし"
+    try:
+        msg = resp.json().get("error", {}).get("message", "")
+        if msg:
+            return str(msg)
     except Exception:
-        return ""
+        pass
+    try:
+        return resp.text[:200]
+    except Exception:
+        return "（本文を読めませんでした）"
 
 
 def _post(url: str, key: str, field_mask: str, body: dict):
