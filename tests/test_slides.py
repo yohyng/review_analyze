@@ -641,7 +641,7 @@ def test_slide5_renders_radar_tables_and_summary(tmp_path):
     html = slides.slide5_space_experience(b)
     assert "空間・体験分析" in html
     assert "乃村独自の空間分析指標" in html and "本ページの要約" in html
-    assert "confidential" in html
+    assert "confidential" not in html        # 右上のタグは不要との判断で外した
     assert "空間と体験の質を10の観点で評価し、改善の優先ポイントを可視化します。" in html
     assert "※ スコアは5点満点（高いほど評価が高いことを示します）" in html
     for i, t in enumerate(topic_score.SPACE_TOPICS, 1):
@@ -1177,6 +1177,12 @@ def test_planner_pill_is_gone_from_market_detail(tmp_path):
     """右上の「プランナー起点」は不要との判断で外した。"""
     b = _bundle(tmp_path)
     assert "プランナー起点" not in slides.slide2_market_detail(b)
+
+
+def test_planner_pill_is_gone_from_space_detail(tmp_path):
+    """空間体験分析（詳細）からも同じ理由で外した。"""
+    b = _bundle(tmp_path)
+    assert "プランナー起点" not in slides.slide5_space_detail(b)
 
 
 # --------------------------------------------------------------------------- #

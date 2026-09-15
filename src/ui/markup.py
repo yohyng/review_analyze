@@ -1,36 +1,52 @@
-"""生HTMLの入口。Markdown を通さない。
+"""生HTMLの入口。
 
 他の ui モジュールから広く呼ぶので、依存を持たせないこと
 （components が theme を、theme が components を要るようになると循環する）。
 """
 from __future__ import annotations
 
+import re
 
-def html(markup: str, *, into=None) -> None:
-    """生HTMLを描く。**Markdown を通さない**。
+# 改行を含む空白の連なり。1個の空白に潰す。
+_NEWLINE_RUN = re.compile(r"\s*\n\s*")
 
-    st.markdown(..., unsafe_allow_html=True) は、渡した文字列をまず Markdown
-    として解釈してから HTML にする。そのため書き方しだいで壊れる:
 
-      - 空行があると、CommonMark ではそこで HTML ブロックが終わる。以降は
-        「HTMLではない段落」と見なされて捨てられるか、文字として出る。
-        実際 v0.55.0 で <style> が 6,049文字中 2,113文字で切れていた。
+def flatten(markup: str) -> str:
+    """HTML を1行にする。**Markdown に壊されないための前処理**。
+
+    Markdown が HTML を壊すのは、行の形に意味があるからだけ:
+      - 空行があると、CommonMark ではそこで HTML ブロックが終わる。
+        以降は捨てられるか、文字として出る（v0.55.0 で <style> が
+        6,049文字中 2,113文字で切れていたのがこれ）。
       - 4スペース字下げはコードブロックの記法と衝突する。
 
-    st.html() は Markdown 解釈を挟まずそのまま流すので、この手の事故が
-    構造的に起きない。CSS もレイアウトも Markdown 記法を意図していないので、
-    こちらが正しい入口。
+    どちらも「改行が無ければ起きない」。1行に潰してしまえば、
+    先頭の `<` から末尾まで丸ごと HTML ブロックとして素通りする。
+
+    HTML では改行はただの空白なので、潰しても見た目は変わらない
+    （`<pre>` や white-space:pre を使っていないことが前提。現状は0箇所）。
+    """
+    return _NEWLINE_RUN.sub(" ", markup or "").strip()
+
+
+def html(markup: str, *, into=None) -> None:
+    """生HTMLを描く。
+
+    **st.html() を使わないこと**。あれは SVG を丸ごと落とす。
+
+      実測（Streamlit 1.58 / 同じ文字列を両経路に流して DOM を数えた）:
+        st.html()                        → svg 0 / line 0 / rect 0 / polyline 0
+        st.markdown(unsafe_allow_html=True) → svg 1 / line 1 / rect 1 / polyline 1
+      隣に置いた <span> はどちらでも残るので、**HTMLは出るのにグラフだけ
+      消える**という形で出る。v0.56.0 で 68箇所を st.html に寄せた際、
+      レーダーチャートと時間軸の棒グラフが全部消えていた。
+
+    st.html に寄せた理由（Markdown が HTML を壊す）は flatten() で潰す。
+    行の形に意味を持たせない限り、Markdown 経路でも壊れない。
 
     into に st.empty() などのプレースホルダを渡すと、そこへ描く。
-
-    st.html は Streamlit 1.33 で入った。それ以前でも動くよう従来の経路へ
-    落とす（requirements は 1.58.0 固定だが、デプロイ先が違うことがある）。
     """
     import streamlit as st  # noqa: PLC0415
 
     target = st if into is None else into
-    fn = getattr(target, "html", None)
-    if fn is not None:
-        fn(markup)
-    else:
-        target.markdown(markup, unsafe_allow_html=True)
+    target.markdown(flatten(markup), unsafe_allow_html=True)

@@ -2161,7 +2161,7 @@ def slide5_space_experience(b: dict) -> str:
         top=T.BODY_TOP_TIGHT, column=True, gap=.9,
     )
     return canvas(
-        slide_header("5", "空間・体験分析", right=_outline_tag("confidential")),
+        slide_header("5", "空間・体験分析"),
         body, footer(score_note(b)),
     )
 
@@ -2302,8 +2302,7 @@ def slide5_space_detail(b: dict) -> str:
         top=T.BODY_TOP_TIGHT, column=True, gap=.8,
     )
     return canvas(
-        slide_header("5", "空間体験分析", sub_title="詳細",
-                     right=_pill("プランナー起点")),
+        slide_header("5", "空間体験分析", sub_title="詳細"),
         body,
         footer(score_note(b), tagline="顧客の声を、戦略と成長へ。"),
     )
