@@ -154,3 +154,134 @@ def test_parsers_accept_raw_bytes():
     assert set(grp.keys()) == {f["key"] for f in inf}
     res = review_csv.parse_reviews(MULTI_CSV_BYTES)
     assert len(res.reviews) == 5
+
+
+# --------------------------------------------------------------------------- #
+# 代用IDのぶつかり
+#   review_id 列が無いCSVでは、本文・日付・投稿者のハッシュを ID に使う。
+#   「Good」「Nice」のような短い定型文は**別人でも三つ組が一致する**ので、
+#   UNIQUE(facility_id, review_id) に当たって取り込みが丸ごと落ちていた。
+# --------------------------------------------------------------------------- #
+def _csv(tmp_path, body: str):
+    f = tmp_path / "r.csv"
+    f.write_bytes(body.encode("utf-8"))
+    return str(f)
+
+
+SHORT_REVIEWS = """place_name,review,review_rating,review_datetime_utc,author_title
+Guoco Tower,Good,5,2026-05-01,
+Guoco Tower,Good,5,2026-05-01,
+Guoco Tower,Good,5,2026-05-01,
+Guoco Tower,Good taste,5,2026-07-29,
+Guoco Tower,Nice,4,2026-05-01,
+"""
+
+
+def test_identical_short_reviews_get_distinct_ids(tmp_path):
+    res = review_csv.parse_reviews(_csv(tmp_path, SHORT_REVIEWS))
+    ids = [r.review_id for r in res.reviews]
+    assert len(ids) == 5
+    assert len(set(ids)) == 5, ids          # 1つも潰さない
+
+
+def test_duplicates_are_numbered_from_the_first_ones_id(tmp_path):
+    """2件目以降に連番を足す。1件目の ID は変えない（既存DBと繋がるので）。"""
+    res = review_csv.parse_reviews(_csv(tmp_path, SHORT_REVIEWS))
+    goods = [r.review_id for r in res.reviews if r.text == "Good"]
+    base = goods[0]
+    assert base.startswith(review_csv.FALLBACK_PREFIX) and "#" not in base
+    assert goods == [base, f"{base}#2", f"{base}#3"]
+
+
+def test_disambiguate_reports_how_many_it_split():
+    from src.review_csv import ParsedReview, disambiguate_ids
+
+    rs = [ParsedReview(review_id="h:aaa", rating=5, text="Good", review_date="",
+                       reviewer_name="", local_guide=False, likes=None,
+                       owner_response="", owner_response_date="", subscores=[])
+          for _ in range(3)]
+    assert disambiguate_ids(rs) == 2
+    assert [r.review_id for r in rs] == ["h:aaa", "h:aaa#2", "h:aaa#3"]
+
+
+def test_same_file_twice_does_not_double_import(tmp_path):
+    """採番はファイルの中身で決まるので、入れ直しても重複にならない。"""
+    from src import db as _db
+
+    path = _csv(tmp_path, SHORT_REVIEWS)
+    conn = _db.get_conn(tmp_path / "t.db")
+    _db.init_db(conn)
+    fid = _db.upsert_facility(conn, "Guoco Tower")
+
+    first = _db.insert_reviews(conn, fid, review_csv.parse_reviews(path).reviews)
+    second = _db.insert_reviews(conn, fid, review_csv.parse_reviews(path).reviews)
+    assert first == (5, 0)
+    assert second == (0, 5)
+    assert conn.execute("SELECT COUNT(*) FROM review").fetchone()[0] == 5
+
+
+def test_explicit_duplicate_ids_are_skipped_not_fatal(tmp_path):
+    """CSV が同じ口コミを2回載せていても、取り込みごと落とさない。"""
+    from src import db as _db
+
+    path = _csv(tmp_path, """place_name,review_id,review,review_rating,review_datetime_utc
+Guoco Tower,ChZabc,Good,5,2026-05-01
+Guoco Tower,ChZabc,Good,5,2026-05-01
+Guoco Tower,ChZdef,Nice,4,2026-05-02
+""")
+    conn = _db.get_conn(tmp_path / "t.db")
+    _db.init_db(conn)
+    fid = _db.upsert_facility(conn, "Guoco Tower")
+    assert _db.insert_reviews(conn, fid, review_csv.parse_reviews(path).reviews) == (2, 1)
+
+
+def test_explicit_ids_are_not_renumbered(tmp_path):
+    """CSV が持っている review_id には触らない（外のIDなので）。"""
+    path = _csv(tmp_path, """place_name,review_id,review,review_rating,review_datetime_utc
+Guoco Tower,ChZabc,Good,5,2026-05-01
+Guoco Tower,ChZabc,Good,5,2026-05-01
+""")
+    ids = [r.review_id for r in review_csv.parse_reviews(path).reviews]
+    assert ids == ["ChZabc", "ChZabc"]
+
+
+def test_grouped_parse_disambiguates_per_facility(tmp_path):
+    """複数施設のCSVでも、施設ごとに採番されること。"""
+    path = _csv(tmp_path, """place_name,review,review_rating,review_datetime_utc,author_title
+A館,Good,5,2026-05-01,
+A館,Good,5,2026-05-01,
+B館,Good,5,2026-05-01,
+B館,Good,5,2026-05-01,
+""")
+    groups = review_csv.parse_reviews_grouped(path)
+    assert len(groups) == 2
+    for _key, (_name, res) in groups.items():
+        ids = [r.review_id for r in res.reviews]
+        assert len(set(ids)) == len(ids) == 2
+
+
+def test_import_failure_is_explained_not_redacted():
+    """Streamlit Cloud は未捕捉の例外の本文を伏せる。
+
+    画面から原因が分からなくなるので、保存は try で包んで理由を出すこと。
+    """
+    import sqlite3
+    from src.ui.admin_mode import _save_reason
+
+    r = _save_reason(sqlite3.IntegrityError(
+        "UNIQUE constraint failed: review.facility_id, review.review_id"))
+    assert "同じ口コミID" in r
+    assert "review.review_id" in r          # 元の文も残す（切り分け用）
+
+    assert "DBの構造が古い" in _save_reason(
+        sqlite3.OperationalError("no such column: review.source"))
+    # 知らないエラーは加工せずそのまま
+    assert _save_reason(RuntimeError("Turso: なにか")) == "Turso: なにか"
+
+
+def test_save_is_wrapped_so_the_message_reaches_the_screen():
+    src = Path("src/ui/admin_mode.py").read_text(encoding="utf-8")
+    block = src[src.index('key="csv_save"'):src.index('elif uploaded and not facility_name')]
+    assert "try:" in block
+    assert "_save_reason(" in block
+    assert block.index("try:") < block.index("db.insert_reviews(")

@@ -34,6 +34,27 @@ from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
 logger = logging.getLogger("voicebaum")
 
 
+def _save_reason(exc: Exception) -> str:
+    """保存に失敗した理由を、口コミ本文を出さずに1行で。
+
+    DB のエラー文には SQL とテーブル名しか出ないので、そのまま見せてよい。
+    よく出るものだけ日本語に言い換える（英語のままだと原因が伝わらない）。
+    """
+    msg = str(exc) or exc.__class__.__name__
+    low = msg.lower()
+    if "unique constraint failed" in low:
+        return ("同じ口コミIDが重なっています。"
+                "CSVに同じ口コミが2回入っていないか確認してください "
+                f"［{msg}］")
+    if "no such table" in low or "no such column" in low:
+        return f"DBの構造が古い可能性があります［{msg}］"
+    if "too large" in low or "payload" in low:
+        return f"1回に送るデータが大きすぎます［{msg}］"
+    if isinstance(exc, (TimeoutError,)) or "timeout" in low:
+        return f"DBへの接続がタイムアウトしました［{msg}］"
+    return msg
+
+
 def render():
     conn = data.get_conn()
     _all_facility_names = data.all_facility_names
@@ -368,20 +389,42 @@ def render():
                     st.dataframe(preview, width="stretch", hide_index=True)
 
                     if st.button("💾 DBに保存", type="primary", key="csv_save"):
-                        fid = db.upsert_facility(
-                            conn, facility_name, ftype=ftype,
-                            category=result.category,
-                            general_rating=result.general_rating,
-                            total_reviews=result.total_reviews,
-                        )
-                        inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
-                        n_axes = scoring.compute_and_store(conn, fid)
-                        st.success(
-                            f"✅ 「{facility_name}」に {inserted} 件保存"
-                            f"（重複スキップ {skipped} 件）"
-                            + (f" / 定量スコア {n_axes} 軸を自動算出しました" if n_axes else "")
-                        )
-                        st.session_state.pop("csv_fac_confirm", None)
+                        # 例外をそのまま投げないこと。
+                        #   Streamlit Cloud は未捕捉の例外の本文を伏せるので
+                        #   （"redacted to prevent data leaks"）、画面からは
+                        #   何が起きたのか分からなくなる。口コミ本文は載せずに、
+                        #   DB が返した理由だけを出す。
+                        try:
+                            fid = db.upsert_facility(
+                                conn, facility_name, ftype=ftype,
+                                category=result.category,
+                                general_rating=result.general_rating,
+                                total_reviews=result.total_reviews,
+                            )
+                            inserted, skipped = db.insert_reviews(
+                                conn, fid, result.reviews)
+                            n_axes = scoring.compute_and_store(conn, fid)
+                        except Exception as _e:
+                            logger.exception("CSV import failed for %s", facility_name)
+                            # Turso には**トランザクションが無い**（commit は
+                            # 何もしない）。100文ずつ送っているので、途中で
+                            # 落ちるとそこまでは入っている。「何も入っていない」
+                            # と書くと嘘になる。
+                            st.error(
+                                f"保存できませんでした: {_save_reason(_e)}\n\n"
+                                f"{len(result.reviews)} 件のうち、**途中まで"
+                                f"入っている可能性があります**。原因を直して"
+                                f"同じファイルをもう一度保存すれば、入って"
+                                f"いるぶんは重複スキップされます。"
+                            )
+                        else:
+                            st.success(
+                                f"✅ 「{facility_name}」に {inserted} 件保存"
+                                f"（重複スキップ {skipped} 件）"
+                                + (f" / 定量スコア {n_axes} 軸を自動算出しました"
+                                   if n_axes else "")
+                            )
+                            st.session_state.pop("csv_fac_confirm", None)
                 elif uploaded and not facility_name:
                     st.warning("先に施設名を入力してください。")
 

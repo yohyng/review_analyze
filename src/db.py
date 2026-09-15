@@ -912,6 +912,14 @@ def insert_reviews(
         for row in rows:
             existing.add(row[0])
 
+    # 同じ取り込みの中で ID が重なっているぶんも弾く。
+    #   上の EXISTS は「すでにDBにある」ものしか見ない。1つのCSVに同じ
+    #   review_id が2回載っていると、UNIQUE(facility_id, review_id) に当たって
+    #   **その取り込みが丸ごと落ちる**（Turso ではバッチ全体がエラーになる）。
+    #   代用IDのぶつかりは review_csv.disambiguate_ids が先に分けているので、
+    #   ここに残るのは「CSVが同じ口コミを2回載せている」場合。skip でよい。
+    seen_ids: set[str] = set()
+
     use_pipeline = hasattr(conn, "execute_pipeline")
 
     insert_sql = """INSERT INTO review(
@@ -931,11 +939,12 @@ def insert_reviews(
         _CHUNK_STMTS = 100   # 1 HTTPリクエストあたりの文数（多いほど往復が減る）
         batch: list[tuple[str, tuple]] = []
         for idx, r in enumerate(reviews):
-            if r.review_id in existing:
+            if r.review_id in existing or r.review_id in seen_ids:
                 skipped += 1
                 if progress_callback:
                     progress_callback(idx + 1, total)
                 continue
+            seen_ids.add(r.review_id)
             batch.append((insert_sql, (
                 facility_id, r.review_id, r.rating, r.text, r.review_date,
                 r.reviewer_name, int(r.local_guide), r.likes,
@@ -956,11 +965,12 @@ def insert_reviews(
 
     # ── SQLite sequential path (unchanged) ───────────────────────────────── #
     for idx, r in enumerate(reviews):
-        if r.review_id in existing:
+        if r.review_id in existing or r.review_id in seen_ids:
             skipped += 1
             if progress_callback:
                 progress_callback(idx + 1, total)
             continue
+        seen_ids.add(r.review_id)
         cur = conn.execute(insert_sql, (
             facility_id, r.review_id, r.rating, r.text, r.review_date,
             r.reviewer_name, int(r.local_guide), r.likes,

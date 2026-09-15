@@ -138,9 +138,43 @@ def _parse_subscores(cell: str) -> list[tuple[str, float]]:
     return out
 
 
+FALLBACK_PREFIX = "h:"
+
+
 def _fallback_id(text: str, date: str, reviewer: str) -> str:
+    """review_id 列が無いCSV向けの代用ID。本文・日付・投稿者から作る。
+
+    **ぶつかる**。「Good」「Nice」のような短い定型文は、同じ日に別の人が
+    書けば三つ組が完全に一致する（投稿者名の無いCSVなら尚更）。
+    UNIQUE(facility_id, review_id) に当たって取り込みが丸ごと落ちるので、
+    重なったぶんは disambiguate_ids() で連番を足して分ける。
+    """
     h = hashlib.sha1(f"{text}|{date}|{reviewer}".encode("utf-8")).hexdigest()[:16]
-    return f"h:{h}"
+    return f"{FALLBACK_PREFIX}{h}"
+
+
+def disambiguate_ids(reviews: list) -> int:
+    """同じ review_id が並んだときの後始末。分けた件数を返す。
+
+    - CSV に review_id 列がある場合の重複 …… **同じ口コミが2回載っている**
+      とみなして、そのまま（後段の取り込みで片方が skip される）
+    - 代用ID（h:…）の重複 …………………… **別人の同じ文面**かもしれないので、
+      2件目以降に `#2`, `#3` を足して残す
+
+    消すより残すほうを選ぶ。画面に出した件数（232件）と、DBに入る件数を
+    合わせておきたいため。同じファイルを入れ直しても採番は同じなので、
+    二重取り込みにはならない。
+    """
+    seen: dict[str, int] = {}
+    fixed = 0
+    for r in reviews:
+        rid = r.review_id or ""
+        n = seen.get(rid, 0) + 1
+        seen[rid] = n
+        if n > 1 and rid.startswith(FALLBACK_PREFIX):
+            r.review_id = f"{rid}#{n}"
+            fixed += 1
+    return fixed
 
 
 # --------------------------------------------------------------------------- #
@@ -302,6 +336,7 @@ def parse_reviews(source, facility_key: Optional[str] = None) -> ParseResult:
             if category is None:
                 category = cat
 
+    disambiguate_ids(reviews)
     return ParseResult(
         reviews=reviews,
         general_rating=general_rating,
@@ -355,6 +390,8 @@ def parse_reviews_grouped(source) -> dict[str, tuple[str, ParseResult]]:
     out: dict[str, tuple[str, ParseResult]] = {}
     for key, g in groups.items():
         name = g["names"].most_common(1)[0][0] if g["names"] else "(不明)"
+        # 施設ごとに採番する（ID がぶつかるのは同じ施設の中だけなので）
+        disambiguate_ids(g["reviews"])
         out[key] = (name, ParseResult(
             reviews=g["reviews"], general_rating=g["gr"], total_reviews=g["tr"],
             category=g["cat"], n_raw=g["n_raw"], n_skipped=g["n_skipped"],
