@@ -26,3 +26,21 @@ data/dummy.db
 
 # スライドの目視確認用の書き出し（scripts/render_slides.py）
 _slides/
+
+# ── 個人情報・社外秘を誤ってコミットしないための網 ────────────────────
+#    2026-08-02 に実在レビュアー氏名 24,404人分（data/museums/reviews.csv.gz）と
+#    confidential 印字の社内資料（docs/design/*.png）が public リポジトリへ出た。
+#    **すでに追跡されているファイルには効かない**（git の仕様）。これは
+#    「これ以上増やさない」ための網で、既存分の除去は別途の判断。
+#    実効性は tests/test_no_sensitive_files.py が担保する。
+data/**/*.csv
+data/**/*.csv.gz
+data/**/*.tsv
+data/**/*.jsonl
+docs/design/*.png
+docs/design/*.pdf
+*.sqlite
+*.sqlite3
+
+#    中身を確認済みで、個人情報を含まないもの（施設名・スコアのみ）
+!data/kaizode/facilities.sample.csv
