@@ -23,9 +23,11 @@ from .markup import html as _html
 
 from src import (
     analysis, auth, charts, config, csv_profiler, db, geocode, images, kaizode,
-    llm, maps_link, onboard, places, precheck, preview, report, review_csv,
+    llm, maps_link, onboard, places, precheck, preview, rare, report, report_v5,
+    review_csv,
     score_excel, scoring, search,
-    discussion, slides, text_analysis, timeline, topic_score, topics, voices,
+    discussion, slides, text_analysis, timeline, topic_score, topics, vffi,
+    voices,
 )
 from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
@@ -1093,9 +1095,38 @@ def _analysis_worker(prog: dict) -> None:
             discussion_result=_disc if akey else None,
         )
 
+        # ── 18枚固定版（原典 ppt-spec-v5）も併せて出す ──────────────── #
+        #    追加の LLM 呼び出しは無い。ここまでで計算済みのものを詰め直すだけ。
+        #    既存の可変長レポートは残し、選べるようにする。
+        _tmp_v5 = None
+        try:
+            from src import nmsi as _nmsi_pkg  # noqa: PLC0415
+            from src.nmsi import run as _nmsi_run  # noqa: PLC0415
+            _nmsi_res = _nmsi_run.get_result(tconn, tgt)
+        except Exception:
+            _nmsi_res = None
+        try:
+            _rev_pairs = [(r[0], r[1]) for r in tconn.execute(
+                "SELECT rating, text FROM review WHERE facility_id = "
+                "(SELECT id FROM facility WHERE name = ?) "
+                "AND text IS NOT NULL AND TRIM(text) != ''", (tgt,)).fetchall()]
+            _ctx5 = report_v5.Ctx(
+                target=tgt, conn=tconn, comp=_comp2, profile=_profile,
+                topic_score=_ts_result if not _ts_result.empty else None,
+                insights=_insights, nmsi=_nmsi_res,
+                vffi=vffi.assess(_rev_pairs), reviews=_rev_pairs,
+                rares=rare.extract([t for _r, t in _rev_pairs], tgt),
+                baseline_label=(_comp2.baseline_label if _comp2 else "（比較データなし）"),
+            )
+            _tmp_v5 = Path(tempfile.mkdtemp()) / f"VoiceBAUM_18p_{tgt}.pptx"
+            report_v5.build_report_v5(_ctx5, _tmp_v5)
+        except Exception:
+            _tmp_v5 = None      # 18枚版が作れなくても既存レポートは出す
+
         # 結果を受け渡し用 dict へ（session_state 反映はメインスレッド）
         ss_out["an_preview"]        = _bundle
         ss_out["an_result_path"]    = str(_tmp)
+        ss_out["an_result_path_v5"] = str(_tmp_v5) if _tmp_v5 else None
         ss_out["an_topic_list"]     = _topic_list
         ss_out["an_topic_score"]    = _ts_result
         ss_out["analysis_target"]   = tgt
@@ -1585,7 +1616,13 @@ def render():
         _ts = st.session_state.get("an_topic_score")
 
         # ── Top bar: back (left) + download (right) ─────────────────────── #
-        _hc1, _hc2 = st.columns([1, 1])
+        #    PowerPoint は2種類出る。既定（可変長・この画面と同じ構成）と、
+        #    18枚固定版（原典 ppt-spec-v5）。後者はデータが無い面も必ず作る。
+        _PPTX_MIME = ("application/vnd.openxmlformats-officedocument"
+                      ".presentationml.presentation")
+        _path_v5 = st.session_state.get("an_result_path_v5")
+        _has_v5 = bool(_path_v5 and Path(_path_v5).exists())
+        _hc1, _hc2, _hc3 = st.columns([1, 1, 1] if _has_v5 else [1, 1, 0.001])
         with _hc1:
             if st.button("← 設定に戻る", key="an_back_top", width="stretch"):
                 st.session_state["an_screen"] = "setup"
@@ -1597,16 +1634,26 @@ def render():
                         "⬇ PowerPointでダウンロード",
                         data=_f.read(),
                         file_name=Path(_result_path).name,
-                        mime=(
-                            "application/vnd.openxmlformats-officedocument"
-                            ".presentationml.presentation"
-                        ),
+                        mime=_PPTX_MIME,
                         type="primary",
                         width="stretch",
                         key="an_dl",
                     )
             else:
                 st.error("レポートファイルが見つかりません。設定に戻って再実行してください。")
+        with _hc3:
+            if _has_v5:
+                with open(_path_v5, "rb") as _f5:
+                    st.download_button(
+                        "⬇ 18枚固定版",
+                        data=_f5.read(),
+                        file_name=Path(_path_v5).name,
+                        mime=_PPTX_MIME,
+                        width="stretch",
+                        key="an_dl_v5",
+                        help="原典 ppt-spec-v5 の18枚構成。データが無い面も"
+                             "「データ不足」と明記して必ず作ります。",
+                    )
 
         _html("<div style='height:8px'></div>")
 

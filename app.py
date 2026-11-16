@@ -84,6 +84,7 @@ for _k, _v in {
     "an_mode": "single",
     "an_peers": [],
     "an_result_path": None,
+    "an_result_path_v5": None,
     "an_topic_list": [],
     "an_topic_score": None,
     "admin_page": "dashboard",

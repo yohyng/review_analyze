@@ -181,3 +181,50 @@ def test_quadrants_use_the_source_names(tmp_path):
     for name in ("理想顧客", "施設サービス改善が必要",
                  "想定外ヒット", "マーケティング改善が必要"):
         assert name in t
+
+
+# --------------------------------------------------------------------------- #
+# 画面への配線
+#   テストが通っても UI が壊れていた事例があるので、経路そのものを固定する。
+# --------------------------------------------------------------------------- #
+def _ui_src() -> str:
+    from pathlib import Path
+    return Path("src/ui/analysis_mode.py").read_text(encoding="utf-8")
+
+
+def test_worker_builds_the_18_slide_deck():
+    """分析ワーカーが既存レポートと並べて18枚版も作ること。"""
+    src = _ui_src()
+    assert "report_v5.build_report_v5(_ctx5, _tmp_v5)" in src
+    assert 'ss_out["an_result_path_v5"]' in src
+
+
+def test_v5_build_does_not_block_the_existing_report():
+    """18枚版が作れなくても既存レポートは出すこと。"""
+    src = _ui_src()
+    block = src[src.index("_tmp_v5 = None"):src.index('ss_out["an_preview"]')]
+    assert "except Exception:" in block
+    assert "_tmp_v5 = None      # 18枚版が作れなくても既存レポートは出す" in block
+
+
+def test_v5_reuses_computed_data_without_new_llm_calls():
+    """ここまでで計算済みのものを詰め直すだけ。LLM を呼び直さない。"""
+    src = _ui_src()
+    block = src[src.index("_tmp_v5 = None"):src.index('ss_out["an_preview"]')]
+    for banned in ("llm.generate_insights", "llm.build_prompt",
+                   "llm.pick_voice_quadrants", "llm.build_discussion_points"):
+        assert banned not in block, f"{banned} を呼んでいる"
+
+
+def test_download_button_exists_for_v5():
+    src = _ui_src()
+    assert 'key="an_dl_v5"' in src
+    assert "18枚固定版" in src
+    # 既存のボタンを消していないこと
+    assert 'key="an_dl"' in src
+    assert "⬇ PowerPointでダウンロード" in src
+
+
+def test_session_default_is_registered():
+    from pathlib import Path
+    assert '"an_result_path_v5": None,' in Path("app.py").read_text(encoding="utf-8")

@@ -88,6 +88,13 @@ class Ctx:
 # --------------------------------------------------------------------------- #
 # 共通パーツ
 # --------------------------------------------------------------------------- #
+def _phase_ja(p: dict) -> str:
+    """フェーズ名を日本語に。画面側 slides._PHASE_JA と同じ対応を使う。"""
+    from .slides import _PHASE_JA
+    key = str(p.get("phase", ""))
+    return _PHASE_JA.get(key, str(p.get("フェーズ", key) or key or "—"))
+
+
 def _no_data(slide, reason: str, *, hint: str = "") -> None:
     """データ不足の面。**白紙にしない。** 何が無いのかを書く。
 
@@ -296,13 +303,13 @@ def _s09_visitor_fit(prs, ctx: Ctx) -> None:
     slide = _blank(prs)
     _title_bar(slide, "来場者適合分析")
     v, n = ctx.vffi, ctx.nmsi
-    if v is None and n is None:
+    if v is None and not n:
         _no_data(slide, "NMSI・VFFI がいずれも未算出です。")
         return
     rows = []
-    if n is not None:
-        rows.append(("NMSI（感動指数）", f"{getattr(n, 'score', '—')}",
-                     getattr(n, "band", "") or "—"))
+    if n:
+        rows.append(("NMSI（感動指数）", f"{float(n.get('nmsi') or 0):.1f}",
+                     str(n.get("interpretation") or "—")))
     if v is not None:
         rows.append(("VFFI（適合指数）",
                      f"{v.score}" if v.computable else "算出不可",
@@ -318,21 +325,28 @@ def _s10_nmsi(prs, ctx: Ctx) -> None:
     slide = _blank(prs)
     _title_bar(slide, "NMSI詳述")
     n = ctx.nmsi
-    if n is None:
+    if not n:
         _no_data(slide, "NMSI が未算出です。",
                  hint="管理モードの「NMSI（体験満足度）」から算出できます。")
         return
-    _textbox(slide, MARGIN, BODY + Inches(0.2), CONTENT_W, Inches(0.9),
-             f"NMSI {getattr(n, 'score', '—')} / 100", size=30, bold=True, color=NAVY)
-    phases = list(getattr(n, "phases", None) or [])
+    score = float(n.get("nmsi") or 0.0)
+    _textbox(slide, MARGIN, BODY + Inches(0.1), CONTENT_W, Inches(0.9),
+             f"NMSI {score:.1f} / 100　{n.get('interpretation') or ''}",
+             size=26, bold=True, color=NAVY)
+    # 文数0のフェーズは根拠が無いので出さない（画面側 slide8_nmsi と同じ判断）
+    phases = [p for p in (n.get("phases") or []) if p.get("文数")]
     if phases:
-        rows = [(getattr(p, "name", "—"), f"{getattr(p, 'weight', 0):.2f}",
-                 f"{getattr(p, 'score', 0):.2f}") for p in phases]
-        _table(slide, MARGIN, Inches(2.6), CONTENT_W, Inches(0.4),
-               ["フェーズ", "重み", "E_i"], _fit_rows(rows, ctx, "NMSI"))
+        rows = [(_phase_ja(p), f"{float(p.get('重み') or 0):.2f}",
+                 f"{float(p.get('E_i') or 0):+.2f}", str(p.get("文数") or 0))
+                for p in phases]
+        _table(slide, MARGIN, Inches(2.3), CONTENT_W, Inches(0.4),
+               ["フェーズ", "重み", "E_i", "文数"], _fit_rows(rows, ctx, "NMSI"))
     else:
-        _textbox(slide, MARGIN, Inches(2.6), CONTENT_W, Inches(1.2),
+        _textbox(slide, MARGIN, Inches(2.3), CONTENT_W, Inches(1.2),
                  "フェーズ別の内訳がありません（総合値のみ）。", size=13, color=GRAY)
+    _textbox(slide, MARGIN, SLIDE_H - Inches(1.0), CONTENT_W, Inches(0.6),
+             f"文数 {n.get('n_sentences') or 0} / LLM 呼び出し {n.get('llm_calls') or 0} 回。"
+             "生成AIによる文属性付与を含む推計値です。", size=11, color=GRAY)
 
 
 def _s11_vffi(prs, ctx: Ctx) -> None:
