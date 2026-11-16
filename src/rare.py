@@ -76,7 +76,11 @@ _SENT = re.compile(r"[。！？\n]+")
 # 句点の無い口コミは1文として丸ごと通ってしまう。読点でも切る保険。
 _SOFT = re.compile(r"[、，]")
 MIN_CHARS = 12          # これ未満は文脈が無く、読んでも動けない
-MAX_CHARS = 80          # これを超える「文」は分割失敗＝個人事情の塊とみなす
+MAX_CHARS = 80
+
+# 1施設あたりの上限。原典（rare-review-extraction）が「1施設最大3件」と定める。
+#   全体件数の指定があっても施設上限は維持する、とされている。
+MAX_PER_FACILITY = 3          # これを超える「文」は分割失敗＝個人事情の塊とみなす
 
 # 打消し。重大性の語の**すぐ後ろ**にこれが来たら、その語は不満ではない。
 #   例「タバコ臭さが**ない**」「混雑もし**ない**」を不満として拾わないため。
@@ -264,7 +268,7 @@ def _is_positive(s: str) -> bool:
 
 
 # ── 本体 ────────────────────────────────────────────────────────── #
-def extract(reviews: list, facility: str, *, per_facility: int = 3,
+def extract(reviews: list, facility: str, *, per_facility: int = MAX_PER_FACILITY,
             min_score: float = 0.35) -> list:
     """1施設ぶん。reviews は本文の文字列のリスト。
 
