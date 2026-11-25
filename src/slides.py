@@ -657,30 +657,50 @@ def _stars(rating: float | None, size: float = 1.7) -> str:
 # SLIDE 1「施設・基本情報」— docs/design/slide_p03.png
 # ═══════════════════════════════════════════════════════════════════════════
 def _profile_rows(b: dict) -> str:
-    """施設プロフィールの4行。正典は罫線で囲った箱＋アクセント色の記号。"""
+    """施設プロフィール。**値が取れない行は出さない。**
+
+    2026-11-15 のデッキで「ここを取れないなら入れなくていい／
+    代わりに星評価入れたい」と指示があった箇所。開業日とアクセスは
+    OSM/Wikidata からの自動補完が効かないことが多く、「—」の行が並んで
+    いた。空の行は情報ではないので落とし、代わりに常に出せる星評価を置く。
+    """
+    avg = b.get("avg_rating")
+    # 既存の _stars（星ごとに端数を塗る）を使う。数値を先に置いて星を添える。
+    star = ("" if avg is None else
+            f'<span style="font-weight:800;font-variant-numeric:tabular-nums;">'
+            f'{float(avg):.1f}</span>'
+            f'<span style="margin-left:.5cqw;">{_stars(avg, size=1.25)}</span>')
     rows = [
-        ("◉", "住所", b.get("address")),
-        ("▤", "開業日", b.get("open_year")),
-        ("▥", "延床", b.get("floor_area")),
-        ("◍", "マーケットカテゴリ", b.get("category")),
+        ("★", "施設星評価", star, True),
+        ("◉", "住所", b.get("address"), False),
+        ("▤", "開業日", b.get("open_year"), False),
+        ("▥", "延床", b.get("floor_area"), False),
+        ("◍", "マーケットカテゴリ", b.get("category"), False),
     ]
+    # 値が無い行は落とす。星評価だけは値があれば必ず残す。
+    rows = [r for r in rows if r[2] and str(r[2]).strip() and str(r[2]) != "—"]
+    if not rows:
+        return (f'<div style="border:1px solid {T.LINE};border-radius:.5cqw;flex:1;'
+                f'display:flex;align-items:center;justify-content:center;'
+                f'color:{T.SUB};font-size:1.2cqw;">施設情報を取得できていません</div>')
     out = ""
-    for i, (icon, label, val) in enumerate(rows):
-        v = val if val and val != "—" else "—"
+    for i, (icon, label, val, is_html) in enumerate(rows):
+        v = val
         border = (f"border-bottom:1px solid {T.LINE};" if i < len(rows) - 1 else "")
         out += (
-            f'<div style="flex:1;display:flex;align-items:center;gap:.8cqw;'
-            f'padding:0 1cqw;{border}">'
+            f'<div style="flex:none;display:flex;align-items:center;gap:.8cqw;'
+            f'padding:.95cqw 1cqw;{border}">'
             f'<span style="color:{T.ACCENT};font-size:1.32cqw;flex:none;">{icon}</span>'
-            f'<span style="font-size:1.32cqw;color:{T.INK_SUB};width:10cqw;flex:none;'
-            f'white-space:nowrap;">{escape(label)}</span>'
+            f'<span style="font-size:1.32cqw;color:{T.INK_SUB};width:11.6cqw;'
+            f'flex:none;white-space:nowrap;">{escape(label)}</span>'
             f'<span style="font-size:1.37cqw;color:{T.INK};font-weight:600;'
-            'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
-            f'{escape(str(v))}</span></div>'
+            'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+            'display:flex;align-items:center;">'
+            + (str(v) if is_html else escape(str(v))) + '</span></div>'
         )
     return (
-        f'<div style="border:1px solid {T.LINE};border-radius:.5cqw;flex:1;'
-        f'display:flex;flex-direction:column;min-height:0;">{out}</div>'
+        f'<div style="border:1px solid {T.LINE};border-radius:.5cqw;flex:none;'
+        f'display:flex;flex-direction:column;overflow:hidden;">{out}</div>'
     )
 
 
