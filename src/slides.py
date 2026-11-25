@@ -734,17 +734,38 @@ def _review_summary_body(b: dict) -> str:
         '<span style="position:absolute;left:1.1cqw;bottom:-.52cqw;width:0;height:0;'
         'border-left:.5cqw solid transparent;border-right:.5cqw solid transparent;'
         f'border-top:.55cqw solid {T.ACCENT_SOFT};"></span></span></div>'
-        # 総合評価
+        # 総合スコア（口コミをスコア化したもの）
+        #   星評価は施設プロフィール側に出すので、ここは**スコアだけ**にする。
+        #   0〜100 で 50 が中立。較正後の値なので、同カテゴリ内での相対位置を示す。
+        #   「何点満点か」が読み手に分からない、という指摘があったため
+        #   分母と中立点を必ず併記する（2026-11-15 デッキ）。
+        + _overall_score_block(b, half)
+        + '</div>'
+    )
+
+
+def _overall_score_block(b: dict, half: str) -> str:
+    v = b.get("overall_sentiment")
+    rank, total = b.get("rank"), b.get("total_fac")
+    if v is None:
+        return (f'<div style="{half}">'
+                f'<span style="font-size:1.37cqw;color:{T.INK_SUB};font-weight:600;">'
+                '総合スコア</span>'
+                f'<span style="font-size:1.6cqw;color:{T.SUB};">未算出</span></div>')
+    pos = (f'{rank} / {total} 施設' if rank and total else "")
+    return (
         f'<div style="{half}">'
         f'<span style="font-size:1.37cqw;color:{T.INK_SUB};font-weight:600;">'
-        '総合評価</span>'
+        '総合スコア</span>'
         '<span style="display:flex;align-items:baseline;gap:.3cqw;">'
         f'<span style="font-size:{T.FS["big_number"]}cqw;font-weight:800;'
-        f'color:{T.ACCENT};line-height:1;">{avg_txt}</span>'
-        f'<span style="font-size:1.3cqw;color:{T.INK_MUTE};font-weight:600;">/ 5</span>'
-        '</span>'
-        f'<span>{_stars(avg, size=1.5)}</span>'
-        '</div></div>'
+        f'color:{T.ACCENT};line-height:1;">{v:.1f}</span>'
+        f'<span style="font-size:1.3cqw;color:{T.INK_MUTE};font-weight:600;">'
+        '/ 100</span></span>'
+        f'<span style="font-size:1.08cqw;color:{T.INK_MUTE};">50 が中立</span>'
+        + (f'<span style="font-size:1.15cqw;color:{T.INK};font-weight:700;">'
+           f'{pos}</span>' if pos else "")
+        + '</div>'
     )
 
 

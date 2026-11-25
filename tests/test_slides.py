@@ -167,11 +167,30 @@ def test_slide1_has_all_four_panels(tmp_path):
     assert "実測値" in html
 
 
-def test_slide1_shows_review_count_and_rating(tmp_path):
+def test_slide1_shows_review_count_and_score(tmp_path):
+    """口コミサマリーは**スコア化した値**を出す。星はプロフィール側。
+
+    「何点満点なんだっけ？」という指摘（2026-11-15 デッキ）に対し、
+    分母と中立点を必ず併記する。
+    """
     b = _bundle(tmp_path)
     html = slides.slide1_facility_info(b)
     assert f'{b["n_reviews"]:,}' in html
-    assert "/ 5" in html
+    assert "総合スコア" in html
+    assert "/ 100" in html
+    assert "50 が中立" in html
+
+
+def test_summary_shows_rank_when_available():
+    html = slides._review_summary_body(
+        {"n_reviews": 55, "overall_sentiment": 59.5, "rank": 3, "total_fac": 6})
+    assert "59.5" in html and "3 / 6 施設" in html
+
+
+def test_summary_says_not_computed_without_a_score():
+    html = slides._review_summary_body({"n_reviews": 55})
+    assert "未算出" in html
+    assert "/ 100" not in html
 
 
 def test_slide1_lists_up_to_five_peers(tmp_path):
