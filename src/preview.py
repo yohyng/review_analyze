@@ -400,6 +400,10 @@ def build_bundle(
         "category": category,
         "n_reviews": n_reviews,
         "avg_rating": round(float(avg_rating), 1) if avg_rating is not None else None,
+        # Google マップ上の総合評価（取り込み時に記録したもの）。
+        # avg_rating（拾えた口コミの平均）とは母数が違う。
+        "google_rating": (round(float(general_rating), 1)
+                          if general_rating is not None else None),
         "pos_rate": pos_rate,
         "rank": rank,
         "total_fac": total_fac,

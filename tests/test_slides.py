@@ -1353,3 +1353,55 @@ def test_bullet_markdown_bold_is_rendered_safely():
     assert "<b style=\"font-weight:800\">太字</b>" in out
     assert "&lt;script&gt;" in out and "<script>" not in out
     assert "&lt;b&gt;" in out
+
+
+# --------------------------------------------------------------------------- #
+# 施設プロフィール（2026-11-15 デッキの指示）
+#   「ここを取れないなら入れなくていい　代わりに星評価入れたい」
+# --------------------------------------------------------------------------- #
+def _labels(html: str) -> list:
+    import re
+    return re.findall(r'width:11\.6cqw[^>]*>([^<]+)<', html)
+
+
+def test_empty_profile_rows_are_dropped():
+    """「—」の行を並べない。空の行は情報ではない。"""
+    out = slides._profile_rows({
+        "google_rating": 4.2, "address": "東京都港区",
+        "open_year": None, "floor_area": "", "category": "物販店"})
+    assert _labels(out) == ["施設星評価", "住所", "マーケットカテゴリ"]
+    assert "開業日" not in out and "延床" not in out
+
+
+def test_all_rows_shown_when_present():
+    out = slides._profile_rows({
+        "google_rating": 4.2, "address": "東京都港区", "open_year": "2016",
+        "floor_area": "12,000㎡", "category": "物販店"})
+    assert _labels(out) == ["施設星評価", "住所", "開業日", "延床", "マーケットカテゴリ"]
+
+
+def test_star_is_the_google_rating_not_our_average():
+    """施設星評価は **Google マップの評価**。
+
+    集めた口コミの平均（avg_rating）とは母数が違う。取り違えると、
+    口コミサマリーの「総合評価 x.x / 5」と同じ数字が2回出たうえ、
+    意味も間違える。
+    """
+    out = slides._profile_rows({
+        "google_rating": 4.2, "avg_rating": 3.4,
+        "address": "東京都港区", "category": "物販店"})
+    assert "4.2" in out
+    assert "3.4" not in out
+
+
+def test_star_row_is_dropped_when_google_rating_is_missing():
+    out = slides._profile_rows({
+        "google_rating": None, "avg_rating": 3.4,
+        "address": "東京都港区", "category": "物販店"})
+    assert "施設星評価" not in out
+    assert _labels(out) == ["住所", "マーケットカテゴリ"]
+
+
+def test_profile_with_nothing_says_so():
+    out = slides._profile_rows({})
+    assert "施設情報を取得できていません" in out
