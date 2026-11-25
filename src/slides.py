@@ -1885,6 +1885,73 @@ def slide3_competitor_compare(b: dict) -> str:
     return canvas(_compare_header(b, False), body, footer(score_note(b)))
 
 
+def _peer_diffs(b: dict) -> str:
+    """競合1施設ごとの「評価差分／読み解き／仮説」。
+
+    2026-11-15 のデッキ 7P「比較対象施設との評価差分とその要約が欲しい」。
+    生成は管理モードの「📝 ページ要約」。**描画からは呼ばない。**
+
+    施設数ぶん縦に積むので、ここでは高さを決め打ちしない。入らないぶんは
+    ブロックを削らず、**flex で均等に詰める**（1施設だけ消えると、左の
+    マッピングと照合できなくなる）。
+    """
+    rows = [r for r in ((b.get("slide_summaries") or {})
+                        .get("slide3_competitor_detail") or {}).get("peers") or []
+            if isinstance(r, dict) and r.get("name")]
+    if not rows:
+        return ""
+
+    def line(label: str, text: str, color: str) -> str:
+        if not text:
+            return ""
+        return (
+            '<div style="display:flex;gap:.6cqw;align-items:flex-start;'
+            'padding:.14cqw 0;">'
+            f'<span style="flex:none;width:4.6cqw;font-size:.82cqw;'
+            f'font-weight:700;color:{color};margin-top:.1cqw;">{escape(label)}'
+            '</span>'
+            f'<span style="flex:1;min-width:0;font-size:.88cqw;line-height:1.45;'
+            f'color:{T.INK};">{_md_bold(str(text))}</span></div>'
+        )
+
+    out = ""
+    for r in rows:
+        head = (
+            '<div style="display:flex;gap:.6cqw;align-items:baseline;'
+            'margin-bottom:.2cqw;">'
+            f'<span style="flex:none;font-size:.96cqw;font-weight:800;'
+            f'color:{T.ACCENT};">vs {escape(str(r["name"]))}</span>'
+            f'<span style="flex:1;min-width:0;font-size:.86cqw;color:{T.INK_SUB};'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+            f'{escape(str(r.get("headline") or ""))}</span></div>'
+        )
+        out += (
+            '<div style="flex:1;min-height:0;display:flex;flex-direction:column;'
+            f'justify-content:center;padding:.3cqw 0;border-top:1px solid {T.LINE};">'
+            + head
+            + line("評価差分", r.get("diff") or "", T.ACCENT_DEEP)
+            + line("読み解き", r.get("reading") or "", T.NAVY)
+            + line("仮説", r.get("hypothesis") or "", T.BLUE)
+            + '</div>'
+        )
+    return out
+
+
+def _detail_right(b: dict) -> str:
+    """右半分。要約があれば競合ごとの差分、無ければ従来の市場傾向。
+
+    生成前に空の枠だけ出ると、何を待っているのか分からない面になる。
+    """
+    diffs = _peer_diffs(b)
+    if diffs:
+        return panel("競合ごとの評価差分", diffs,
+                     style="flex:1", head_size=1.45, pad=".5cqw 1.2cqw")
+    return panel("指定競合の傾向",
+                 market_trend(b, "※ 市場傾向は同カテゴリ施設の口コミ分析から算出",
+                              large=True),
+                 style="flex:1", head_size=1.45, pad="1.2cqw")
+
+
 def slide3_competitor_detail(b: dict) -> str:
     """SLIDE 3「指定競合との比較（詳細）」。"""
     peers = list((b.get("peer_topic_scores") or {}))[: len(T.SERIES_PEERS)]
@@ -1892,10 +1959,7 @@ def slide3_competitor_detail(b: dict) -> str:
         panel("総合体験評価マッピング",
               experience_map(b, names=peers, label_points=True),
               style="flex:1", head_size=1.45, pad="1.2cqw")
-        + panel("指定競合の傾向",
-                market_trend(b, "※ 市場傾向は同カテゴリ施設の口コミ分析から算出",
-                             large=True),
-                style="flex:1", head_size=1.45, pad="1.2cqw")
+        + _detail_right(b)
     )
     return canvas(_compare_header(b, True), body, footer(score_note(b)))
 

@@ -24,6 +24,10 @@ def _bundle(**over):
         "topic_values": [80.0, 40.0, 65.0],
         "overall_topic": {"展示": 60.0, "価格": 55.0, "接客": 60.0},
         "peer_names": ["競合A", "競合B"],
+        "peer_topic_scores": {
+            "競合A": {"展示": 60.0, "価格": 70.0, "接客": 50.0},
+            "競合B": {"展示": 90.0, "価格": 30.0, "接客": 65.0},
+        },
     }
     b.update(over)
     return b
@@ -50,6 +54,12 @@ def _fake_llm(monkeypatch, headline="順位は上位", body="46施設中3位。"
             from src import categories as _c
             return {"overall": "総合評価の本文。",
                     "categories": {k: f"{k}の要約。" for k in _c.ORDER}}, ""
+        # 競合1施設ごとの差分（7P）。
+        if '"competitors"' in prompt:
+            return {"competitors": [
+                {"name": n, "headline": f"{n}との違い", "diff": "差分",
+                 "reading": "読み解き", "hypothesis": "仮説"}
+                for n in ("競合A", "競合B")]}, ""
         # 箇条書き型のページは形が違う。プロンプトの出力指示で見分ける。
         if '"bullets"' in prompt:
             return {"bullets": ["**見立て1。**「情報提供」で上回る。",
@@ -332,3 +342,101 @@ def test_missing_overall_is_not_an_error(monkeypatch):
     assert not err
     assert s.overall == ""
     assert s.categories == {"サービス": "ok"}
+
+
+# --------------------------------------------------------------------------- #
+# 競合ごとの差分（2026-11-15 デッキ 7P「指定競合との比較」施設別の差分分析）
+# --------------------------------------------------------------------------- #
+def test_peer_slide_has_its_own_shape():
+    assert ss.shape_of("slide3_competitor_detail") == "peers"
+    assert ss.is_peer_slide("slide3_competitor_detail")
+    assert not ss.is_bullet_slide("slide3_competitor_detail")
+    assert not ss.is_category_slide("slide3_competitor_detail")
+
+
+def test_shape_helpers_agree_with_the_table():
+    """判定を2か所に持たない。ずれると要約が永久に表示されなくなる。"""
+    for slide in ss.SLIDE_TITLES:
+        shape = ss.shape_of(slide)
+        assert ss.is_bullet_slide(slide) == (shape == "bullets")
+        assert ss.is_category_slide(slide) == (shape == "categories")
+        assert ss.is_peer_slide(slide) == (shape == "peers")
+    # 形を宣言したページには、必ず専用プロンプトがあること
+    assert set(ss.SHAPES) <= set(ss.PROMPTS)
+
+
+def test_peer_facts_carry_the_difference_not_the_subtraction():
+    """差はこちらで取る。LLM に引き算させない。"""
+    f = ss.facts_for("slide3_competitor_detail", _bundle())
+    rows = f["比較"]
+    assert [r["競合施設"] for r in rows] == ["競合A", "競合B"]
+    a = {x["指標"]: x for x in rows[0]["指標"]}
+    # 展示 80.0 vs 60.0 → 5点換算で 4.0 vs 3.0、差 +1.0
+    assert a["展示"]["対象"] == pytest.approx(4.0)
+    assert a["展示"]["競合"] == pytest.approx(3.0)
+    assert a["展示"]["差"] == pytest.approx(1.0)
+    # 差の大きい順に並ぶ（符号ではなく絶対値）
+    diffs = [abs(x["差"]) for x in rows[0]["指標"]]
+    assert diffs == sorted(diffs, reverse=True)
+
+
+def test_peer_facts_skip_axes_the_competitor_lacks():
+    b = _bundle(peer_topic_scores={"競合A": {"展示": 60.0}, "競合B": {}})
+    rows = ss.facts_for("slide3_competitor_detail", b)["比較"]
+    assert [x["指標"] for x in rows[0]["指標"]] == ["展示"]
+    assert rows[1]["指標"] == []          # 施設は落とさない。空で出す
+
+
+def test_peer_summary_is_generated(monkeypatch):
+    _fake_llm(monkeypatch)
+    s, err = ss.generate("slide3_competitor_detail", _bundle(), "KEY")
+    assert not err
+    assert [p["name"] for p in s.peers] == ["競合A", "競合B"]
+    assert s.peers[0]["hypothesis"] == "仮説"
+    assert not s.bullets and not s.headline
+
+
+def test_peer_order_follows_the_input_not_the_llm(monkeypatch):
+    """左のマッピングと照合できなくなるので、返り順には従わない。"""
+    from src import llm
+    monkeypatch.setattr(llm, "call_json", lambda *a, **k: ({"competitors": [
+        {"name": "競合B", "headline": "b", "diff": "d",
+         "reading": "r", "hypothesis": "h"},
+        {"name": "競合A", "headline": "a", "diff": "d",
+         "reading": "r", "hypothesis": "h"},
+    ]}, ""))
+    s, err = ss.generate("slide3_competitor_detail", _bundle(), "KEY")
+    assert not err
+    assert [p["name"] for p in s.peers] == ["競合A", "競合B"]
+
+
+def test_unknown_facilities_are_dropped(monkeypatch):
+    """比較していない施設を勝手に増やさせない。"""
+    from src import llm
+    monkeypatch.setattr(llm, "call_json", lambda *a, **k: ({"competitors": [
+        {"name": "競合A", "headline": "a", "diff": "d",
+         "reading": "r", "hypothesis": "h"},
+        {"name": "知らない館", "headline": "x", "diff": "d",
+         "reading": "r", "hypothesis": "h"},
+    ]}, ""))
+    s, _ = ss.generate("slide3_competitor_detail", _bundle(), "KEY")
+    assert [p["name"] for p in s.peers] == ["競合A"]
+
+
+def test_peer_prompt_keeps_the_department_rules():
+    flat = "".join(ss.prompt_for("slide3_competitor_detail").split())
+    for rule in ("入力順にすべて取り上げて",
+                 "点数や順位は論点を選ぶために使い",
+                 "原因や利用者の心理を断定しない",
+                 "具体的な場面や原文の内容を補わない"):
+        assert rule in flat, rule
+
+
+def test_peer_summary_survives_save_and_load(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    _fake_llm(monkeypatch)
+    b = _bundle()
+    s, _ = ss.generate("slide3_competitor_detail", b, "KEY")
+    ss.save(conn, "デモ美術館", "slide3_competitor_detail", b, s)
+    got = ss.get(conn, "デモ美術館", "slide3_competitor_detail", b)
+    assert got is not None and got.peers == s.peers

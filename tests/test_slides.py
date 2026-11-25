@@ -1379,6 +1379,65 @@ def test_compare_bottom_falls_back_when_no_summary(tmp_path):
     assert "この比較から言えること" not in html
 
 
+# --------------------------------------------------------------------------- #
+# SLIDE 3（詳細）競合ごとの評価差分（2026-11-15 デッキ 7P）
+# --------------------------------------------------------------------------- #
+def _peer_summary(names):
+    return {"slide3_competitor_detail": {"peers": [
+        {"name": n, "headline": f"{n}との違い", "diff": f"{n}差分",
+         "reading": f"{n}読み解き", "hypothesis": f"{n}仮説"}
+        for n in names]}}
+
+
+def test_detail_right_shows_every_competitor(tmp_path):
+    """**1施設も落とさない。** 落とすと左のマッピングと照合できなくなる。"""
+    b = _bundle(tmp_path, n_peers=5)
+    names = b["peer_names"]
+    b["slide_summaries"] = _peer_summary(names)
+    html = slides.slide3_competitor_detail(b)
+    assert "競合ごとの評価差分" in html
+    for n in names:
+        assert f"vs {n}" in html
+        assert f"{n}仮説" in html
+    assert "指定競合の傾向" not in html      # 要約に置き換わる
+
+
+def test_detail_right_falls_back_when_no_summary(tmp_path):
+    """生成前に空の枠だけ出さない。何を待っているか分からない面になる。"""
+    b = _bundle(tmp_path, n_peers=5)
+    b.pop("slide_summaries", None)
+    html = slides.slide3_competitor_detail(b)
+    assert "指定競合の傾向" in html
+    assert "競合ごとの評価差分" not in html
+
+
+def test_detail_rows_without_a_name_are_skipped(tmp_path):
+    b = _bundle(tmp_path, n_peers=5)
+    b["slide_summaries"] = {"slide3_competitor_detail": {"peers": [
+        {"name": "", "diff": "名無し"},
+        {"name": b["peer_names"][0], "diff": "ある"},
+    ]}}
+    html = slides.slide3_competitor_detail(b)
+    assert "名無し" not in html and "ある" in html
+
+
+def test_detail_blocks_share_the_height_instead_of_being_cut(tmp_path):
+    """施設数が増えてもブロックを削らず、flex で詰める。"""
+    b = _bundle(tmp_path, n_peers=5)
+    b["slide_summaries"] = _peer_summary(b["peer_names"])
+    body = slides._peer_diffs(b)
+    assert body.count("flex:1;min-height:0") == len(b["peer_names"])
+
+
+def test_detail_text_is_escaped(tmp_path):
+    b = _bundle(tmp_path, n_peers=5)
+    b["slide_summaries"] = {"slide3_competitor_detail": {"peers": [
+        {"name": "<script>x()</script>", "diff": "<b>生</b>"}]}}
+    html = slides._peer_diffs(b)
+    assert "<script>" not in html and "&lt;script&gt;" in html
+    assert "&lt;b&gt;" in html
+
+
 def test_bullet_markdown_bold_is_rendered_safely():
     """`**…**` だけ太字にし、他は素通しにしない。"""
     out = slides._md_bold("<script>x()</script> **太字** <b>生</b>")
