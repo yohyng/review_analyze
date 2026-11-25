@@ -45,6 +45,11 @@ def _fake_llm(monkeypatch, headline="順位は上位", body="46施設中3位。"
             counter.append(prompt)
         if err:
             return None, err
+        # 箇条書き型のページは形が違う。プロンプトの出力指示で見分ける。
+        if '"bullets"' in prompt:
+            return {"bullets": ["**見立て1。**「情報提供」で上回る。",
+                                "**見立て2。**「空間の質感」で下回る。",
+                                "**見立て3。**「再訪意向」が低い。"]}, ""
         return {"headline": headline, "body": body}, ""
 
     monkeypatch.setattr(llm, "call_json", _call)
@@ -189,3 +194,53 @@ def test_prompt_forbids_making_things_up():
     assert "数字にない話をしないこと" in ss.PROMPT
     assert "推測を書かないこと" in ss.PROMPT
     assert "JSON" in ss.PROMPT
+
+
+# --------------------------------------------------------------------------- #
+# 箇条書き型のページ（2026-11-15 のデッキ指示より）
+#   「このエリアに、この表から言えることの要約を AI に生成してほしい」
+# --------------------------------------------------------------------------- #
+def test_slide3_uses_its_own_prompt():
+    assert ss.is_bullet_slide("slide3_competitor_compare")
+    assert not ss.is_bullet_slide("slide2_market_position")
+    p = ss.prompt_for("slide3_competitor_compare")
+    assert p is not ss.PROMPT
+    assert '"bullets"' in p
+
+
+def test_slide3_prompt_keeps_the_department_rules():
+    """利用部門が書いた条件を落とさないこと。言い換えもしない。"""
+    p = ss.prompt_for("slide3_competitor_compare")
+    for rule in ("点数や順位は本文に記載しない",
+                 "「全体平均」列は施設数に含めない",
+                 "因果関係を断定しない",
+                 "表にない原因、口コミの内容、具体的な利用場面は補わない"):
+        assert rule in p, rule
+
+
+def test_bullets_are_generated_and_capped(tmp_path, monkeypatch):
+    _fake_llm(monkeypatch)
+    s, err = ss.generate("slide3_competitor_compare", _bundle(), "KEY")
+    assert not err
+    assert len(s.bullets) == 3
+    assert not s.headline and not s.body     # 箇条書き型は見出しを使わない
+    assert bool(s)
+
+
+def test_empty_bullets_is_an_error_not_a_blank_page(tmp_path, monkeypatch):
+    from src import llm
+    monkeypatch.setattr(llm, "call_json", lambda *a, **k: ({"bullets": []}, ""))
+    s, err = ss.generate("slide3_competitor_compare", _bundle(), "KEY")
+    assert err and not s
+
+
+def test_bullets_survive_save_and_load(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    _fake_llm(monkeypatch)
+    b = _bundle()
+    s, _ = ss.generate("slide3_competitor_compare", b, "KEY")
+    ss.save(conn, "デモ美術館", "slide3_competitor_compare", b, s)
+    got = ss.get(conn, "デモ美術館", "slide3_competitor_compare", b)
+    assert got is not None
+    assert got.bullets == s.bullets
+    assert got.from_cache

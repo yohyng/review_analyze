@@ -41,6 +41,9 @@ class Plan:
     address: str = ""
     display_name: str = ""          # Google 上の正式名称
     maps_url: str = ""
+    # 候補はあいまい一致で出しただけで、入力した名前はDBに無い。
+    # 画面は「入力した名前で新しく収集する」導線も出すこと。
+    typed_is_new: bool = False
 
     @property
     def needs_collection(self) -> bool:
@@ -99,20 +102,29 @@ def plan(conn, query: str, *, names: list[str] | None = None,
         return Plan(action=READY if n_rev else EMPTY,
                     query=q, facility=exact, n_reviews=n_rev)
 
-    # 部分一致 + あいまい検索。1件に絞れなければ選ばせる。
+    # ── 部分一致（強い手がかり）─────────────────────────────────── #
+    #    入力した文字列をそのまま含む名前。「美術館」→「名古屋市美術館」のような
+    #    絞り込みはこれ。1件に定まれば確定してよい。
     subs = [n for n in names if q.lower() in n.lower()]
-    cands: list[str] = []
-    for n in subs + search.suggest(q, names):
-        if n not in cands:
-            cands.append(n)
-
-    if len(cands) == 1:
-        only = cands[0]
+    if len(subs) == 1:
+        only = subs[0]
         n_rev = _review_count(conn, only)
         return Plan(action=READY if n_rev else EMPTY,
-                    query=q, facility=only, n_reviews=n_rev, candidates=cands)
-    if cands:
-        return Plan(action=AMBIGUOUS, query=q, candidates=cands[:8])
+                    query=q, facility=only, n_reviews=n_rev, candidates=subs)
+    if subs:
+        return Plan(action=AMBIGUOUS, query=q, candidates=subs[:8])
+
+    # ── あいまい一致（弱い手がかり）─────────────────────────────── #
+    #    **1件でも確定しない。** difflib の閾値は 0.45 で、日本語の施設名は
+    #    末尾の「〜美術館」「〜科学館」が共通するだけで超える。
+    #    実際に「名古屋市美術館」と入れて「デモ美術館」が確定され、
+    #    別施設の分析が始まっていた（2026-11-25 報告）。
+    #    似ているものは候補として出すが、選ぶのは人。typed_is_new を立てて、
+    #    画面側が「入力した名前で新しく収集する」導線も必ず出せるようにする。
+    fuzzy = search.suggest(q, names)
+    if fuzzy:
+        return Plan(action=AMBIGUOUS, query=q, candidates=fuzzy[:8],
+                    typed_is_new=True)
 
     # DB に手がかりが無い → Google で1件に確定できるか
     r = places.resolve(q, gmaps_key) if gmaps_key else None

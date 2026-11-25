@@ -243,3 +243,72 @@ def test_ready_path_does_not_touch_kaizode():
     ready = panel[panel.index("if p.action == onboard.READY:"):
                   panel.index("# ここから先は収集が要る")]
     assert "_kz_order" not in ready and "kaizode" not in ready
+
+
+# --------------------------------------------------------------------------- #
+# あいまい一致を確定にしない
+#   2026-11-25 報告: 「名古屋市美術館」と入力して「デモ美術館」が確定され、
+#   別施設の分析が始まっていた。difflib の閾値は 0.45 で、日本語の施設名は
+#   末尾の「〜美術館」が共通するだけで超える。
+# --------------------------------------------------------------------------- #
+class _NoRows:
+    def execute(self, *a, **k):
+        class R:
+            def fetchone(self): return (0,)
+            def fetchall(self): return []
+        return R()
+
+
+NAMES = ["デモ美術館", "競合A美術館", "科学館", "水族館"]
+
+
+def test_fuzzy_only_match_is_never_auto_accepted():
+    """似ているだけの1件を確定しない。選ぶのは人。"""
+    from src import onboard, search
+
+    # 前提: suggest は実際にこれを返す（閾値が緩い）
+    assert "デモ美術館" in search.suggest("名古屋市美術館", NAMES)
+
+    p = onboard.plan(_NoRows(), "名古屋市美術館", names=NAMES, gmaps_key="")
+    assert p.action == onboard.AMBIGUOUS
+    assert p.facility != "デモ美術館"
+    assert p.typed_is_new is True
+
+
+def test_substring_match_still_resolves():
+    """部分一致は強い手がかり。1件に定まれば確定してよい。"""
+    from src import onboard
+
+    p = onboard.plan(_NoRows(), "科学", names=NAMES, gmaps_key="")
+    assert p.action in (onboard.READY, onboard.EMPTY)
+    assert p.facility == "科学館"
+    assert p.typed_is_new is False
+
+
+def test_several_substring_matches_ask():
+    from src import onboard
+
+    p = onboard.plan(_NoRows(), "美術館", names=NAMES, gmaps_key="")
+    assert p.action == onboard.AMBIGUOUS
+    assert set(p.candidates) == {"デモ美術館", "競合A美術館"}
+    assert p.typed_is_new is False      # 入力は実在名の一部なので新規ではない
+
+
+def test_exact_match_wins_over_everything():
+    from src import onboard
+
+    p = onboard.plan(_NoRows(), "デモ美術館", names=NAMES, gmaps_key="")
+    assert p.action in (onboard.READY, onboard.EMPTY)
+    assert p.facility == "デモ美術館"
+
+
+def test_screen_offers_collecting_the_typed_name():
+    """候補しか出さないと、別施設の分析に誘導してしまう。
+
+    入力した名前で新しく収集する導線を必ず出すこと。
+    """
+    panel = _panel_src()
+    amb = panel[panel.index("onboard.AMBIGUOUS"):panel.index("onboard.NOT_FOUND")]
+    assert "p.typed_is_new" in amb
+    assert "どれでもない場合" in amb
+    assert "_collect_flow(" in amb

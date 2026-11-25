@@ -50,12 +50,14 @@ def _reliability(conn, target: str) -> dict | None:
 
 
 def _slide_summaries(conn, target: str) -> dict:
-    """スライド名 → {headline, body}。無ければ空の辞書。**通信しない**。"""
+    """スライド名 → {headline, body, bullets}。無ければ空の辞書。**通信しない**。"""
+    import json as _json
+
     try:
         from . import slide_summary  # noqa: PLC0415
 
         rows = conn.execute(
-            "SELECT s.slide, s.headline, s.body FROM slide_summary s "
+            "SELECT s.slide, s.headline, s.body, s.bullets_json FROM slide_summary s "
             "JOIN facility f ON f.id = s.facility_id "
             "WHERE f.name = ? AND s.model = ?",
             (target, slide_summary.model_name()),
@@ -65,7 +67,14 @@ def _slide_summaries(conn, target: str) -> dict:
     out = {}
     for r in rows:
         g = (lambda k, i: r[k] if not isinstance(r, tuple) else r[i])
-        out[g("slide", 0)] = {"headline": g("headline", 1), "body": g("body", 2)}
+        try:
+            bl = _json.loads(g("bullets_json", 3) or "[]")
+        except Exception:
+            bl = []
+        out[g("slide", 0)] = {
+            "headline": g("headline", 1), "body": g("body", 2),
+            "bullets": bl if isinstance(bl, list) else [],
+        }
     return out
 
 

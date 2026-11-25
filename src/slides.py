@@ -1676,6 +1676,65 @@ def _compare_header(b: dict, detail: bool) -> str:
                         sub_title="詳細" if detail else "")
 
 
+def _ai_bullets(b: dict, slide: str) -> str:
+    """LLM が書いた箇条書き要約。生成済みのときだけ中身を返す。
+
+    2026-11-15 のデッキで「このエリアに、この表から言えることの要約を
+    AI に生成してほしい」と指示があった箇所。生成は管理モードの
+    「📝 ページ要約」で行い、**描画からは呼ばない**（閲覧では課金しない）。
+    """
+    v = (b.get("slide_summaries") or {}).get(slide) or {}
+    items = [x for x in (v.get("bullets") or []) if str(x).strip()]
+    if not items:
+        return ""
+    rows = ""
+    for it in items:
+        rows += (
+            '<div style="display:flex;gap:.7cqw;align-items:flex-start;'
+            'padding:.26cqw 0;">'
+            f'<span style="flex:none;width:.5cqw;height:.5cqw;border-radius:50%;'
+            f'background:{T.ACCENT};margin-top:.52cqw;"></span>'
+            f'<span style="flex:1;min-width:0;font-size:1.04cqw;line-height:1.55;'
+            f'color:{T.INK};">{_md_bold(str(it))}</span></div>'
+        )
+    return rows
+
+
+def _md_bold(text: str) -> str:
+    """`**…**` だけを太字にする。それ以外はエスケープしたまま出す。
+
+    LLM に Markdown を書かせているので、素で escape すると `**` が見える。
+    かといって生で流すと本文が HTML として解釈されうるので、
+    **エスケープしてから** 限定的に戻す。
+    """
+    import re as _re
+    out = escape(text)
+    return _re.sub(r"\*\*(.+?)\*\*",
+                   lambda m: f'<b style="font-weight:800">{m.group(1)}</b>', out)
+
+
+def _compare_bottom(b: dict, win, lose) -> str:
+    """スライド3の下段。AI要約があればそれを、無ければ従来の2枚を出す。
+
+    要約が無い環境（APIキー未設定・未生成）で面が空になると、
+    「比較はできたが結論が無い」ページになるので、必ず何かを出す。
+    """
+    bullets = _ai_bullets(b, "slide3_competitor_compare")
+    if bullets:
+        # 箇条書き3点は従来の2枚組より縦を食う。9.4cqw だと3点目の
+        # ディセンダが切れるので、ここだけ少し高くする（上の図表が flex:1 で吸収する）。
+        return ('<div style="height:10.6cqw;flex:none;">'
+                + panel("この比較から言えること", bullets,
+                        head_size=1.25, pad=".55cqw 1.2cqw")
+                + '</div>')
+    return ('<div style="height:9.4cqw;flex:none;display:flex;gap:1.2cqw;">'
+            + panel("自施設だけの強み", _diff_grid(win, T.ACCENT, 6),
+                    head_size=1.25, pad=".6cqw 1.2cqw")
+            + panel("競合に負けている項目", _diff_grid(lose, T.BLUE, 4),
+                    head_size=1.25, pad=".6cqw 1.2cqw")
+            + '</div>')
+
+
 def slide3_competitor_compare(b: dict) -> str:
     """SLIDE 3「指定競合との比較」。docs/design/slide_p06.png。"""
     topics = _driver_topics(b)
@@ -1700,12 +1759,7 @@ def slide3_competitor_compare(b: dict) -> str:
         + panel("施設別スコアヒートマップ（5点満点）", _compare_heatmap(b, topics),
                 style="width:50cqw;flex:none", head_size=1.3, pad="0")
         + '</div>'
-        '<div style="height:9.4cqw;flex:none;display:flex;gap:1.2cqw;">'
-        + panel("自施設だけの強み", _diff_grid(win, T.ACCENT, 6),
-                head_size=1.25, pad=".6cqw 1.2cqw")
-        + panel("競合に負けている項目", _diff_grid(lose, T.BLUE, 4),
-                head_size=1.25, pad=".6cqw 1.2cqw")
-        + '</div>',
+        + _compare_bottom(b, win, lose),
         top=T.BODY_TOP_TIGHT, column=True, gap=.9,
     )
     return canvas(_compare_header(b, False), body, footer(score_note(b)))

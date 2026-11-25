@@ -456,12 +456,26 @@ def _onboard_panel(conn, p, meta: dict) -> None:
     """
     if p.action == onboard.AMBIGUOUS:
         _html("<div style='height:6px'></div>")
-        st.caption("どの施設ですか？")
+        if p.typed_is_new:
+            # 名前が似ているだけで、入力したものはDBに無い。
+            # ここで候補しか出さないと、別施設の分析が始まる
+            #（「名古屋市美術館」→「デモ美術館」が確定していた）。
+            st.caption(f"「{p.query}」はまだ登録されていません。"
+                       "名前が近いものがあります。")
+        else:
+            st.caption("どの施設ですか？")
         for _n in p.candidates:
             if st.button(f"{_n}　·　{meta.get(_n, '')}", key=f"an_sug_{_n}",
                          width="stretch"):
                 st.session_state["an_target"] = _n
                 st.rerun()
+        if p.typed_is_new:
+            _html("<div style='height:8px'></div>")
+            st.caption("どれでもない場合")
+            # 入力した名前そのもので収集に進む。plan をNEW扱いに作り替える。
+            _new = onboard.Plan(action=onboard.NEW, query=p.query,
+                                facility=p.query, display_name=p.query)
+            _collect_flow(conn, _new, _resolve_kaizode_key())
         return
 
     if p.action == onboard.NOT_FOUND:

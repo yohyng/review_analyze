@@ -1321,3 +1321,35 @@ def test_top3_baseline_label_follows_the_actual_comparison(tmp_path):
     c_html = slides.slide2_market_position(comp)
     assert "全体平均" in m_html and "選択競合の平均" not in m_html
     assert "選択競合の平均" in c_html and "全体平均" not in c_html
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 3 下段の AI 要約（2026-11-15 デッキの指示）
+# --------------------------------------------------------------------------- #
+def test_compare_bottom_shows_bullets_when_present(tmp_path):
+    b = _bundle(tmp_path, n_peers=4)
+    b["slide_summaries"] = {"slide3_competitor_compare": {"bullets": [
+        "**強みは情報提供。**「情報提供」「美的完成度」で上回る。",
+        "**体験の質に弱さ。**「空間の質感」で下回る。",
+    ]}}
+    html = slides.slide3_competitor_compare(b)
+    assert "この比較から言えること" in html
+    assert "強みは情報提供" in html
+    assert "自施設だけの強み" not in html      # 要約に置き換わる
+
+
+def test_compare_bottom_falls_back_when_no_summary(tmp_path):
+    """要約が無くても下段を空にしない（結論の無いページにしない）。"""
+    b = _bundle(tmp_path, n_peers=4)
+    b.pop("slide_summaries", None)
+    html = slides.slide3_competitor_compare(b)
+    assert "自施設だけの強み" in html
+    assert "この比較から言えること" not in html
+
+
+def test_bullet_markdown_bold_is_rendered_safely():
+    """`**…**` だけ太字にし、他は素通しにしない。"""
+    out = slides._md_bold("<script>x()</script> **太字** <b>生</b>")
+    assert "<b style=\"font-weight:800\">太字</b>" in out
+    assert "&lt;script&gt;" in out and "<script>" not in out
+    assert "&lt;b&gt;" in out

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 MODEL_FALLBACK = "gemini-1.5-flash"
@@ -44,10 +44,11 @@ class Summary:
     slide: str
     headline: str = ""
     body: str = ""
+    bullets: list = field(default_factory=list)   # 箇条書き型のページ用
     from_cache: bool = False
 
     def __bool__(self) -> bool:
-        return bool(self.headline or self.body)
+        return bool(self.headline or self.body or self.bullets)
 
 
 # --------------------------------------------------------------------------- #
@@ -133,6 +134,59 @@ PROMPT = """あなたは施設の口コミ分析レポートの読み手を助�
 {{"headline": "...", "body": "..."}}"""
 
 
+# ── スライド別のプロンプト ──────────────────────────────────────────── #
+#    既定は上の PROMPT（見出し＋1〜2文）。形が違うページだけここで上書きする。
+#    slide3 は利用部門が書いた指示をそのまま採用した（2026-11-15 のデッキ由来）。
+#    箇条書き3点で、点数・順位を本文に出さず、因果を断定しない、という条件が
+#    先に決まっていたので、こちらで言い換えずに原文を使う。
+SLIDE3_PROMPT = """あなたは施設の競合比較を行うデータアナリストです。
+比較表を俯瞰し、指定競合と並べたときに対象施設がどのような施設として見えるかを、
+改善担当者向けに箇条書き3点でまとめてください。
+
+ページ: {title}
+
+数字:
+{facts}
+
+### 分析手順
+1. **強み** 対象施設が競合を上回る指標から、施設の特徴をよく表すものを選び、
+   利用者にとってどのような価値が際立っているかを述べる。
+2. **改善余地** 対象施設が競合を下回る指標から、施設のどの側面に弱さがあるかを
+   述べる。同じ領域でも評価が分かれる場合は、その違いを取り上げる。
+   例として、多様性や更新性が高く、品質の評価が低い組み合わせがある。
+3. **評価の特徴** 「体験満足度」「再訪意向」「推奨意向」などを照らし合わせ、
+   評価の開きや共通する傾向を述べる。明確な開きがない場合は、表全体から
+   読み取れる別の特徴を取り上げる。
+
+### 記述ルール
+- 指標は表の正式名称を使い、個別に「」で囲む。見立てには括弧を付けない。
+- 各項目は短い見立てから始め、根拠となる指標を1〜3個示す。
+- **点数や順位は本文に記載しない。**「競合すべてを上回る」などの表現は、
+  比較可能な全施設で確認できた場合に使う。差が小さい場合は近い水準として扱う。
+- 比較は同じ指標の施設間で行う。「全体平均」列は施設数に含めない。
+- スコアが言及量を示す場合は、話題に上がる傾向として表現する。
+- 指標の高低を結びつけて特徴を述べる際は、**因果関係を断定しない。
+  表にない原因、口コミの内容、具体的な利用場面は補わない。**
+
+### 出力形式
+次のJSONだけを返す。各要素は「**短い見立て。**「指標名」「指標名」を使って、
+競合との違いを1文で示す。」の形にする。
+{{"bullets": ["...", "...", "..."]}}"""
+
+PROMPTS = {
+    "slide3_competitor_compare": SLIDE3_PROMPT,
+}
+
+
+def prompt_for(slide: str) -> str:
+    return PROMPTS.get(slide, PROMPT)
+
+
+def is_bullet_slide(slide: str) -> bool:
+    """箇条書き型で出すページか。描画側が形を切り替えるのに使う。"""
+    return slide in PROMPTS
+
+
 def generate(slide: str, b: dict, api_key: str, *,
              model: Optional[str] = None) -> tuple[Summary, str]:
     """1枚ぶん生成する。戻りは (Summary, エラー文字列)。
@@ -142,13 +196,20 @@ def generate(slide: str, b: dict, api_key: str, *,
     from . import llm  # noqa: PLC0415
 
     facts = facts_for(slide, b)
-    prompt = PROMPT.format(
+    bullet = is_bullet_slide(slide)
+    prompt = prompt_for(slide).format(
         title=SLIDE_TITLES.get(slide, slide),
         facts=json.dumps(facts, ensure_ascii=False, indent=2, default=str),
     )
-    data, err = llm.call_json(prompt, api_key, max_tokens=300, temperature=0.2)
+    data, err = llm.call_json(prompt, api_key,
+                              max_tokens=700 if bullet else 300, temperature=0.2)
     if err or not isinstance(data, dict):
         return Summary(slide=slide), (err or "想定外の応答")
+    if bullet:
+        items = [str(x).strip() for x in (data.get("bullets") or []) if str(x).strip()]
+        if not items:
+            return Summary(slide=slide), "箇条書きが空でした"
+        return Summary(slide=slide, bullets=items[:3]), ""
     return Summary(slide=slide,
                    headline=str(data.get("headline") or "").strip(),
                    body=str(data.get("body") or "").strip()), ""
@@ -176,14 +237,19 @@ def get(conn, facility: str, slide: str, b: dict) -> Optional[Summary]:
     if fid is None:
         return None
     row = conn.execute(
-        "SELECT headline, body FROM slide_summary "
+        "SELECT headline, body, bullets_json FROM slide_summary "
         "WHERE facility_id = ? AND slide = ? AND fact_hash = ? AND model = ?",
         (fid, slide, fact_hash(facts_for(slide, b)), model_name()),
     ).fetchone()
     if row is None:
         return None
     g = (lambda k, i: row[k] if not isinstance(row, tuple) else row[i])
+    try:
+        bullets = json.loads(g("bullets_json", 2) or "[]")
+    except Exception:
+        bullets = []
     return Summary(slide=slide, headline=g("headline", 0), body=g("body", 1),
+                   bullets=bullets if isinstance(bullets, list) else [],
                    from_cache=True)
 
 
@@ -193,10 +259,10 @@ def save(conn, facility: str, slide: str, b: dict, s: Summary) -> None:
         return
     conn.execute(
         "INSERT OR REPLACE INTO slide_summary"
-        "(facility_id, slide, fact_hash, model, headline, body)"
-        " VALUES (?,?,?,?,?,?)",
+        "(facility_id, slide, fact_hash, model, headline, body, bullets_json)"
+        " VALUES (?,?,?,?,?,?,?)",
         (fid, slide, fact_hash(facts_for(slide, b)), model_name(),
-         s.headline, s.body),
+         s.headline, s.body, json.dumps(s.bullets, ensure_ascii=False)),
     )
     conn.commit()
 
