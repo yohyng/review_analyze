@@ -46,10 +46,12 @@ class Summary:
     body: str = ""
     bullets: list = field(default_factory=list)   # 箇条書き型のページ用
     categories: dict = field(default_factory=dict)  # {カテゴリ: 1文}
+    overall: str = ""                            # 全体評価（1段落）
     from_cache: bool = False
 
     def __bool__(self) -> bool:
-        return bool(self.headline or self.body or self.bullets or self.categories)
+        return bool(self.headline or self.body or self.bullets
+                    or self.categories or self.overall)
 
 
 # --------------------------------------------------------------------------- #
@@ -74,18 +76,20 @@ def facts_for(slide: str, b: dict) -> dict:
         "比較の範囲": b.get("scope_label"),
     }
 
-    if slide == "slide2_market_detail":
-        # カテゴリ別要約はカテゴリの数字だけを渡す（軸の生スコアごと）。
+    if slide == "slide2_market_position":
+        # カテゴリ別要約と全体評価の両方がこのページ。数字だけを渡す。
         from . import categories as _cat  # noqa: PLC0415
 
-        rows = b.get("category_scores") or []
-        return {**common, "カテゴリ": _cat.facts_for_prompt(rows)}
-    if slide == "slide2_market_position":
         return {**common,
                 "順位": b.get("rank"), "母数": b.get("total_fac"),
                 "総合スコア5点": (round(b["overall_sentiment"] / 20, 2)
                              if b.get("overall_sentiment") is not None else None),
-                "強み弱み": topics(3)}
+                "強み弱み": topics(3),
+                "カテゴリ": _cat.facts_for_prompt(b.get("category_scores") or [])}
+    if slide == "slide2_market_detail":
+        return {**common,
+                "順位": b.get("rank"), "母数": b.get("total_fac"),
+                "強み弱み": topics(5)}
     if slide.startswith("slide3"):
         return {**common, "競合": b.get("peer_names"), "強み弱み": topics(5)}
     if slide == "slide4_timeline":
@@ -214,13 +218,78 @@ CATEGORY_PROMPT = """あなたは施設改善を支援するデータアナリ�
 {{"categories": {{"コンテンツ": "...", "空間設計": "...", "サービス": "...",
  "価格・決済": "...", "アクセス": "...", "ブランド": "...", "総合評価": "..."}}}}"""
 
+# SLIDE 2 のページ要約。利用部門が書いた2つの指示を1本にまとめている
+# （2026-11-15 のデッキ由来。4P「全体評価」と 4P右下「カテゴリ別評価」）。
+# 同じページの同じ数字を見るので、呼び出しを1回にして両方返させる。
+# **条件は原文のまま**。順位・点数を本文に書かない、言及の少なさを低評価と
+# 決めつけない、一部の口コミを施設全体に広げない、という決めが先にあったため。
+SLIDE2_PROMPT = """あなたは施設改善を支援するデータアナリストです。
+対象施設の評価項目と比較対象施設のスコアを読み、2つの出力を返してください。
+
+ページ: {title}
+
+数字:
+{facts}
+
+══ 出力1: 全体評価 ══
+
+### 分析の観点
+1. 施設を特徴づける価値を見極める。比較対象との評価差を照らし合わせ、
+   個別の強みを、利用者がこの施設を訪れる理由としてまとめる。
+2. 施設の価値がどの場面で十分に届いていないかを捉える。評価の低い項目に
+   ついて、どの側面に課題があるかを示す。体験満足度・再訪意向・推奨意向
+   との関係は、全体像を説明するうえで重要な場合に取り上げる。
+3. 施設改善の観点から、何が主要な課題かを結論づける。施設の魅力そのもの、
+   魅力へのアクセス、館内での体験、運営品質など、どこに課題があるのかを
+   示す。複数の弱点が同じ課題に結びつく場合は、一つにまとめる。
+   明確な弱点が見られない場合は、評価を支えている要素を結論とする。
+
+### 根拠の扱い
+- **順位、点数、平均との差は判断材料として使い、本文には記載しない。**
+- 要因と結果が同時に観測された場合は、それぞれの傾向として記述する。
+- **一部の口コミや特定の利用場面に見られる課題は、施設全体に広げて
+  表現しない。**
+
+日本語で150〜180字程度、3文・1段落。
+第1文で「どんな価値を持つ施設か」を言い切る。
+第2文で、その価値を支える体験と、課題が現れる場面を具体的に示す。
+第3文で、施設改善の観点から全体をどう評価するかをまとめる。
+
+══ 出力2: カテゴリ別評価 ══
+
+各カテゴリの順位を見た担当者が、その順位の中身を一読で理解できるように、
+カテゴリごとに評価を1文で要約してください。
+
+### 判断手順
+1. カテゴリ内の全項目を見て、比較対象との差が目立つ項目と、
+   カテゴリの順位だけでは見えにくい項目間のばらつきを確認する。
+2. 要約に入れる論点を最大2つに絞る。全体に同じ傾向が見られる場合は
+   代表的な特徴を1つ選ぶ。強い項目と弱い項目が混在する場合は、両方を示す。
+
+### 記述ルール
+- 順位・点数・平均との差は論点の選定に使う。**要約欄には数値を繰り返さない。**
+- カテゴリ内の項目だけで評価する。
+- スコアが言及量を表す場合、**言及が少ないことを低評価と判断せず**、
+  確認できた範囲を示す。
+- 「総合評価」は、体験満足度・比較優位性・再訪意向・推奨意向を扱う
+  評価カテゴリとして要約する。
+- 入力が不足し、評価傾向を読み取れない場合は「判断材料が限られる」と記載する。
+
+各カテゴリの要約は日本語1文、40〜60字程度。
+
+══ 返す形 ══
+次のJSONだけを返す。
+{{"overall": "...",
+  "categories": {{"コンテンツ": "...", "空間設計": "...", "サービス": "...",
+  "価格・決済": "...", "アクセス": "...", "ブランド": "...", "総合評価": "..."}}}}"""
+
 PROMPTS = {
     "slide3_competitor_compare": SLIDE3_PROMPT,
-    "slide2_market_detail": CATEGORY_PROMPT,
+    "slide2_market_position": SLIDE2_PROMPT,
 }
 
 # カテゴリ別要約は {カテゴリ: 1文} の形で返る。箇条書きとも見出し型とも違う。
-CATEGORY_SLIDES = ("slide2_market_detail",)
+CATEGORY_SLIDES = ("slide2_market_position",)
 
 
 def prompt_for(slide: str) -> str:
@@ -262,13 +331,14 @@ def generate(slide: str, b: dict, api_key: str, *,
 
         got = data.get("categories")
         if not isinstance(got, dict):
-            return Summary(slide=slide), "カテゴリ別要約の形が違う"
+            got = {}
         # 知らないカテゴリ名は捨てる。資料の7カテゴリ以外を増やさない。
         clean = {k: str(v).strip() for k, v in got.items()
                  if k in _cat.ORDER and str(v).strip()}
-        if not clean:
-            return Summary(slide=slide), "カテゴリ別要約が空でした"
-        return Summary(slide=slide, categories=clean), ""
+        overall = str(data.get("overall") or "").strip()
+        if not clean and not overall:
+            return Summary(slide=slide), "全体評価もカテゴリ別要約も空でした"
+        return Summary(slide=slide, categories=clean, overall=overall), ""
     if bullet:
         items = [str(x).strip() for x in (data.get("bullets") or []) if str(x).strip()]
         if not items:
@@ -301,7 +371,8 @@ def get(conn, facility: str, slide: str, b: dict) -> Optional[Summary]:
     if fid is None:
         return None
     row = conn.execute(
-        "SELECT headline, body, bullets_json, categories_json FROM slide_summary "
+        "SELECT headline, body, bullets_json, categories_json, overall_text "
+        "FROM slide_summary "
         "WHERE facility_id = ? AND slide = ? AND fact_hash = ? AND model = ?",
         (fid, slide, fact_hash(facts_for(slide, b)), model_name()),
     ).fetchone()
@@ -319,6 +390,7 @@ def get(conn, facility: str, slide: str, b: dict) -> Optional[Summary]:
     return Summary(slide=slide, headline=g("headline", 0), body=g("body", 1),
                    bullets=bullets if isinstance(bullets, list) else [],
                    categories=cats if isinstance(cats, dict) else {},
+                   overall=g("overall_text", 4) or "",
                    from_cache=True)
 
 
@@ -329,10 +401,10 @@ def save(conn, facility: str, slide: str, b: dict, s: Summary) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO slide_summary"
         "(facility_id, slide, fact_hash, model, headline, body, bullets_json,"
-        " categories_json) VALUES (?,?,?,?,?,?,?,?)",
+        " categories_json, overall_text) VALUES (?,?,?,?,?,?,?,?,?)",
         (fid, slide, fact_hash(facts_for(slide, b)), model_name(),
          s.headline, s.body, json.dumps(s.bullets, ensure_ascii=False),
-         json.dumps(s.categories, ensure_ascii=False)),
+         json.dumps(s.categories, ensure_ascii=False), s.overall),
     )
     conn.commit()
 

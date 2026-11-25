@@ -1159,6 +1159,26 @@ def _top3_card(title: str, rows: list, accent: str, icon: str,
     )
 
 
+def _overall_eval_body(b: dict) -> str:
+    """全体評価（LLM が書く1段落）。
+
+    2026-11-15 のデッキの指示:
+      「全体の点数表から総合評価をテキストで生成したい」
+
+    未生成なら、生成すれば出ることを書く。白紙にしない。
+    """
+    txt = ((b.get("slide_summaries") or {})
+           .get("slide2_market_position", {}).get("overall") or "").strip()
+    if not txt:
+        return (f'<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.INK_FAINT};font-size:1.02cqw;'
+                'text-align:center;line-height:1.6;">'
+                '全体評価は未生成です<br>'
+                '管理モードの「ページ要約」で生成できます</div>')
+    return (f'<div style="flex:1;min-height:0;font-size:1.06cqw;line-height:1.72;'
+            f'color:{T.INK};">{escape(txt)}</div>')
+
+
 def _category_body(b: dict) -> str:
     """評価軸のカテゴリ別の順位と要約（7カテゴリ）。
 
@@ -1188,8 +1208,8 @@ def _category_body(b: dict) -> str:
             '<span style="color:%s;">判断材料が限られる</span>' % T.INK_FAINT
             if r.score is None else "")
         out += (
-            f'<div style="display:flex;gap:.8cqw;align-items:flex-start;'
-            f'padding:.42cqw 0;border-top:1px solid {T.LINE};">'
+            f'<div style="display:flex;gap:.7cqw;align-items:flex-start;'
+            f'padding:.22cqw 0;border-top:1px solid {T.LINE};">'
             f'<span style="flex:none;width:7.4cqw;font-size:1.06cqw;'
             f'font-weight:800;color:{T.INK};">{escape(r.name)}</span>'
             f'<span style="flex:none;width:5.2cqw;font-size:1.02cqw;'
@@ -1197,7 +1217,7 @@ def _category_body(b: dict) -> str:
             f'{rank_txt}</span>'
             f'<span style="flex:none;width:3.4cqw;font-size:.92cqw;color:{col};">'
             f'{escape(r.standing)}</span>'
-            f'<span style="flex:1;min-width:0;font-size:.98cqw;line-height:1.5;'
+            f'<span style="flex:1;min-width:0;font-size:.88cqw;line-height:1.38;'
             f'color:{T.INK_SUB};">{note}</span></div>'
         )
     return f'<div style="flex:1;min-height:0;overflow:hidden;">{out}</div>'
@@ -1224,8 +1244,15 @@ def slide2_market_position(b: dict) -> str:
         + _top3_card("弱み TOP3", wk, T.BLUE, "▼", b)
         + '</div>'
     )
-    right = panel("評価軸カテゴリ別の位置", _category_body(b),
-                  style="flex:1", pad=".8cqw 1.1cqw")
+    right = (
+        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
+        'gap:1.2cqw;min-height:0;">'
+        + panel("全体評価", _overall_eval_body(b),
+                style="height:13.2cqw;flex:none", pad=".6cqw 1.1cqw")
+        + panel("評価軸カテゴリ別の位置", _category_body(b),
+                style="flex:1", pad=".8cqw 1.1cqw")
+        + '</div>'
+    )
     return canvas(
         slide_header("2", f"{scope}ポジション", meta),
         body_area(f'{left}{mid}{right}'),

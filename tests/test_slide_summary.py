@@ -48,7 +48,8 @@ def _fake_llm(monkeypatch, headline="順位は上位", body="46施設中3位。"
         # カテゴリ別要約は {カテゴリ: 1文} で返る。
         if '"categories"' in prompt:
             from src import categories as _c
-            return {"categories": {k: f"{k}の要約。" for k in _c.ORDER}}, ""
+            return {"overall": "総合評価の本文。",
+                    "categories": {k: f"{k}の要約。" for k in _c.ORDER}}, ""
         # 箇条書き型のページは形が違う。プロンプトの出力指示で見分ける。
         if '"bullets"' in prompt:
             return {"bullets": ["**見立て1。**「情報提供」で上回る。",
@@ -92,12 +93,12 @@ def test_every_listed_slide_produces_facts():
 def test_hash_follows_the_numbers():
     b1 = _bundle()
     b2 = _bundle(rank=5)                     # 数字が変わった
-    s = "slide2_market_position"
+    s = "slide2_market_detail"
     assert ss.fact_hash(ss.facts_for(s, b1)) != ss.fact_hash(ss.facts_for(s, b2))
 
 
 def test_hash_is_stable_for_the_same_numbers():
-    s = "slide2_market_position"
+    s = "slide2_market_detail"
     h1 = ss.fact_hash(ss.facts_for(s, _bundle()))
     h2 = ss.fact_hash(ss.facts_for(s, _bundle()))
     assert h1 == h2
@@ -113,7 +114,7 @@ def test_get_does_not_talk_to_the_network(tmp_path, monkeypatch):
 
     monkeypatch.setattr(llm, "call_json", _boom)
     conn = _conn(tmp_path)
-    assert ss.get(conn, "デモ美術館", "slide2_market_position", _bundle()) is None
+    assert ss.get(conn, "デモ美術館", "slide2_market_detail", _bundle()) is None
 
 
 def test_round_trip(tmp_path, monkeypatch):
@@ -121,11 +122,11 @@ def test_round_trip(tmp_path, monkeypatch):
     b = _bundle()
     _fake_llm(monkeypatch)
 
-    s, err = ss.generate("slide2_market_position", b, "KEY")
+    s, err = ss.generate("slide2_market_detail", b, "KEY")
     assert not err and s.headline == "順位は上位"
-    ss.save(conn, "デモ美術館", "slide2_market_position", b, s)
+    ss.save(conn, "デモ美術館", "slide2_market_detail", b, s)
 
-    got = ss.get(conn, "デモ美術館", "slide2_market_position", b)
+    got = ss.get(conn, "デモ美術館", "slide2_market_detail", b)
     assert got and got.body == "46施設中3位。" and got.from_cache
 
 
@@ -133,11 +134,11 @@ def test_changing_the_numbers_invalidates_the_summary(tmp_path, monkeypatch):
     conn = _conn(tmp_path)
     _fake_llm(monkeypatch)
     b = _bundle()
-    s, _ = ss.generate("slide2_market_position", b, "KEY")
-    ss.save(conn, "デモ美術館", "slide2_market_position", b, s)
+    s, _ = ss.generate("slide2_market_detail", b, "KEY")
+    ss.save(conn, "デモ美術館", "slide2_market_detail", b, s)
 
     moved = _bundle(rank=11)
-    assert ss.get(conn, "デモ美術館", "slide2_market_position", moved) is None, \
+    assert ss.get(conn, "デモ美術館", "slide2_market_detail", moved) is None, \
         "数字が変わったのに古い要約を返している"
 
 
@@ -206,7 +207,7 @@ def test_prompt_forbids_making_things_up():
 # --------------------------------------------------------------------------- #
 def test_slide3_uses_its_own_prompt():
     assert ss.is_bullet_slide("slide3_competitor_compare")
-    assert not ss.is_bullet_slide("slide2_market_position")
+    assert not ss.is_bullet_slide("slide2_market_detail")
     p = ss.prompt_for("slide3_competitor_compare")
     assert p is not ss.PROMPT
     assert '"bullets"' in p
@@ -254,14 +255,14 @@ def test_bullets_survive_save_and_load(tmp_path, monkeypatch):
 # カテゴリ別要約（2026-11-15 デッキ「評価軸のカテゴリごとの評価順位と要約」）
 # --------------------------------------------------------------------------- #
 def test_category_slide_uses_its_own_prompt():
-    assert ss.is_category_slide("slide2_market_detail")
-    assert not ss.is_bullet_slide("slide2_market_detail")
-    p = ss.prompt_for("slide2_market_detail")
+    assert ss.is_category_slide("slide2_market_position")
+    assert not ss.is_bullet_slide("slide2_market_position")
+    p = ss.prompt_for("slide2_market_position")
     assert '"categories"' in p
 
 
 def test_category_prompt_keeps_the_department_rules():
-    p = ss.prompt_for("slide2_market_detail")
+    p = ss.prompt_for("slide2_market_position")
     for rule in ("要約欄には数値を繰り返さない",
                  "低評価と判断せず",
                  "判断材料が限られる"):
@@ -271,9 +272,10 @@ def test_category_prompt_keeps_the_department_rules():
 def test_category_summary_is_generated(tmp_path, monkeypatch):
     from src import categories as cat
     _fake_llm(monkeypatch)
-    s, err = ss.generate("slide2_market_detail", _bundle(), "KEY")
+    s, err = ss.generate("slide2_market_position", _bundle(), "KEY")
     assert not err
     assert set(s.categories) == set(cat.ORDER)
+    assert s.overall == "総合評価の本文。"
     assert not s.bullets and not s.headline
 
 
@@ -282,7 +284,7 @@ def test_unknown_categories_are_dropped(monkeypatch):
     from src import llm
     monkeypatch.setattr(llm, "call_json", lambda *a, **k: (
         {"categories": {"サービス": "ok", "知らない分類": "だめ"}}, ""))
-    s, err = ss.generate("slide2_market_detail", _bundle(), "KEY")
+    s, err = ss.generate("slide2_market_position", _bundle(), "KEY")
     assert not err
     assert set(s.categories) == {"サービス"}
 
@@ -291,7 +293,42 @@ def test_category_summary_survives_save_and_load(tmp_path, monkeypatch):
     conn = _conn(tmp_path)
     _fake_llm(monkeypatch)
     b = _bundle()
-    s, _ = ss.generate("slide2_market_detail", b, "KEY")
-    ss.save(conn, "デモ美術館", "slide2_market_detail", b, s)
-    got = ss.get(conn, "デモ美術館", "slide2_market_detail", b)
+    s, _ = ss.generate("slide2_market_position", b, "KEY")
+    ss.save(conn, "デモ美術館", "slide2_market_position", b, s)
+    got = ss.get(conn, "デモ美術館", "slide2_market_position", b)
     assert got is not None and got.categories == s.categories
+
+
+def test_slide2_asks_for_both_outputs_in_one_call():
+    """全体評価とカテゴリ別は同じ材料を見る。LLM を2回呼ばない。"""
+    p = ss.prompt_for("slide2_market_position")
+    assert '"overall"' in p and '"categories"' in p
+
+
+def test_overall_text_keeps_the_department_rules():
+    """デッキ4P「全体評価」の指示。数値や順位を本文に書かせない。"""
+    flat = " ".join(ss.prompt_for("slide2_market_position").split())
+    for rule in ("順位、点数、平均との差は判断材料として使い、本文には記載しない",
+                 "施設全体に広げて 表現しない".replace(" ", "")):
+        assert rule in flat.replace(" ", ""), rule
+
+
+def test_overall_survives_save_and_load(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    _fake_llm(monkeypatch)
+    b = _bundle()
+    s, _ = ss.generate("slide2_market_position", b, "KEY")
+    ss.save(conn, "デモ美術館", "slide2_market_position", b, s)
+    got = ss.get(conn, "デモ美術館", "slide2_market_position", b)
+    assert got is not None and got.overall == s.overall
+
+
+def test_missing_overall_is_not_an_error(monkeypatch):
+    """LLM が overall を返さなくても、カテゴリ側は捨てない。"""
+    from src import llm
+    monkeypatch.setattr(llm, "call_json", lambda *a, **k: (
+        {"categories": {"サービス": "ok"}}, ""))
+    s, err = ss.generate("slide2_market_position", _bundle(), "KEY")
+    assert not err
+    assert s.overall == ""
+    assert s.categories == {"サービス": "ok"}
