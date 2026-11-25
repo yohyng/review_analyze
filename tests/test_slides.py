@@ -1367,7 +1367,7 @@ def _labels(html: str) -> list:
 def test_empty_profile_rows_are_dropped():
     """「—」の行を並べない。空の行は情報ではない。"""
     out = slides._profile_rows({
-        "google_rating": 4.2, "address": "東京都港区",
+        "avg_rating": 4.2, "address": "東京都港区",
         "open_year": None, "floor_area": "", "category": "物販店"})
     assert _labels(out) == ["施設星評価", "住所", "マーケットカテゴリ"]
     assert "開業日" not in out and "延床" not in out
@@ -1375,29 +1375,25 @@ def test_empty_profile_rows_are_dropped():
 
 def test_all_rows_shown_when_present():
     out = slides._profile_rows({
-        "google_rating": 4.2, "address": "東京都港区", "open_year": "2016",
+        "avg_rating": 4.2, "address": "東京都港区", "open_year": "2016",
         "floor_area": "12,000㎡", "category": "物販店"})
     assert _labels(out) == ["施設星評価", "住所", "開業日", "延床", "マーケットカテゴリ"]
 
 
-def test_star_is_the_google_rating_not_our_average():
-    """施設星評価は **Google マップの評価**。
+def test_star_uses_the_collected_average():
+    """施設星評価は収集した口コミの平均。
 
-    集めた口コミの平均（avg_rating）とは母数が違う。取り違えると、
-    口コミサマリーの「総合評価 x.x / 5」と同じ数字が2回出たうえ、
-    意味も間違える。
+    収集しているのは Google マップのクチコミなので、分析期間ぶんの
+    Google 評価にあたる。
     """
     out = slides._profile_rows({
-        "google_rating": 4.2, "avg_rating": 3.4,
-        "address": "東京都港区", "category": "物販店"})
-    assert "4.2" in out
-    assert "3.4" not in out
+        "avg_rating": 3.4, "address": "東京都港区", "category": "物販店"})
+    assert "3.4" in out
 
 
-def test_star_row_is_dropped_when_google_rating_is_missing():
+def test_star_row_is_dropped_without_a_rating():
     out = slides._profile_rows({
-        "google_rating": None, "avg_rating": 3.4,
-        "address": "東京都港区", "category": "物販店"})
+        "avg_rating": None, "address": "東京都港区", "category": "物販店"})
     assert "施設星評価" not in out
     assert _labels(out) == ["住所", "マーケットカテゴリ"]
 

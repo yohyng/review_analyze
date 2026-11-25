@@ -664,10 +664,11 @@ def _profile_rows(b: dict) -> str:
     OSM/Wikidata からの自動補完が効かないことが多く、「—」の行が並んで
     いた。空の行は情報ではないので落とし、代わりに常に出せる星評価を置く。
     """
-    # **Google マップ上の評価**。集めた口コミの平均（avg_rating）とは別物で、
-    # 母数が違う。口コミサマリーの「総合評価 x.x / 5」が後者なので、
-    # ここで avg_rating を使うと同じ数字が2回出たうえ、意味も取り違える。
-    g = b.get("google_rating")
+    # 集めた口コミの平均。**これが Google マップの評価**にあたる
+    # （収集しているのは Google マップのクチコミで、分析期間ぶんが母数）。
+    # 口コミサマリーの「総合評価 x.x / 5」と同じ値になるが、
+    # あちらは件数と並べた指標、こちらは施設の属性として出す。
+    g = b.get("avg_rating")
     star = ("" if g is None else
             f'<span style="font-weight:800;font-variant-numeric:tabular-nums;">'
             f'{float(g):.1f}</span>'

@@ -784,10 +784,6 @@ def _places_cached(_conn_key: str, name: str, api_key: str) -> dict:
         "data_uri": uri,
         "attribution": d.photo.attribution if (d.photo and uri) else "",
         "address": d.address,
-        # Google マップ上の総合評価と件数。**保存しないこと**（規約上 place_id 以外は
-        # 都度取得）。同じ Details 呼び出しに相乗りしているので追加課金は無い。
-        "google_rating": d.rating,
-        "google_review_count": d.review_count,
     }
 
 
@@ -816,15 +812,6 @@ def _places_photos(conn, bundle: dict) -> None:
     if got.get("address") and not (bundle.get("address") or "").strip():
         bundle["address"] = got["address"]
         bundle["address_from_google"] = True
-    # Google マップ上の総合評価。**集めた口コミの平均とは別物**なので上書きしない。
-    #   口コミサマリーの「総合評価 x.x / 5」 … KAIZODE で拾えたぶんの平均
-    #   プロフィールの「施設星評価」      … Google が表示している評価（全件が母数）
-    # 取り込み時に保存した general_rating があればそちらを使い、無ければ live を使う。
-    if got.get("google_rating") is not None and bundle.get("google_rating") is None:
-        bundle["google_rating"] = got["google_rating"]
-        bundle["google_rating_live"] = True
-    if got.get("google_review_count") is not None:
-        bundle.setdefault("google_review_count", got["google_review_count"])
 
     for peer in (bundle.get("peer_display") or []):
         if peer.get("photo_data_uri"):
