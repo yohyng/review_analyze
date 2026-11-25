@@ -45,6 +45,10 @@ def _fake_llm(monkeypatch, headline="順位は上位", body="46施設中3位。"
             counter.append(prompt)
         if err:
             return None, err
+        # カテゴリ別要約は {カテゴリ: 1文} で返る。
+        if '"categories"' in prompt:
+            from src import categories as _c
+            return {"categories": {k: f"{k}の要約。" for k in _c.ORDER}}, ""
         # 箇条書き型のページは形が違う。プロンプトの出力指示で見分ける。
         if '"bullets"' in prompt:
             return {"bullets": ["**見立て1。**「情報提供」で上回る。",
@@ -244,3 +248,50 @@ def test_bullets_survive_save_and_load(tmp_path, monkeypatch):
     assert got is not None
     assert got.bullets == s.bullets
     assert got.from_cache
+
+
+# --------------------------------------------------------------------------- #
+# カテゴリ別要約（2026-11-15 デッキ「評価軸のカテゴリごとの評価順位と要約」）
+# --------------------------------------------------------------------------- #
+def test_category_slide_uses_its_own_prompt():
+    assert ss.is_category_slide("slide2_market_detail")
+    assert not ss.is_bullet_slide("slide2_market_detail")
+    p = ss.prompt_for("slide2_market_detail")
+    assert '"categories"' in p
+
+
+def test_category_prompt_keeps_the_department_rules():
+    p = ss.prompt_for("slide2_market_detail")
+    for rule in ("要約欄には数値を繰り返さない",
+                 "低評価と判断せず",
+                 "判断材料が限られる"):
+        assert rule in p, rule
+
+
+def test_category_summary_is_generated(tmp_path, monkeypatch):
+    from src import categories as cat
+    _fake_llm(monkeypatch)
+    s, err = ss.generate("slide2_market_detail", _bundle(), "KEY")
+    assert not err
+    assert set(s.categories) == set(cat.ORDER)
+    assert not s.bullets and not s.headline
+
+
+def test_unknown_categories_are_dropped(monkeypatch):
+    """資料の7カテゴリ以外を勝手に増やさない。"""
+    from src import llm
+    monkeypatch.setattr(llm, "call_json", lambda *a, **k: (
+        {"categories": {"サービス": "ok", "知らない分類": "だめ"}}, ""))
+    s, err = ss.generate("slide2_market_detail", _bundle(), "KEY")
+    assert not err
+    assert set(s.categories) == {"サービス"}
+
+
+def test_category_summary_survives_save_and_load(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    _fake_llm(monkeypatch)
+    b = _bundle()
+    s, _ = ss.generate("slide2_market_detail", b, "KEY")
+    ss.save(conn, "デモ美術館", "slide2_market_detail", b, s)
+    got = ss.get(conn, "デモ美術館", "slide2_market_detail", b)
+    assert got is not None and got.categories == s.categories

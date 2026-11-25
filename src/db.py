@@ -438,6 +438,7 @@ CREATE TABLE IF NOT EXISTS slide_summary (
     headline    TEXT    NOT NULL DEFAULT '',
     body        TEXT    NOT NULL DEFAULT '',
     bullets_json TEXT   NOT NULL DEFAULT '[]',
+    categories_json TEXT NOT NULL DEFAULT '{}',
     created_at  TEXT    DEFAULT (datetime('now')),
     PRIMARY KEY (facility_id, slide, fact_hash, model)
 );
@@ -482,7 +483,7 @@ def get_conn(db_path: Optional[Path | str] = None):
 
 
 # Bump when adding an ALTER-based migration in _migrate() below.
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 
 def _migrate(conn) -> None:
@@ -521,6 +522,14 @@ def _migrate(conn) -> None:
             conn.execute(
                 "ALTER TABLE slide_summary ADD COLUMN bullets_json "
                 "TEXT NOT NULL DEFAULT '[]'")
+        except Exception:
+            pass  # 既にカラムがある
+
+    if ver < 5:
+        try:
+            conn.execute(
+                "ALTER TABLE slide_summary ADD COLUMN categories_json "
+                "TEXT NOT NULL DEFAULT '{}'")
         except Exception:
             pass  # 既にカラムがある
 

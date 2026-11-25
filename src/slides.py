@@ -1159,6 +1159,50 @@ def _top3_card(title: str, rows: list, accent: str, icon: str,
     )
 
 
+def _category_body(b: dict) -> str:
+    """評価軸のカテゴリ別の順位と要約（7カテゴリ）。
+
+    2026-11-15 のデッキの指示:
+      「ここは評価軸のカテゴリごとの評価順位と要約が欲しい。
+        コンテンツ 空間設計 サービス 価格・決済 アクセス ブランド 総合評価」
+
+    要約は LLM 生成（管理モードの「📝 ページ要約」）。未生成なら順位だけ出す。
+    **順位だけでも意味がある**ので、要約が無いことを理由に面を空にしない。
+    """
+    rows = b.get("category_scores") or []
+    if not rows:
+        return (f'<div style="flex:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{T.SUB};font-size:1.1cqw;">'
+                'カテゴリ別のスコアを算出できていません</div>')
+    texts = ((b.get("slide_summaries") or {})
+             .get("slide2_market_position", {}).get("categories") or {})
+    out = ""
+    for r in rows:
+        if r.score is None:
+            rank_txt, col = "—", T.INK_FAINT
+        else:
+            rank_txt = f"{r.rank} / {r.total}"
+            col = (T.ACCENT if r.standing in ("最上位", "上位")
+                   else T.BLUE if r.standing in ("最下位", "下位") else T.INK_MUTE)
+        note = escape(texts.get(r.name, "")) or (
+            '<span style="color:%s;">判断材料が限られる</span>' % T.INK_FAINT
+            if r.score is None else "")
+        out += (
+            f'<div style="display:flex;gap:.8cqw;align-items:flex-start;'
+            f'padding:.42cqw 0;border-top:1px solid {T.LINE};">'
+            f'<span style="flex:none;width:7.4cqw;font-size:1.06cqw;'
+            f'font-weight:800;color:{T.INK};">{escape(r.name)}</span>'
+            f'<span style="flex:none;width:5.2cqw;font-size:1.02cqw;'
+            f'font-weight:700;color:{col};font-variant-numeric:tabular-nums;">'
+            f'{rank_txt}</span>'
+            f'<span style="flex:none;width:3.4cqw;font-size:.92cqw;color:{col};">'
+            f'{escape(r.standing)}</span>'
+            f'<span style="flex:1;min-width:0;font-size:.98cqw;line-height:1.5;'
+            f'color:{T.INK_SUB};">{note}</span></div>'
+        )
+    return f'<div style="flex:1;min-height:0;overflow:hidden;">{out}</div>'
+
+
 def slide2_market_position(b: dict) -> str:
     """SLIDE 2「市場内ポジション」。docs/design/slide_p04.png と同じ構成。"""
     scope = b.get("scope_label", "市場内")
@@ -1168,15 +1212,20 @@ def slide2_market_position(b: dict) -> str:
     st = [(t, mine, base) for t, mine, base, _d in (b.get("strengths") or [])]
     wk = [(t, mine, base) for t, mine, base, _d in (b.get("weaknesses") or [])]
 
-    left = panel("総合評価ランキング", _ranking_body(b), style="width:29cqw;flex:none")
-    mid = panel("同業施設内の総合評価分布", _distribution_body(b), style="width:27cqw;flex:none")
-    right = (
-        '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
+    # 総合評価ランキング（順位・口コミ平均・総合スコア）は SLIDE 1 に移した。
+    # 同じ数字を2枚に出さない（2026-11-15 デッキ「前ページにすでに記載あり」）。
+    # 空いた場所に、カテゴリ別の順位と要約を置く。
+    left = panel("同業施設内の総合評価分布", _distribution_body(b),
+                 style="width:27cqw;flex:none")
+    mid = (
+        '<div style="width:31cqw;flex:none;display:flex;flex-direction:column;'
         'gap:1.2cqw;min-height:0;">'
         + _top3_card("強み TOP3", st, T.ACCENT, "▲", b)
         + _top3_card("弱み TOP3", wk, T.BLUE, "▼", b)
         + '</div>'
     )
+    right = panel("評価軸カテゴリ別の位置", _category_body(b),
+                  style="flex:1", pad=".8cqw 1.1cqw")
     return canvas(
         slide_header("2", f"{scope}ポジション", meta),
         body_area(f'{left}{mid}{right}'),

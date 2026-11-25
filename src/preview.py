@@ -49,6 +49,22 @@ def _reliability(conn, target: str) -> dict | None:
         return None
 
 
+def _category_scores(target: str, valid: dict) -> list:
+    """カテゴリ別のスコアと順位。比較母集団は**値を持つ施設だけ**。
+
+    valid は {施設名: TopicScoreResult}。失敗しても空で返す
+    （カテゴリ別はページの付加情報で、レポート全体を止める理由にならない）。
+    """
+    try:
+        from . import categories as _cat  # noqa: PLC0415
+
+        matrix = {n: {t.name: t.sentiment_100 for t in r.topics}
+                  for n, r in valid.items()}
+        return _cat.assess(target, matrix)
+    except Exception:
+        return []
+
+
 def _slide_summaries(conn, target: str) -> dict:
     """スライド名 → {headline, body, bullets}。無ければ空の辞書。**通信しない**。"""
     import json as _json
@@ -423,6 +439,9 @@ def build_bundle(
         "n1_note": insight["示唆"],
         "topic_names": topic_names,
         "topic_values": topic_values,
+        # カテゴリ別のスコアと順位（7カテゴリ）。軸を入れ替えても
+        # src/categories.py の CATEGORIES を直せば集計側は変わらない。
+        "category_scores": _category_scores(target, valid_all),
         "overall_sentiment": overall_score,
         "n_sentences": ts.n_sentences if (ts and not ts.empty) else 0,
         # APPENDIX — 比較対象（ピア）施設の一覧

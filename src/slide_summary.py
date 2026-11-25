@@ -45,10 +45,11 @@ class Summary:
     headline: str = ""
     body: str = ""
     bullets: list = field(default_factory=list)   # 箇条書き型のページ用
+    categories: dict = field(default_factory=dict)  # {カテゴリ: 1文}
     from_cache: bool = False
 
     def __bool__(self) -> bool:
-        return bool(self.headline or self.body or self.bullets)
+        return bool(self.headline or self.body or self.bullets or self.categories)
 
 
 # --------------------------------------------------------------------------- #
@@ -73,7 +74,13 @@ def facts_for(slide: str, b: dict) -> dict:
         "比較の範囲": b.get("scope_label"),
     }
 
-    if slide in ("slide2_market_position", "slide2_market_detail"):
+    if slide == "slide2_market_detail":
+        # カテゴリ別要約はカテゴリの数字だけを渡す（軸の生スコアごと）。
+        from . import categories as _cat  # noqa: PLC0415
+
+        rows = b.get("category_scores") or []
+        return {**common, "カテゴリ": _cat.facts_for_prompt(rows)}
+    if slide == "slide2_market_position":
         return {**common,
                 "順位": b.get("rank"), "母数": b.get("total_fac"),
                 "総合スコア5点": (round(b["overall_sentiment"] / 20, 2)
@@ -173,9 +180,47 @@ SLIDE3_PROMPT = """あなたは施設の競合比較を行うデータアナリ�
 競合との違いを1文で示す。」の形にする。
 {{"bullets": ["...", "...", "..."]}}"""
 
+# 4P右下「カテゴリ別評価」。利用部門が書いた指示をそのまま採用した
+# （2026-11-15 のデッキ由来）。数値を要約欄に繰り返さない、言及の少なさを
+# 低評価と決めつけない、といった条件が先に決まっていたので言い換えない。
+CATEGORY_PROMPT = """あなたは施設改善を支援するデータアナリストです。
+対象施設について、各カテゴリの順位を見た担当者が、その順位の中身を一読で
+理解できるように、カテゴリごとに評価を1文で要約してください。
+
+ページ: {title}
+
+カテゴリ別のスコアと順位:
+{facts}
+
+### 判断手順
+1. カテゴリ内の全項目を見て、比較対象との差が目立つ項目と、
+   カテゴリの順位だけでは見えにくい項目間のばらつきを確認する。
+2. 要約に入れる論点を最大2つに絞る。全体に同じ傾向が見られる場合は
+   代表的な特徴を1つ選ぶ。強い項目と弱い項目が混在する場合は、両方を示す。
+3. 根拠が点数表に限られる場合は、評価項目の傾向までを述べる。
+
+### 記述ルール
+- 順位・点数・平均との差は論点の選定に使う。**要約欄には数値を繰り返さない。**
+- カテゴリ内の項目だけで評価する。
+- スコアが言及量を表す場合、言及が少ないことを低評価と判断せず、
+  確認できた範囲を示す。
+- 「総合評価」は、体験満足度・比較優位性・再訪意向・推奨意向を扱う
+  評価カテゴリとして要約する。
+- 入力が不足し、評価傾向を読み取れない場合は「判断材料が限られる」と記載する。
+
+### 出力
+次のJSONだけを返す。キーはカテゴリ名、値は日本語1文（40〜60字程度）。
+評価の特徴と、根拠になる評価項目を優先する。
+{{"categories": {{"コンテンツ": "...", "空間設計": "...", "サービス": "...",
+ "価格・決済": "...", "アクセス": "...", "ブランド": "...", "総合評価": "..."}}}}"""
+
 PROMPTS = {
     "slide3_competitor_compare": SLIDE3_PROMPT,
+    "slide2_market_detail": CATEGORY_PROMPT,
 }
+
+# カテゴリ別要約は {カテゴリ: 1文} の形で返る。箇条書きとも見出し型とも違う。
+CATEGORY_SLIDES = ("slide2_market_detail",)
 
 
 def prompt_for(slide: str) -> str:
@@ -184,7 +229,12 @@ def prompt_for(slide: str) -> str:
 
 def is_bullet_slide(slide: str) -> bool:
     """箇条書き型で出すページか。描画側が形を切り替えるのに使う。"""
-    return slide in PROMPTS
+    return slide in PROMPTS and slide not in CATEGORY_SLIDES
+
+
+def is_category_slide(slide: str) -> bool:
+    """カテゴリ別要約（{カテゴリ: 1文}）で返るページか。"""
+    return slide in CATEGORY_SLIDES
 
 
 def generate(slide: str, b: dict, api_key: str, *,
@@ -197,14 +247,28 @@ def generate(slide: str, b: dict, api_key: str, *,
 
     facts = facts_for(slide, b)
     bullet = is_bullet_slide(slide)
+    cats = is_category_slide(slide)
     prompt = prompt_for(slide).format(
         title=SLIDE_TITLES.get(slide, slide),
         facts=json.dumps(facts, ensure_ascii=False, indent=2, default=str),
     )
     data, err = llm.call_json(prompt, api_key,
-                              max_tokens=700 if bullet else 300, temperature=0.2)
+                              max_tokens=900 if (bullet or cats) else 300,
+                              temperature=0.2)
     if err or not isinstance(data, dict):
         return Summary(slide=slide), (err or "想定外の応答")
+    if cats:
+        from . import categories as _cat  # noqa: PLC0415
+
+        got = data.get("categories")
+        if not isinstance(got, dict):
+            return Summary(slide=slide), "カテゴリ別要約の形が違う"
+        # 知らないカテゴリ名は捨てる。資料の7カテゴリ以外を増やさない。
+        clean = {k: str(v).strip() for k, v in got.items()
+                 if k in _cat.ORDER and str(v).strip()}
+        if not clean:
+            return Summary(slide=slide), "カテゴリ別要約が空でした"
+        return Summary(slide=slide, categories=clean), ""
     if bullet:
         items = [str(x).strip() for x in (data.get("bullets") or []) if str(x).strip()]
         if not items:
@@ -237,7 +301,7 @@ def get(conn, facility: str, slide: str, b: dict) -> Optional[Summary]:
     if fid is None:
         return None
     row = conn.execute(
-        "SELECT headline, body, bullets_json FROM slide_summary "
+        "SELECT headline, body, bullets_json, categories_json FROM slide_summary "
         "WHERE facility_id = ? AND slide = ? AND fact_hash = ? AND model = ?",
         (fid, slide, fact_hash(facts_for(slide, b)), model_name()),
     ).fetchone()
@@ -248,8 +312,13 @@ def get(conn, facility: str, slide: str, b: dict) -> Optional[Summary]:
         bullets = json.loads(g("bullets_json", 2) or "[]")
     except Exception:
         bullets = []
+    try:
+        cats = json.loads(g("categories_json", 3) or "{}")
+    except Exception:
+        cats = {}
     return Summary(slide=slide, headline=g("headline", 0), body=g("body", 1),
                    bullets=bullets if isinstance(bullets, list) else [],
+                   categories=cats if isinstance(cats, dict) else {},
                    from_cache=True)
 
 
@@ -259,10 +328,11 @@ def save(conn, facility: str, slide: str, b: dict, s: Summary) -> None:
         return
     conn.execute(
         "INSERT OR REPLACE INTO slide_summary"
-        "(facility_id, slide, fact_hash, model, headline, body, bullets_json)"
-        " VALUES (?,?,?,?,?,?,?)",
+        "(facility_id, slide, fact_hash, model, headline, body, bullets_json,"
+        " categories_json) VALUES (?,?,?,?,?,?,?,?)",
         (fid, slide, fact_hash(facts_for(slide, b)), model_name(),
-         s.headline, s.body, json.dumps(s.bullets, ensure_ascii=False)),
+         s.headline, s.body, json.dumps(s.bullets, ensure_ascii=False),
+         json.dumps(s.categories, ensure_ascii=False)),
     )
     conn.commit()
 

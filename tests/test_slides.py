@@ -350,9 +350,10 @@ def test_indicator_axis_labels_are_vertical(tmp_path):
 def test_slide2_shows_rank_distribution_and_top3(tmp_path):
     b = _bundle(tmp_path)
     html = slides.slide2_market_position(b)
-    for t in ("総合評価ランキング", "同業施設内の総合評価分布", "強み TOP3", "弱み TOP3"):
+    # 「総合評価ランキング」は SLIDE 1 に移したのでここには無い
+    for t in ("同業施設内の総合評価分布", "強み TOP3", "弱み TOP3",
+              "評価軸カテゴリ別の位置"):
         assert t in html, t
-    assert f'/ {b["total_fac"]}施設中' in html
     assert "低評価" in html and "高評価" in html
     # 基準の呼び名は bundle の baseline_label に従うこと。_bundle() は
     # peers_override 付き＝競合モードなので「選択競合の平均」が正しい。
@@ -363,10 +364,22 @@ def test_slide2_shows_rank_distribution_and_top3(tmp_path):
     assert "市場平均" not in html
 
 
-def test_slide2_percentile_matches_rank(tmp_path):
+def test_rank_moved_from_slide2_to_slide1(tmp_path):
+    """順位・口コミ平均・総合スコアは SLIDE 1 の口コミサマリーに集約した。
+
+    デッキの指示（2026-11-15）:
+      口コミ平均 → 「前ページに移動」
+      総合スコア → 「前ページにすでに記載あり」
+    """
     b = _bundle(tmp_path)
     assert b["percentile"] == round(100 * b["rank"] / b["total_fac"])
-    assert f'上位{b["percentile"]}%' in slides.slide2_market_position(b)
+
+    s1 = slides.slide1_facility_info(b)
+    assert f'{b["rank"]} / {b["total_fac"]} 施設' in s1
+    assert "総合スコア" in s1
+
+    s2 = slides.slide2_market_position(b)
+    assert "総合評価ランキング" not in s2
 
 
 def test_slide2_scores_are_five_point_with_two_decimals(tmp_path):
@@ -1420,3 +1433,46 @@ def test_star_row_is_dropped_without_a_rating():
 def test_profile_with_nothing_says_so():
     out = slides._profile_rows({})
     assert "施設情報を取得できていません" in out
+
+
+# --------------------------------------------------------------------------- #
+# SLIDE 2 のカテゴリ別評価（2026-11-15 デッキの指示）
+# --------------------------------------------------------------------------- #
+def test_slide2_shows_category_standings(tmp_path):
+    b = _bundle(tmp_path, n_peers=4)
+    html = slides.slide2_market_position(b)
+    assert "評価軸カテゴリ別の位置" in html
+    for c in ("コンテンツ", "空間設計", "サービス", "価格・決済",
+              "アクセス", "ブランド", "総合評価"):
+        assert c in html, c
+
+
+def test_slide2_no_longer_repeats_the_ranking_panel(tmp_path):
+    """順位・口コミ平均・総合スコアは SLIDE 1 に移した。
+
+    同じ数字を2枚に出さない（デッキ「前ページにすでに記載あり」）。
+    """
+    html = slides.slide2_market_position(_bundle(tmp_path, n_peers=4))
+    assert "総合評価ランキング" not in html
+
+
+def test_category_summaries_are_shown_when_generated(tmp_path):
+    b = _bundle(tmp_path, n_peers=4)
+    b["slide_summaries"] = {"slide2_market_position": {"categories": {
+        "サービス": "スタッフの受け答えへの好意的な言及が多い。"}}}
+    html = slides.slide2_market_position(b)
+    assert "スタッフの受け答えへの好意的な言及が多い。" in html
+
+
+def test_category_panel_works_without_summaries(tmp_path):
+    """要約が無くても順位だけで意味がある。面を空にしない。"""
+    b = _bundle(tmp_path, n_peers=4)
+    b.pop("slide_summaries", None)
+    html = slides.slide2_market_position(b)
+    assert "評価軸カテゴリ別の位置" in html
+    assert "コンテンツ" in html
+
+
+def test_category_panel_says_so_when_scores_are_missing():
+    html = slides._category_body({"category_scores": []})
+    assert "算出できていません" in html
