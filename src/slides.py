@@ -2397,6 +2397,8 @@ def _summary_cards(b: dict) -> str:
 
 def slide5_space_experience(b: dict) -> str:
     """SLIDE 5「空間・体験分析」。"""
+    from . import topic_score  # noqa: PLC0415
+
     left = panel(
         "乃村独自の空間分析指標",
         _radar(b)
@@ -2410,7 +2412,8 @@ def slide5_space_experience(b: dict) -> str:
     body = body_area(
         f'<div style="font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
         f'color:{T.INK};flex:none;">'
-        '空間と体験の質を10の観点で評価し、改善の優先ポイントを可視化します。</div>'
+        f'空間と体験の質を{len(topic_score.SPACE_TOPICS)}の観点で評価し、'
+        '改善の優先ポイントを可視化します。</div>'
         '<div style="flex:1;display:flex;gap:1.4cqw;min-height:0;">'
         f'{left}'
         + panel("本ページの要約", _summary_cards(b),

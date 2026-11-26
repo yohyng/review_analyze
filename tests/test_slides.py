@@ -680,7 +680,8 @@ def test_slide5_renders_radar_tables_and_summary(tmp_path):
     assert "空間・体験分析" in html
     assert "乃村独自の空間分析指標" in html and "本ページの要約" in html
     assert "confidential" not in html        # 右上のタグは不要との判断で外した
-    assert "空間と体験の質を10の観点で評価し、改善の優先ポイントを可視化します。" in html
+    n_axes = len(topic_score.SPACE_TOPICS)      # 数は直書きしない
+    assert f"空間と体験の質を{n_axes}の観点で評価し、改善の優先ポイントを可視化します。" in html
     assert "※ スコアは5点満点（高いほど評価が高いことを示します）" in html
     for i, t in enumerate(topic_score.SPACE_TOPICS, 1):
         # 軸名はホバー説明で包まれるので、番号と名前は隣接しない
