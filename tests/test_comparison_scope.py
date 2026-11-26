@@ -92,8 +92,14 @@ def test_scope_labels_switch_in_slides(tmp_path):
         conn, "target", matrix, None, None, peers_override=["peer1", "peer2"]
     )
 
-    assert "市場内ポジション" in slides.slide2_market_position(market)
-    assert "選択競合内ポジション" in slides.slide2_market_position(comp)
+    # タイトルはデッキに合わせて「市場内ポジション」で固定（2026-11-26）。
+    # 比較範囲は見出しの添え書きで示す——固定タイトルのまま選択競合と
+    # 比べていると読み違えるため。
+    for html in (slides.slide2_market_position(market),
+                 slides.slide2_market_position(comp)):
+        assert "市場内ポジション" in html
+    assert "比較範囲：市場内" in slides.slide2_market_position(market)
+    assert "比較範囲：選択競合内" in slides.slide2_market_position(comp)
     # マーケット傾向の見出しは PDF 準拠の文言。母数のスコープはヘッダ側で示す。
     assert "この市場で評価されやすい指標" in slides.slide2_market_detail(market)
     assert "この市場で課題になりやすい指標" in slides.slide2_market_detail(comp)
@@ -198,18 +204,19 @@ def test_slide3_columns_are_self_peers_and_average(tmp_path):
     )
     html = slides.slide3_competitor_compare(b)
 
-    assert f"主要{len(topic_score.DRIVER_TOPICS)}指標の比較（5点満点）" in html
-    assert "施設別スコアヒートマップ（5点満点）" in html
+    assert f"主要{len(topic_score.DRIVER_TOPICS)}指標の比較" in html
+    assert "施設別スコアヒートマップ" in html
     assert "自施設だけの強み" in html and "競合に負けている項目" in html
     assert "2〜5施設を横並びで比較し、自施設の立ち位置を把握します。" in html
-    for lbl in ("自施設", "競合A", "競合B", "競合C", "競合平均"):
-        assert lbl in html, lbl
-    assert "競合D" not in html          # ピアは3施設なのでDは出ない
+    # 列見出しは実名（2026-11-26）。最後の列だけ平均。
+    for nm in ("target", "peer1", "peer2", "peer3", "競合平均"):
+        assert nm in html, nm
+    assert "peer4" not in html          # ピアは3施設
     assert "分析対象：4施設" in html      # 自施設＋競合3（同業平均は施設数に数えない）
 
 
 def test_slide3_caps_peer_columns_at_five(tmp_path):
-    """競合は最大5列（競合A〜E）まで。PDF p10 のヒートマップが競合Eまで。"""
+    """競合は最大5列まで。PDF p10 のヒートマップが競合5館ぶん。"""
     conn = db.get_conn(tmp_path / "t.db")
     db.init_db(conn)
     names = ["target"] + [f"p{i}" for i in range(6)]
@@ -221,8 +228,8 @@ def test_slide3_caps_peer_columns_at_five(tmp_path):
         conn, "target", matrix, None, None, peers_override=names[1:]
     )
     html = slides.slide3_competitor_compare(b)
-    assert "競合E" in html
-    assert "競合F" not in html
+    assert "p4" in html                 # 5館目までは出る
+    assert "p5" not in html             # 6館目は出ない
 
 
 def test_slide3_scores_are_on_a_five_point_scale(tmp_path):

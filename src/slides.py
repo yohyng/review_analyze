@@ -1184,13 +1184,17 @@ def _overall_eval_body(b: dict) -> str:
 
 
 def _category_body(b: dict) -> str:
-    """評価軸のカテゴリ別の順位と要約（7カテゴリ）。
+    """評価軸のカテゴリ別の順位と解釈（原典7カテゴリ）。
 
     2026-11-15 のデッキの指示:
       「ここは評価軸のカテゴリごとの評価順位と要約が欲しい。
         コンテンツ 空間設計 サービス 価格・決済 アクセス ブランド 総合評価」
 
-    要約は LLM 生成（管理モードの「📝 ページ要約」）。未生成なら順位だけ出す。
+    体裁はデッキ 8P の表に合わせる（2026-11-26）:
+      価値領域 ｜ 自施設スコア ｜ N施設順位 ｜ 解釈
+    表の上に、この表が何を意味するかの一文を置く（categories_lead）。
+
+    解釈と一文は生成（管理モードの「📝 ページ要約」）。未生成でも順位は出す。
     **順位だけでも意味がある**ので、要約が無いことを理由に面を空にしない。
     """
     rows = b.get("category_scores") or []
@@ -1198,33 +1202,63 @@ def _category_body(b: dict) -> str:
         return (f'<div style="flex:1;display:flex;align-items:center;'
                 f'justify-content:center;color:{T.SUB};font-size:1.1cqw;">'
                 'カテゴリ別のスコアを算出できていません</div>')
-    texts = ((b.get("slide_summaries") or {})
-             .get("slide2_market_position", {}).get("categories") or {})
+    summ = ((b.get("slide_summaries") or {})
+            .get("slide2_market_position", {}))
+    texts = summ.get("categories") or {}
+    total = next((r.total for r in rows if r.total), len(
+        (b.get("peer_names") or [])) + 1)
+
+    W = ("8.2cqw", "5.4cqw", "6.4cqw")      # 価値領域 / スコア / 順位
+    head = (
+        f'<div style="display:flex;gap:.7cqw;align-items:center;flex:none;'
+        f'background:{T.ACCENT};color:#fff;font-size:.92cqw;font-weight:700;'
+        'padding:.3cqw .6cqw;border-radius:.3cqw;">'
+        f'<span style="flex:none;width:{W[0]};">価値領域</span>'
+        f'<span style="flex:none;width:{W[1]};">スコア</span>'
+        f'<span style="flex:none;width:{W[2]};">{total}施設順位</span>'
+        '<span style="flex:1;min-width:0;">解釈</span></div>'
+    )
+
     out = ""
-    for r in rows:
+    for n, r in enumerate(rows):
         if r.score is None:
-            rank_txt, col = "—", T.INK_FAINT
+            rank_txt, score_txt, col = "—", "—", T.INK_FAINT
         else:
-            rank_txt = f"{r.rank} / {r.total}"
+            rank_txt = f"{r.rank}位"
+            score_txt = f"{r.score:.1f}"
             col = (T.ACCENT if r.standing in ("最上位", "上位")
                    else T.BLUE if r.standing in ("最下位", "下位") else T.INK_MUTE)
+        strong = r.standing in ("最上位", "上位", "最下位", "下位")
         note = escape(texts.get(r.name, "")) or (
             '<span style="color:%s;">判断材料が限られる</span>' % T.INK_FAINT
             if r.score is None else "")
         out += (
-            f'<div style="display:flex;gap:.7cqw;align-items:flex-start;'
-            f'padding:.22cqw 0;border-top:1px solid {T.LINE};">'
-            f'<span style="flex:none;width:7.4cqw;font-size:1.06cqw;'
+            '<div style="display:flex;gap:.7cqw;align-items:flex-start;'
+            f'padding:.26cqw .6cqw;background:'
+            f'{T.ACCENT_SOFT if n % 2 == 0 else "transparent"};">'
+            f'<span style="flex:none;width:{W[0]};font-size:1.02cqw;'
             f'font-weight:800;color:{T.INK};">{escape(r.name)}</span>'
-            f'<span style="flex:none;width:5.2cqw;font-size:1.02cqw;'
-            f'font-weight:700;color:{col};font-variant-numeric:tabular-nums;">'
-            f'{rank_txt}</span>'
-            f'<span style="flex:none;width:3.4cqw;font-size:.92cqw;color:{col};">'
-            f'{escape(r.standing)}</span>'
+            f'<span style="flex:none;width:{W[1]};font-size:1.0cqw;'
+            f'font-weight:{800 if strong else 600};color:{col};'
+            'font-variant-numeric:tabular-nums;">'
+            f'{score_txt}</span>'
+            f'<span style="flex:none;width:{W[2]};font-size:1.0cqw;'
+            f'font-weight:{800 if strong else 600};color:{col};'
+            f'font-variant-numeric:tabular-nums;">{rank_txt}'
+            f'<span style="font-size:.82cqw;font-weight:400;margin-left:.3cqw;">'
+            f'{escape(r.standing)}</span></span>'
             f'<span style="flex:1;min-width:0;font-size:.88cqw;line-height:1.38;'
             f'color:{T.INK_SUB};">{note}</span></div>'
         )
-    return f'<div style="flex:1;min-height:0;overflow:hidden;">{out}</div>'
+
+    lead = escape(summ.get("categories_lead") or "")
+    lead_html = (
+        f'<div style="flex:none;font-size:1.0cqw;line-height:1.5;color:{T.INK};'
+        f'padding-bottom:.45cqw;">{lead}</div>' if lead else ""
+    )
+    return (f'<div style="flex:1;min-height:0;display:flex;'
+            f'flex-direction:column;overflow:hidden;">'
+            f'{lead_html}{head}{out}</div>')
 
 
 def slide2_market_position(b: dict) -> str:
@@ -1238,11 +1272,13 @@ def slide2_market_position(b: dict) -> str:
 
     # 総合評価ランキング（順位・口コミ平均・総合スコア）は SLIDE 1 に移した。
     # 同じ数字を2枚に出さない（2026-11-15 デッキ「前ページにすでに記載あり」）。
-    # 空いた場所に、カテゴリ別の順位と要約を置く。
-    left = panel("同業施設内の総合評価分布", _distribution_body(b),
-                 style="width:27cqw;flex:none")
-    mid = (
-        '<div style="width:31cqw;flex:none;display:flex;flex-direction:column;'
+    #
+    # 「同業施設内の総合評価分布」も外した（2026-11-26）。順位と総合評価は
+    # SLIDE 1 に出ており、分布の帯だけでは読み取れることが少ないため。
+    # 空いた幅は右カラムに回す。カテゴリ別の要約は1行が長いので、
+    # 幅が広いほど読みやすくなる（実寸で確認）。
+    left = (
+        '<div style="width:34cqw;flex:none;display:flex;flex-direction:column;'
         'gap:1.2cqw;min-height:0;">'
         + _top3_card("強み TOP3", st, T.ACCENT, "▲", b)
         + _top3_card("弱み TOP3", wk, T.BLUE, "▼", b)
@@ -1252,14 +1288,17 @@ def slide2_market_position(b: dict) -> str:
         '<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
         'gap:1.2cqw;min-height:0;">'
         + panel("全体評価", _overall_eval_body(b),
-                style="height:13.2cqw;flex:none", pad=".6cqw 1.1cqw")
+                style="height:11.6cqw;flex:none", pad=".7cqw 1.3cqw")
         + panel("評価軸カテゴリ別の位置", _category_body(b),
-                style="flex:1", pad=".8cqw 1.1cqw")
+                style="flex:1", pad=".8cqw 1.3cqw")
         + '</div>'
     )
+    # タイトルはデッキに合わせて固定（2026-11-26）。比較範囲は見出しに添える
+    # ——「市場内」と書いたまま選択競合と比べていると読み違える。
     return canvas(
-        slide_header("2", f"{scope}ポジション", meta),
-        body_area(f'{left}{mid}{right}'),
+        slide_header("2", "市場内ポジション",
+                     "　".join(x for x in (f"比較範囲：{scope}", meta) if x)),
+        body_area(f'{left}{right}'),
         footer(score_note(b)),
     )
 
@@ -1633,15 +1672,32 @@ def slide2_market_detail(b: dict) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 # SLIDE 3「指定競合との比較」— docs/design/slide_p06.png / slide_p07.png
 # ═══════════════════════════════════════════════════════════════════════════
+# 列見出しに入る施設名の長さ。これを超える分は「…」で詰める。
+#   列は6本前後あるので、長い名前をそのまま出すと表が崩れる。
+MAX_COL_NAME = 8
+
+
+def short_name(name: str, limit: int = MAX_COL_NAME) -> str:
+    """列見出し用に施設名を詰める。元の名前は tooltip 等で別途出す。"""
+    nm = " ".join(str(name or "").split())
+    return nm if len(nm) <= limit else nm[: limit - 1] + "…"
+
+
 def compare_columns(b: dict) -> list[tuple[str, str, dict, str]]:
-    """(表示名, 施設名, スコア, 色) の列。自施設 → 競合A〜E → 同業平均。"""
+    """(表示名, 施設名, スコア, 色) の列。自施設 → 競合各館 → 同業平均。
+
+    表示名は**実際の施設名**（2026-11-26）。以前は「競合A〜E」だったが、
+    どの列がどの館か分からず、資料として読めなかった（デッキ 5P も実名）。
+    長い名前は short_name() で詰める。
+    """
     mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
     peers = b.get("peer_topic_scores") or {}
     cols: list[tuple[str, str, dict, str]] = [
-        ("自施設", b.get("target", ""), mine, T.SERIES_SELF)
+        (short_name(b.get("target", "") or "自施設"),
+         b.get("target", ""), mine, T.SERIES_SELF)
     ]
     for i, nm in enumerate(list(peers)[: len(T.SERIES_PEERS)]):
-        cols.append((f"競合{'ABCDE'[i]}", nm, peers[nm], T.SERIES_PEERS[i]))
+        cols.append((short_name(nm), nm, peers[nm], T.SERIES_PEERS[i]))
     if b.get("overall_topic"):
         # 指定競合モードでは母数が選択競合なので overall_topic ＝ 競合の平均。
         # 「同業平均」と名乗ると市場全体の平均だと誤解されるため名前を変える。
@@ -1711,30 +1767,47 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
     )
 
 
+# ヒートマップの指標列の幅。**固定にすること。**
+#   flex にすると「料金・決済のサービス多様性」のような長い指標名が
+#   列を押し広げ、その行だけ数字が右にずれる（2026-11-26 に実データで発生）。
+_HM_LABEL_W = "12cqw"
+
+
 def _compare_heatmap(b: dict, topics: list[str]) -> str:
     """施設別スコアヒートマップ。行=driver 指標 × 列=自施設/競合A〜E/平均。
 
     セルの地色は README §2 の5段階（4.2+ / 3.8+ / 3.4+ / 3.0+ / 〜2.9）。
     """
     cols = compare_columns(b)
+    # 行は**自施設のスコアが高い順**（デッキ 5P と同じ）。軸の定義順だと、
+    # どこが強くてどこが弱いのかを表から読み取れない。
+    _mine = cols[0][2] if cols else {}
+    topics = sorted(topics, key=lambda t: -(_mine.get(t) or 0))
     head = (
         f'<div style="display:flex;background:{T.TABLE_HEAD};font-size:1.1cqw;'
         f'font-weight:700;color:{T.INK_SUB};flex:none;'
         f'border-bottom:1px solid {T.CARD_LINE};">'
-        '<div style="flex:2;padding:.5cqw .6cqw;">指標</div>'
+        f'<div style="flex:none;width:{_HM_LABEL_W};padding:.5cqw .6cqw;'
+        'white-space:nowrap;">指標</div>'
         + "".join(
-            '<div style="flex:1;padding:.5cqw .2cqw;text-align:center;'
-            f'color:{T.ACCENT if i == 0 else T.INK_SUB};white-space:nowrap;">'
-            f'{escape(lb)}</div>'
-            for i, (lb, _n, _s, _col) in enumerate(cols)
+            # **省略しない。** 「名古屋市科学館／名古屋市美術館／名古屋港水族館」の
+            # ように頭が同じ名前が並ぶので、1行に詰めると全部「名古屋…」になる。
+            # 列幅に収まらないぶんは2行に折る。
+            '<div style="flex:1;min-width:0;padding:.4cqw .15cqw;'
+            'text-align:center;white-space:normal;line-height:1.2;'
+            f'font-size:.92cqw;'
+            f'color:{T.ACCENT if i == 0 else T.INK_SUB};">'
+            f'{escape(nm)}</div>'
+            for i, (lb, nm, _s, _col) in enumerate(cols)
         )
         + '</div>'
     )
     rows = "".join(
         f'<div style="flex:1;display:flex;align-items:center;min-height:0;'
         f'border-bottom:1px solid {T.TABLE_HEAD};">'
-        f'<div style="flex:2;padding:0 .6cqw;font-size:1.07cqw;color:{T.INK};'
-        'white-space:nowrap;">'
+        f'<div style="flex:none;width:{_HM_LABEL_W};padding:0 .6cqw;'
+        f'font-size:1.02cqw;color:{T.INK};white-space:nowrap;'
+        'overflow:hidden;text-overflow:ellipsis;">'
         f'{topic_tooltip(t, place="right", b=b)}</div>'
         + "".join(
             '<div style="flex:1;align-self:stretch;display:flex;align-items:center;'
@@ -1880,10 +1953,11 @@ def slide3_competitor_compare(b: dict) -> str:
         f'color:{T.INK};flex:none;">'
         '2〜5施設を横並びで比較し、自施設の立ち位置を把握します。</div>'
         '<div style="flex:1;display:flex;gap:1.2cqw;min-height:0;">'
-        + panel(f"主要{len(topic_score.DRIVER_TOPICS)}指標の比較（5点満点）",
+        # 見出しはデッキ 5P と同じ表記（2026-11-26）。満点は脚注に書いてある。
+        + panel(f"主要{len(topic_score.DRIVER_TOPICS)}指標の比較",
                 _compare_chart(b, topics),
                 head_size=1.3, pad=".9cqw")
-        + panel("施設別スコアヒートマップ（5点満点）", _compare_heatmap(b, topics),
+        + panel("施設別スコアヒートマップ", _compare_heatmap(b, topics),
                 style="width:50cqw;flex:none", head_size=1.3, pad="0")
         + '</div>'
         + _compare_bottom(b, win, lose),
@@ -1892,15 +1966,31 @@ def slide3_competitor_compare(b: dict) -> str:
     return canvas(_compare_header(b, False), body, footer(score_note(b)))
 
 
+def _peer_gap_rows(b: dict, peer: str, limit: int = 3) -> list[tuple]:
+    """競合1館との評価差（差の大きい順）。戻りは (指標, 自施設, 競合, 差)。
+
+    表の数字はここで作る。**LLM に引き算させない**（桁を間違えた差から
+    選んだ指標がそのまま本文に残る）。
+    """
+    from . import topic_score  # noqa: PLC0415
+
+    mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
+    them = (b.get("peer_topic_scores") or {}).get(peer) or {}
+    rows = [(t, _score5(mine[t]), _score5(them[t]),
+             _score5(mine[t]) - _score5(them[t]))
+            for t in topic_score.TOPIC_ORDER if t in mine and t in them]
+    rows.sort(key=lambda r: -abs(r[3]))
+    return rows[:limit]
+
+
 def _peer_diffs(b: dict) -> str:
-    """競合1施設ごとの「評価差分／読み解き／仮説」。
+    """競合1館ごとに「言葉の要約」と「裏付けの評価差分表」を並べる。
 
-    2026-11-15 のデッキ 7P「比較対象施設との評価差分とその要約が欲しい」。
+    2026-11-15 のデッキ 9P「比較対象施設との評価差分とその要約が欲しい」。
+    デッキは見出し＋本文のあとに「{競合}が強い領域｜戦略的意味」の表を置く。
+    ここでは施設数が最大5館なので、表は**差の大きい指標だけ**に絞る。
+
     生成は管理モードの「📝 ページ要約」。**描画からは呼ばない。**
-
-    施設数ぶん縦に積むので、ここでは高さを決め打ちしない。入らないぶんは
-    ブロックを削らず、**flex で均等に詰める**（1施設だけ消えると、左の
-    マッピングと照合できなくなる）。
     """
     rows = [r for r in ((b.get("slide_summaries") or {})
                         .get("slide3_competitor_detail") or {}).get("peers") or []
@@ -1912,55 +2002,137 @@ def _peer_diffs(b: dict) -> str:
         if not text:
             return ""
         return (
-            '<div style="display:flex;gap:.6cqw;align-items:flex-start;'
-            'padding:.14cqw 0;">'
-            f'<span style="flex:none;width:4.6cqw;font-size:.82cqw;'
-            f'font-weight:700;color:{color};margin-top:.1cqw;">{escape(label)}'
+            '<div style="display:flex;gap:.45cqw;align-items:flex-start;'
+            'padding:.06cqw 0;">'
+            f'<span style="flex:none;width:4.2cqw;font-size:.8cqw;'
+            f'font-weight:700;color:{color};margin-top:.08cqw;">{escape(label)}'
             '</span>'
-            f'<span style="flex:1;min-width:0;font-size:.88cqw;line-height:1.45;'
+            f'<span style="flex:1;min-width:0;font-size:.8cqw;line-height:1.34;'
             f'color:{T.INK};">{_md_bold(str(text))}</span></div>'
         )
 
     out = ""
     for r in rows:
-        head = (
-            '<div style="display:flex;gap:.6cqw;align-items:baseline;'
-            'margin-bottom:.2cqw;">'
-            f'<span style="flex:none;font-size:.96cqw;font-weight:800;'
-            f'color:{T.ACCENT};">vs {escape(str(r["name"]))}</span>'
-            f'<span style="flex:1;min-width:0;font-size:.86cqw;color:{T.INK_SUB};'
-            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
-            f'{escape(str(r.get("headline") or ""))}</span></div>'
-        )
+        name = str(r["name"])
+        gaps = _peer_gap_rows(b, name)
+        tbl = ""
+        if gaps:
+            tbl = (
+                '<div style="display:flex;gap:.5cqw;flex:none;'
+                f'background:{T.ACCENT};color:#fff;font-size:.8cqw;'
+                'font-weight:700;padding:.2cqw .5cqw;border-radius:.25cqw;'
+                'margin-top:.3cqw;">'
+                '<span style="flex:1;min-width:0;">評価差分</span>'
+                '<span style="flex:none;width:3.1cqw;text-align:right;">当館</span>'
+                '<span style="flex:none;width:3.1cqw;text-align:right;">相手</span>'
+                '<span style="flex:none;width:3.4cqw;text-align:right;">差</span>'
+                '</div>'
+            )
+            for k, (t, a, c, d) in enumerate(gaps):
+                col = T.ACCENT_DEEP if d > 0 else T.BLUE
+                tbl += (
+                    '<div style="display:flex;gap:.5cqw;align-items:center;'
+                    f'padding:.1cqw .5cqw;background:'
+                    f'{T.ACCENT_SOFT if k % 2 == 0 else "transparent"};'
+                    'font-variant-numeric:tabular-nums;">'
+                    f'<span style="flex:1;min-width:0;font-size:.84cqw;'
+                    f'color:{T.INK};overflow:hidden;text-overflow:ellipsis;'
+                    f'white-space:nowrap;">{escape(t)}</span>'
+                    f'<span style="flex:none;width:3.1cqw;text-align:right;'
+                    f'font-size:.84cqw;color:{T.INK};">{a:.2f}</span>'
+                    f'<span style="flex:none;width:3.1cqw;text-align:right;'
+                    f'font-size:.84cqw;color:{T.INK_SUB};">{c:.2f}</span>'
+                    f'<span style="flex:none;width:3.4cqw;text-align:right;'
+                    f'font-size:.84cqw;font-weight:800;color:{col};">'
+                    f'{d:+.2f}</span></div>'
+                )
         out += (
-            '<div style="flex:1;min-height:0;display:flex;flex-direction:column;'
-            f'justify-content:center;padding:.3cqw 0;border-top:1px solid {T.LINE};">'
-            + head
+            '<div style="flex:none;display:flex;flex-direction:column;'
+            'padding:.1cqw 0;">'
+            '<div style="display:flex;gap:.6cqw;align-items:baseline;'
+            'flex:none;margin-bottom:.1cqw;">'
+            f'<span style="flex:none;font-size:1.0cqw;font-weight:800;'
+            f'color:{T.ACCENT};">vs {escape(name)}</span>'
+            f'<span style="flex:1;min-width:0;font-size:.86cqw;'
+            f'color:{T.INK_SUB};overflow:hidden;text-overflow:ellipsis;'
+            f'white-space:nowrap;">{escape(str(r.get("headline") or ""))}</span>'
+            '</div>'
             + line("評価差分", r.get("diff") or "", T.ACCENT_DEEP)
             + line("読み解き", r.get("reading") or "", T.NAVY)
             + line("仮説", r.get("hypothesis") or "", T.BLUE)
-            + '</div>'
+            + tbl + '</div>'
         )
     return out
 
 
 def _detail_right(b: dict) -> str:
-    """右半分。要約があれば競合ごとの差分、無ければ従来の市場傾向。
-
-    生成前に空の枠だけ出ると、何を待っているのか分からない面になる。
-    """
-    diffs = _peer_diffs(b)
-    if diffs:
-        return panel("競合ごとの評価差分", diffs,
-                     style="flex:1", head_size=1.45, pad=".5cqw 1.2cqw")
+    """要約が無いときの右半分（従来の市場傾向）。"""
     return panel("指定競合の傾向",
                  market_trend(b, "※ 市場傾向は同カテゴリ施設の口コミ分析から算出",
                               large=True),
                  style="flex:1", head_size=1.45, pad="1.2cqw")
 
 
+def _peer_columns(b: dict) -> str:
+    """競合ごとのブロックを2段組みに割る。
+
+    1館あたり「見出し＋3項目＋差分表」で縦を食うので、5館を1列に積むと
+    1行ずつしか入らない（2026-11-26 に実寸で確認）。左に多めに寄せる。
+    """
+    rows = [r for r in ((b.get("slide_summaries") or {})
+                        .get("slide3_competitor_detail") or {}).get("peers") or []
+            if isinstance(r, dict) and r.get("name")]
+    blocks = _peer_diffs(b)
+    if not blocks or not rows:
+        return ""
+    # _peer_diffs は館ごとの <div> を連結して返す。同じ区切りで割る。
+    sep = '<div style="flex:none;display:flex;flex-direction:column;'
+    parts = [sep + x for x in blocks.split(sep) if x.strip()]
+    if len(parts) != len(rows):
+        parts = parts[: len(rows)]
+
+    # **文量で振り分ける。** 前半・後半で機械的に割ると、本文の長い館が
+    # 固まった側だけ溢れて表が切れる（2026-11-26 に実データで発生）。
+    def weight(r: dict) -> int:
+        body = sum(len(str(r.get(k) or ""))
+                   for k in ("diff", "reading", "hypothesis"))
+        return body + 120            # 見出しと差分表のぶんを一律で足す
+
+    left: list[str] = []
+    right: list[str] = []
+    lw = rw = 0
+    for part, r in sorted(zip(parts, rows), key=lambda x: -weight(x[1])):
+        if lw <= rw:
+            left.append(part); lw += weight(r)
+        else:
+            right.append(part); rw += weight(r)
+    # 入力順に戻す（並びが変わると前ページの表と照合できない）
+    order = {p: i for i, p in enumerate(parts)}
+    left.sort(key=order.get); right.sort(key=order.get)
+
+    col = ('<div style="flex:1;min-width:0;display:flex;flex-direction:column;'
+           'gap:.55cqw;min-height:0;overflow:hidden;">')
+    return (f'{col}{"".join(left)}</div>'
+            f'{col}{"".join(right)}</div>')
+
+
 def slide3_competitor_detail(b: dict) -> str:
-    """SLIDE 3「指定競合との比較（詳細）」。"""
+    """SLIDE 3「指定競合との比較（詳細）」。
+
+    2026-11-26: 要約があるときは**競合ごとの差分で1面を使う**
+    （デッキ 9P の構成）。総合体験評価マッピングは SLIDE 2 詳細にも
+    あるので、ここから外しても資料から消えない。
+    """
+    cols = _peer_columns(b)
+    if cols:
+        body = body_area(
+            panel("比較対象施設との評価差分とその要約",
+                  f'<div style="flex:1;min-height:0;display:flex;gap:1.4cqw;">'
+                  f'{cols}</div>',
+                  style="flex:1", head_size=1.45, pad=".6cqw 1.2cqw")
+        )
+        return canvas(_compare_header(b, True), body, footer(score_note(b)))
+
     peers = list((b.get("peer_topic_scores") or {}))[: len(T.SERIES_PEERS)]
     body = body_area(
         panel("総合体験評価マッピング",

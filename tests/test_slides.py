@@ -347,14 +347,15 @@ def test_indicator_axis_labels_are_vertical(tmp_path):
 # --------------------------------------------------------------------------- #
 # SLIDE 2「市場内ポジション」（PDF p4）
 # --------------------------------------------------------------------------- #
-def test_slide2_shows_rank_distribution_and_top3(tmp_path):
+def test_slide2_shows_top3_and_categories(tmp_path):
     b = _bundle(tmp_path)
     html = slides.slide2_market_position(b)
-    # 「総合評価ランキング」は SLIDE 1 に移したのでここには無い
-    for t in ("同業施設内の総合評価分布", "強み TOP3", "弱み TOP3",
-              "評価軸カテゴリ別の位置"):
+    # 「総合評価ランキング」は SLIDE 1 に移したのでここには無い。
+    # 「同業施設内の総合評価分布」も 2026-11-26 に外した（順位は SLIDE 1）。
+    for t in ("強み TOP3", "弱み TOP3", "全体評価", "評価軸カテゴリ別の位置"):
         assert t in html, t
-    assert "低評価" in html and "高評価" in html
+    assert "同業施設内の総合評価分布" not in html
+    assert "低評価" not in html and "高評価" not in html
     # 基準の呼び名は bundle の baseline_label に従うこと。_bundle() は
     # peers_override 付き＝競合モードなので「選択競合の平均」が正しい。
     # v0.55.0 以前はここに「市場平均」と決め打ちで書かれていて、
@@ -444,24 +445,50 @@ def test_experience_map_can_be_limited_to_selected_peers(tmp_path):
 # --------------------------------------------------------------------------- #
 # SLIDE 3「指定競合との比較」＋詳細（PDF p6, p7）
 # --------------------------------------------------------------------------- #
-def test_compare_columns_are_self_peers_then_average(tmp_path):
-    """最後の列は平均。指定競合モードでは母数が選択競合なので「競合平均」。"""
+def test_compare_columns_use_real_facility_names(tmp_path):
+    """列見出しは**実名**（2026-11-26）。「競合A〜E」ではどの館か分からない。"""
     b = _bundle(tmp_path, n_peers=4)
-    labels = [c[0] for c in slides.compare_columns(b)]
-    assert labels == ["自施設", "競合A", "競合B", "競合C", "競合D", "競合平均"]
+    cols = slides.compare_columns(b)
+    labels = [c[0] for c in cols]
+    names = [c[1] for c in cols]
+    assert labels[0] == slides.short_name(b["target"])
+    assert names[0] == b["target"]
+    for nm in b["peer_names"][:4]:
+        assert slides.short_name(nm) in labels, nm
+    assert not any(l.startswith("競合") and len(l) == 3 for l in labels[:-1])
+    assert labels[-1] == "競合平均"        # 最後は平均（母数が選択競合のため）
+
+
+def test_long_facility_names_are_shortened_for_columns():
+    assert slides.short_name("名古屋市科学館") == "名古屋市科学館"
+    long = "JR東海　リニア・鉄道館"
+    assert len(slides.short_name(long)) <= slides.MAX_COL_NAME
+    assert slides.short_name(long).endswith("…")
 
 
 def test_compare_columns_cap_peers_at_five(tmp_path):
     b = _bundle(tmp_path, n_peers=8)
-    labels = [c[0] for c in slides.compare_columns(b)]
-    assert "競合E" in labels and "競合F" not in labels
+    cols = slides.compare_columns(b)
+    assert len([c for c in cols if c[0] != "競合平均"]) == 6   # 自施設＋競合5
+
+
+def test_heatmap_rows_are_sorted_by_the_target_score(tmp_path):
+    """行は自施設の高い順（デッキ 5P）。軸の定義順だと強弱が読めない。"""
+    import re
+    b = _bundle(tmp_path, n_peers=4)
+    topics = slides._driver_topics(b)
+    html = slides._compare_heatmap(b, topics)
+    shown = [t for t in re.findall(r'vb-tipname">([^<]+)<', html) if t in topics]
+    mine = dict(zip(b["topic_names"], b["topic_values"]))
+    vals = [mine[t] for t in shown]
+    assert vals == sorted(vals, reverse=True), shown
 
 
 def test_slide3_has_chart_heatmap_and_diff_panels(tmp_path):
     b = _bundle(tmp_path, n_peers=4)
     html = slides.slide3_competitor_compare(b)
     for t in ("指定競合との比較", "2〜5施設を横並びで比較し、自施設の立ち位置を把握します。",
-              f"主要{len(topic_score.DRIVER_TOPICS)}指標の比較（5点満点）", "施設別スコアヒートマップ（5点満点）",
+              f"主要{len(topic_score.DRIVER_TOPICS)}指標の比較", "施設別スコアヒートマップ",
               "自施設だけの強み", "競合に負けている項目", "分析対象：5施設"):
         assert t in html, t
     for t in topic_score.DRIVER_TOPICS:
@@ -1519,11 +1546,15 @@ def test_detail_right_shows_every_competitor(tmp_path):
     names = b["peer_names"]
     b["slide_summaries"] = _peer_summary(names)
     html = slides.slide3_competitor_detail(b)
-    assert "競合ごとの評価差分" in html
+    assert "比較対象施設との評価差分とその要約" in html
     for n in names:
         assert f"vs {n}" in html
         assert f"{n}仮説" in html
     assert "指定競合の傾向" not in html      # 要約に置き換わる
+    # 裏付けの表（デッキ 9P）。自施設・相手・差の3列
+    assert "評価差分" in html and "当館" in html and "相手" in html
+    # 2段組みに割れていること（1列だと5館ぶん入らない）
+    assert slides._peer_columns(b).count("flex:1;min-width:0") >= 2
 
 
 def test_detail_right_falls_back_when_no_summary(tmp_path):
@@ -1545,12 +1576,19 @@ def test_detail_rows_without_a_name_are_skipped(tmp_path):
     assert "名無し" not in html and "ある" in html
 
 
-def test_detail_blocks_share_the_height_instead_of_being_cut(tmp_path):
-    """施設数が増えてもブロックを削らず、flex で詰める。"""
+def test_detail_keeps_every_competitor_block(tmp_path):
+    """施設数が増えてもブロックを削らない。**1館も落とさない。**
+
+    高さは flex で割らず自然高にする（2026-11-26）。flex:1 で等分すると
+    中身の多いブロックが溢れて隣に重なった。
+    """
     b = _bundle(tmp_path, n_peers=5)
     b["slide_summaries"] = _peer_summary(b["peer_names"])
     body = slides._peer_diffs(b)
-    assert body.count("flex:1;min-height:0") == len(b["peer_names"])
+    for nm in b["peer_names"]:
+        assert f"vs {nm}" in body, nm
+    assert body.count('style="flex:none;display:flex;flex-direction:column;'
+                      'padding:.1cqw 0;"') == len(b["peer_names"])
 
 
 def test_detail_text_is_escaped(tmp_path):
