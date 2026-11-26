@@ -173,17 +173,16 @@ def test_auth_disable_needs_an_explicit_value(monkeypatch, value, expect):
     assert auth.auth_disabled() is expect
 
 
-def test_the_gate_and_the_banner_are_wired_together():
-    """外している間は必ず画面に出ること（戻し忘れ防止）。"""
+def test_the_gate_is_wired_to_the_switch():
+    """ログインを外すのは**この環境変数を立てたときだけ**。
+
+    画面の警告バナーは外した（2026-11-26、公開運用にするため）。
+    戻し忘れを知らせるものが無くなったので、**既定で外れないこと**を
+    ここで固定しておく（auth 側の既定は test_auth_is_never_disabled_by_default）。
+    """
     from pathlib import Path
 
     src = Path("app.py").read_text(encoding="utf-8")
-    # ゲートを通す側
     assert "auth.auth_disabled() and not st.session_state" in src
-    # 出し続ける側
-    assert src.count("auth.auth_disabled()") >= 2, "バナーが無い"
-    assert "ログインを外しています" in src
-    assert auth.AUTH_DISABLED_ENV in src, "戻し方が画面に書かれていない"
-    # バナーはゲートより後ろ（サイドバー側）にある
-    assert src.index("ログインを外しています") > src.index(
-        "auth.auth_disabled() and not st.session_state")
+    # 警告バナーは置かない
+    assert "ログインを外しています" not in src
