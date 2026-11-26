@@ -1380,6 +1380,54 @@ def test_compare_bottom_falls_back_when_no_summary(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# SLIDE 5（詳細）コンテンツ／空間設計（2026-11-15 デッキ 10P）
+# --------------------------------------------------------------------------- #
+def _space_matrix_summary():
+    from src import slide_summary as ss
+    return {"slide5_space_detail": {"matrix": {
+        c: {r: f"{c}の{r}の本文。" for r in ss.MATRIX_ROWS}
+        for c in ss.MATRIX_COLUMNS}}}
+
+
+def test_space_detail_shows_the_matrix_when_present(tmp_path):
+    from src import slide_summary as ss
+    b = _bundle(tmp_path)
+    b["slide_summaries"] = _space_matrix_summary()
+    html = slides.slide5_space_detail(b)
+    for c in ss.MATRIX_COLUMNS:
+        for r in ss.MATRIX_ROWS:
+            assert f"{c}の{r}の本文。" in html
+    assert "総合サマリー" not in html        # 表に置き換わる
+
+
+def test_space_detail_falls_back_to_the_template_summary(tmp_path):
+    """未生成なら従来の総合サマリーと凡例を出す。下段を空にしない。"""
+    b = _bundle(tmp_path)
+    b.pop("slide_summaries", None)
+    html = slides.slide5_space_detail(b)
+    assert "総合サマリー" in html and "スコアの見方" in html
+
+
+def test_space_matrix_drops_a_column_with_no_text(tmp_path):
+    b = _bundle(tmp_path)
+    b["slide_summaries"] = {"slide5_space_detail": {"matrix": {
+        "コンテンツ": {"強み": "ある"},
+        "空間設計": {"強み": "", "評価の特徴": ""},
+    }}}
+    html = slides._space_matrix(b)
+    assert "ある" in html
+    assert "空間設計" not in html
+
+
+def test_space_matrix_is_escaped(tmp_path):
+    b = _bundle(tmp_path)
+    b["slide_summaries"] = {"slide5_space_detail": {"matrix": {
+        "コンテンツ": {"強み": "<script>x()</script>"}}}}
+    html = slides._space_matrix(b)
+    assert "<script>" not in html and "&lt;script&gt;" in html
+
+
+# --------------------------------------------------------------------------- #
 # SLIDE 4 下段の AI 要約（2026-11-15 デッキ 9P）
 # --------------------------------------------------------------------------- #
 def _timeline_bullets():

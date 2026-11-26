@@ -2426,6 +2426,64 @@ def _trend_badge(diff5: float) -> tuple[str, str]:
     return "良好", "良好"
 
 
+def _space_matrix(b: dict) -> str:
+    """コンテンツ／空間設計を各3点で評価した表。
+
+    2026-11-15 のデッキ 10P「表から読み取れるまとめ要約を入れる」。
+    出力形は資料どおり2列×3行（強み／評価の特徴／改善の着眼点）。
+    生成は管理モードの「📝 ページ要約」。**描画からは呼ばない。**
+    """
+    from . import slide_summary as ss  # noqa: PLC0415
+
+    got = ((b.get("slide_summaries") or {}).get("slide5_space_detail")
+           or {}).get("matrix") or {}
+    cols = [c for c in ss.MATRIX_COLUMNS if isinstance(got.get(c), dict)
+            and any(str(v).strip() for v in got[c].values())]
+    if not cols:
+        return ""
+
+    ROW_COLOR = {"強み": T.ACCENT_DEEP, "評価の特徴": T.NAVY,
+                 "改善の着眼点": T.BLUE}
+    out = ""
+    for col in cols:
+        cells = ""
+        for r in ss.MATRIX_ROWS:
+            txt = str(got[col].get(r) or "").strip()
+            if not txt:
+                continue
+            cells += (
+                '<div style="display:flex;gap:.6cqw;align-items:flex-start;'
+                'padding:.16cqw 0;">'
+                f'<span style="flex:none;width:6cqw;font-size:.86cqw;'
+                f'font-weight:700;color:{ROW_COLOR[r]};margin-top:.08cqw;">'
+                f'{escape(r)}</span>'
+                f'<span style="flex:1;min-width:0;font-size:.9cqw;line-height:1.42;'
+                f'color:{T.INK};">{_md_bold(txt)}</span></div>'
+            )
+        out += (
+            f'<div style="flex:1;min-width:0;border:1px solid {T.CARD_LINE};'
+            'border-radius:.7cqw;padding:.55cqw .9cqw;display:flex;'
+            'flex-direction:column;justify-content:center;">'
+            f'<div style="flex:none;font-size:1.04cqw;font-weight:800;'
+            f'color:{T.NAVY};margin-bottom:.22cqw;">{escape(col)}</div>'
+            + cells + '</div>'
+        )
+    return f'<div style="flex:1;min-width:0;display:flex;gap:.9cqw;">{out}</div>'
+
+
+def _space_bottom(b: dict, summary: str, legend_card: str) -> str:
+    """下段。要約があれば2列3行の表、無ければ従来のテンプレ文と凡例。
+
+    表のほうが縦を食うので、**出すときだけ高くする**。
+    """
+    matrix = _space_matrix(b)
+    if matrix:
+        return ('<div style="height:11.4cqw;flex:none;display:flex;gap:1.2cqw;">'
+                + matrix + '</div>')
+    return ('<div style="height:8cqw;flex:none;display:flex;gap:1.2cqw;">'
+            + summary + legend_card + '</div>')
+
+
 def slide5_space_detail(b: dict) -> str:
     """SLIDE 5「空間体験分析（詳細）」。docs/design/slide_p10.png。"""
     from . import topic_score
@@ -2548,8 +2606,7 @@ def slide5_space_detail(b: dict) -> str:
         + panel("施設別スコアヒートマップ（10項目）",
                 f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;">'
                 f'{head}{rows}</div>', pad="0")
-        + '<div style="height:8cqw;flex:none;display:flex;gap:1.2cqw;">'
-        + summary + legend_card + '</div>',
+        + _space_bottom(b, summary, legend_card),
         top=T.BODY_TOP_TIGHT, column=True, gap=.8,
     )
     return canvas(

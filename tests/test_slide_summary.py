@@ -54,6 +54,10 @@ def _fake_llm(monkeypatch, headline="順位は上位", body="46施設中3位。"
             from src import categories as _c
             return {"overall": "総合評価の本文。",
                     "categories": {k: f"{k}の要約。" for k in _c.ORDER}}, ""
+        # コンテンツ／空間設計の2列3行（10P）。
+        if '"matrix"' in prompt:
+            return {"matrix": {c: {r: f"{c}の{r}。" for r in ss.MATRIX_ROWS}
+                               for c in ss.MATRIX_COLUMNS}}, ""
         # 競合1施設ごとの差分（7P）。
         if '"competitors"' in prompt:
             return {"competitors": [
@@ -440,3 +444,68 @@ def test_peer_summary_survives_save_and_load(tmp_path, monkeypatch):
     ss.save(conn, "デモ美術館", "slide3_competitor_detail", b, s)
     got = ss.get(conn, "デモ美術館", "slide3_competitor_detail", b)
     assert got is not None and got.peers == s.peers
+
+
+# --------------------------------------------------------------------------- #
+# コンテンツ／空間設計（2026-11-15 デッキ 10P下段「空間体験分析」の要約）
+# --------------------------------------------------------------------------- #
+def test_matrix_slide_has_its_own_shape():
+    assert ss.shape_of("slide5_space_detail") == "matrix"
+    assert ss.is_matrix_slide("slide5_space_detail")
+    assert not ss.is_bullet_slide("slide5_space_detail")
+
+
+def test_matrix_facts_split_the_axes_by_category():
+    """並べ替えずに渡すと、コンテンツの話が空間設計の欄に書かれる。"""
+    b = _bundle(topic_names=["提供内容の品質", "空間の質感", "料金の適正さ"],
+                topic_values=[80.0, 40.0, 60.0],
+                overall_topic={"提供内容の品質": 60.0, "空間の質感": 60.0})
+    got = ss.facts_for("slide5_space_detail", b)["カテゴリ別の指標"]
+    assert [x["指標"] for x in got["コンテンツ"]] == ["提供内容の品質"]
+    assert [x["指標"] for x in got["空間設計"]] == ["空間の質感"]
+    # 料金はどちらのカテゴリでもないので載らない
+    flat = [x["指標"] for v in got.values() for x in v]
+    assert "料金の適正さ" not in flat
+    assert got["コンテンツ"][0]["差"] == pytest.approx(1.0)
+
+
+def test_matrix_summary_is_generated(monkeypatch):
+    _fake_llm(monkeypatch)
+    s, err = ss.generate("slide5_space_detail", _bundle(), "KEY")
+    assert not err
+    assert set(s.matrix) == set(ss.MATRIX_COLUMNS)
+    assert set(s.matrix["コンテンツ"]) == set(ss.MATRIX_ROWS)
+    assert not s.bullets and not s.headline
+
+
+def test_matrix_unknown_rows_and_columns_are_dropped(monkeypatch):
+    """資料の2列3行以外を増やさない。"""
+    from src import llm
+    monkeypatch.setattr(llm, "call_json", lambda *a, **k: ({"matrix": {
+        "コンテンツ": {"強み": "ok", "知らない行": "だめ"},
+        "知らない列": {"強み": "だめ"},
+    }}, ""))
+    s, err = ss.generate("slide5_space_detail", _bundle(), "KEY")
+    assert not err
+    assert set(s.matrix) == {"コンテンツ"}
+    assert set(s.matrix["コンテンツ"]) == set(ss.MATRIX_ROWS)
+    assert s.matrix["コンテンツ"]["強み"] == "ok"
+    assert s.matrix["コンテンツ"]["評価の特徴"] == ""
+
+
+def test_matrix_prompt_keeps_the_department_rules():
+    flat = "".join(ss.prompt_for("slide5_space_detail").split())
+    for rule in ("点数や順位は論点の選定に使い",
+                 "言及が少ないことを低評価と判断しない",
+                 "具体的な展示名・場所・場面を補わない"):
+        assert rule in flat, rule
+
+
+def test_matrix_survives_save_and_load(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    _fake_llm(monkeypatch)
+    b = _bundle()
+    s, _ = ss.generate("slide5_space_detail", b, "KEY")
+    ss.save(conn, "デモ美術館", "slide5_space_detail", b, s)
+    got = ss.get(conn, "デモ美術館", "slide5_space_detail", b)
+    assert got is not None and got.matrix == s.matrix

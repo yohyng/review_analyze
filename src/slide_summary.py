@@ -48,11 +48,13 @@ class Summary:
     categories: dict = field(default_factory=dict)  # {カテゴリ: 1文}
     overall: str = ""                            # 全体評価（1段落）
     peers: list = field(default_factory=list)    # 競合ごとの差分（7P）
+    matrix: dict = field(default_factory=dict)   # コンテンツ／空間設計（10P）
     from_cache: bool = False
 
     def __bool__(self) -> bool:
         return bool(self.headline or self.body or self.bullets
-                    or self.categories or self.overall or self.peers)
+                    or self.categories or self.overall or self.peers
+                    or self.matrix)
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +129,25 @@ def facts_for(slide: str, b: dict) -> dict:
                         "語": list(get("keywords") or [])[:6]})
         return {**common, "分析期間": b.get("period_label"),
                 "月次": rows, "変化点": cps}
+    if slide == "slide5_space_detail":
+        # 10項目を**カテゴリに分けて**渡す。並べ替えずに渡すと、
+        # コンテンツ側の話が空間設計の欄に書かれる。
+        from . import categories as _cat  # noqa: PLC0415
+
+        mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
+        base = b.get("overall_topic") or {}
+        axes = (b.get("space_axes") or [t for t in mine
+                                        if _cat.category_of(t) in
+                                        ("コンテンツ", "空間設計")])
+        out: dict = {"コンテンツ": [], "空間設計": []}
+        for t in axes:
+            cat = _cat.category_of(t)
+            if cat not in out or t not in mine:
+                continue
+            out[cat].append({"指標": t, "スコア": round(mine[t] / 20, 2),
+                             "比較基準": round(base.get(t, 50.0) / 20, 2),
+                             "差": round((mine[t] - base.get(t, 50.0)) / 20, 2)})
+        return {**common, "カテゴリ別の指標": out}
     if slide.startswith("slide5"):
         return {**common, "空間10観点": topics(5)}
     if slide == "slide6_voices":
@@ -368,11 +389,55 @@ TIMELINE_PROMPT = """あなたは施設の口コミを分析するデータア�
 {{"bullets": ["...", "...", "..."]}}"""
 
 
+# 10P下段「空間体験分析」の要約。利用部門が書いた指示をそのまま採用した
+# （2026-11-15 のデッキ由来）。コンテンツと空間設計を別々に、各3点。
+#
+# **口コミ原文は渡していない。** 原文の指示は「関連する口コミ原文（取得
+# できる場合）」と条件付きなので、表から読み取れる範囲で書かせる。
+SPACE_MATRIX_PROMPT = """あなたは施設の空間と体験を分析するデータアナリスト
+です。施設別スコア表を読み、対象施設の「コンテンツ」と「空間設計」をそれぞれ
+3点で評価してください。各カテゴリで「強み」「評価の特徴」「改善の着眼点」を
+1点ずつ示します。
+
+ページ: {title}
+
+カテゴリ別の指標と比較基準との差:
+{facts}
+
+### 分析手順
+1. **強み** コンテンツでは、何を見たり体験したりできることが魅力になって
+   いるかを書く。空間設計では、外観・館内の印象、動線、設備、快適さなどの
+   うち、どの側面が体験を支えているかを書く。
+2. **評価の特徴** カテゴリ内で、評価の差や組み合わせに注目する。たとえば
+   「体験の多様性と更新性は評価されるが、品質は比較基準に届かない」
+   「印象は好評だが、使い勝手で評価が分かれる」のように、指標を並べて
+   初めて見える特徴を説明する。差が小さい場合は、比較対象と近い水準に
+   ある項目を示す。
+3. **改善の着眼点** 優先して確認する点を1つ示す。
+
+### 記述ルール
+- 本文で取り上げる指標は表の正式名称を使い、個別に「」で囲む。
+- **点数や順位は論点の選定に使い、本文では比較の傾向とその意味を伝える。**
+- スコアが口コミ言及率を示す場合は「話題に上がりやすい」「言及が少ない」と
+  表現する。**言及が少ないことを低評価と判断しない。**
+- 3点で同じ内容を繰り返さない。各項目は1〜2文に収める。
+- 口コミ原文は渡していない。**具体的な展示名・場所・場面を補わない。**
+  表から読み取れる特徴と、確認すべき点までを書く。
+- 片方のカテゴリに指標が無い場合も欄を出し、判断できる範囲を示す。
+
+### 出力形式
+次のJSONだけを返す。ページ全体の総括は付けない。
+{{"matrix": {{
+  "コンテンツ": {{"強み": "...", "評価の特徴": "...", "改善の着眼点": "..."}},
+  "空間設計": {{"強み": "...", "評価の特徴": "...", "改善の着眼点": "..."}}}}}}"""
+
+
 PROMPTS = {
     "slide3_competitor_compare": SLIDE3_PROMPT,
     "slide2_market_position": SLIDE2_PROMPT,
     "slide3_competitor_detail": PEER_DIFF_PROMPT,
     "slide4_timeline": TIMELINE_PROMPT,
+    "slide5_space_detail": SPACE_MATRIX_PROMPT,
 }
 
 # 返ってくる形。ページごとに違うので、判定を1か所にまとめる。
@@ -384,6 +449,7 @@ SHAPES = {
     "slide2_market_position": "categories",
     "slide3_competitor_detail": "peers",
     "slide4_timeline": "bullets",
+    "slide5_space_detail": "matrix",
 }
 
 # 後方互換。**この2つは SHAPES から導く**（別々に持つと必ずずれる）。
@@ -411,6 +477,16 @@ def is_category_slide(slide: str) -> bool:
 def is_peer_slide(slide: str) -> bool:
     """競合1施設ごとの差分（7P）で返るページか。"""
     return shape_of(slide) == "peers"
+
+
+# 10P の行。順序は資料の並び。**勝手に増やさない。**
+MATRIX_COLUMNS = ("コンテンツ", "空間設計")
+MATRIX_ROWS = ("強み", "評価の特徴", "改善の着眼点")
+
+
+def is_matrix_slide(slide: str) -> bool:
+    """コンテンツ／空間設計の2列3行（10P）で返るページか。"""
+    return shape_of(slide) == "matrix"
 
 
 def generate(slide: str, b: dict, api_key: str, *,
@@ -446,6 +522,22 @@ def generate(slide: str, b: dict, api_key: str, *,
         if not clean and not overall:
             return Summary(slide=slide), "全体評価もカテゴリ別要約も空でした"
         return Summary(slide=slide, categories=clean, overall=overall), ""
+    if shape == "matrix":
+        got = data.get("matrix")
+        if not isinstance(got, dict):
+            got = {}
+        clean = {}
+        for col in MATRIX_COLUMNS:
+            cell = got.get(col)
+            if not isinstance(cell, dict):
+                continue
+            # 知らない行は捨てる。資料の3行以外を増やさない。
+            vals = {r: str(cell.get(r) or "").strip() for r in MATRIX_ROWS}
+            if any(vals.values()):
+                clean[col] = vals
+        if not clean:
+            return Summary(slide=slide), "コンテンツ／空間設計の要約が空でした"
+        return Summary(slide=slide, matrix=clean), ""
     if shape == "peers":
         want = list(b.get("peer_names") or [])
         rows = []
@@ -500,7 +592,7 @@ def get(conn, facility: str, slide: str, b: dict) -> Optional[Summary]:
         return None
     row = conn.execute(
         "SELECT headline, body, bullets_json, categories_json, overall_text, "
-        "peers_json "
+        "peers_json, matrix_json "
         "FROM slide_summary "
         "WHERE facility_id = ? AND slide = ? AND fact_hash = ? AND model = ?",
         (fid, slide, fact_hash(facts_for(slide, b)), model_name()),
@@ -520,11 +612,16 @@ def get(conn, facility: str, slide: str, b: dict) -> Optional[Summary]:
         peers = json.loads(g("peers_json", 5) or "[]")
     except Exception:
         peers = []
+    try:
+        matrix = json.loads(g("matrix_json", 6) or "{}")
+    except Exception:
+        matrix = {}
     return Summary(slide=slide, headline=g("headline", 0), body=g("body", 1),
                    bullets=bullets if isinstance(bullets, list) else [],
                    categories=cats if isinstance(cats, dict) else {},
                    overall=g("overall_text", 4) or "",
                    peers=peers if isinstance(peers, list) else [],
+                   matrix=matrix if isinstance(matrix, dict) else {},
                    from_cache=True)
 
 
@@ -535,11 +632,13 @@ def save(conn, facility: str, slide: str, b: dict, s: Summary) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO slide_summary"
         "(facility_id, slide, fact_hash, model, headline, body, bullets_json,"
-        " categories_json, overall_text, peers_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        " categories_json, overall_text, peers_json, matrix_json)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (fid, slide, fact_hash(facts_for(slide, b)), model_name(),
          s.headline, s.body, json.dumps(s.bullets, ensure_ascii=False),
          json.dumps(s.categories, ensure_ascii=False), s.overall,
-         json.dumps(s.peers, ensure_ascii=False)),
+         json.dumps(s.peers, ensure_ascii=False),
+         json.dumps(s.matrix, ensure_ascii=False)),
     )
     conn.commit()
 
