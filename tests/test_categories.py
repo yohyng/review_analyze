@@ -54,7 +54,7 @@ def _matrix(**overrides):
 
 
 def test_category_score_is_the_mean_of_its_axes():
-    m = _matrix(**{"スタッフ対応": 90.0, "スタッフ専門性": 60.0, "サービスの種類": 30.0})
+    m = _matrix(**{"スタッフ対応": 90.0, "スタッフ専門性": 60.0, "サービス種類": 30.0})
     rows = {r.name: r for r in cat.assess("自施設", m)}
     assert rows["サービス"].score == pytest.approx(60.0)
     assert rows["サービス"].n_axes == 3

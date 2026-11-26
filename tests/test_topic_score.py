@@ -155,10 +155,27 @@ def test_uniform_sentiment_direction():
     assert statistics.mean(t.sentiment for t in neg.topics) < 0.45
 
 
-def test_topics_are_22():
-    assert len(ts.DEFAULT_TOPICS) == 22
-    assert ts.TOPIC_ORDER[0] == "提供内容の品質"
+def test_topics_match_the_source_list():
+    """原典「20261116 評価軸一覧」の 25 軸。重みも原典の値（合計 1.0）。"""
+    assert len(ts.DEFAULT_TOPICS) == 25
+    assert sum(t.weight for t in ts.DEFAULT_TOPICS) == pytest.approx(1.0)
+    assert len({t.name for t in ts.DEFAULT_TOPICS}) == 25
+
+
+def test_topics_version_changes_with_the_axis_set():
+    """軸や重みを変えたらキャッシュの鍵が変わること。"""
+    import hashlib
+    want = hashlib.sha1(
+        "|".join(f"{t.name}:{t.weight}" for t in ts.DEFAULT_TOPICS).encode()
+    ).hexdigest()[:8]
+    assert ts.TOPICS_VERSION == want and len(ts.TOPICS_VERSION) == 8
+
+
+def test_topic_order_follows_the_source_list():
+    """並びは原典の 1〜25 の順。グラフの軸の意味そのものなので変えない。"""
+    assert ts.TOPIC_ORDER[0] == "品質"
     assert ts.TOPIC_ORDER[-1] == "再訪意向"
+    assert ts.TOPIC_ORDER == [t.name for t in ts.DEFAULT_TOPICS]
 
 
 def test_batch_matches_looped_topic_probabilities():
@@ -166,7 +183,7 @@ def test_batch_matches_looped_topic_probabilities():
     import numpy as np
     rng = np.random.RandomState(3)
     se = rng.rand(7, 40)
-    te = rng.rand(22, 40)
+    te = rng.rand(len(ts.DEFAULT_TOPICS), 40)
     batch = ts._topic_probabilities_batch(se, te)
     looped = np.array([ts.topic_probabilities(se[i], te) for i in range(se.shape[0])])
     assert np.allclose(batch, looped, atol=1e-9)

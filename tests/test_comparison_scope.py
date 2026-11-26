@@ -162,13 +162,16 @@ def test_build_comparison_accepts_explicit_peers(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# SLIDE 3「指定競合との比較」— 資料（主要19指標・5点満点・施設別ヒートマップ）準拠
+# SLIDE 3「指定競合との比較」— 資料（主要指標・5点満点・施設別ヒートマップ）準拠
 # --------------------------------------------------------------------------- #
-def test_driver_topics_are_the_19_indicators():
-    """主要19指標＝22観点から outcome 3指標を除いたもの。"""
+def test_driver_topics_exclude_the_outcomes():
+    """主要指標＝全評価軸から outcome 3指標を除いたもの。**数は直書きしない。**"""
     assert topic_score.OUTCOME_TOPICS == ["体験満足度", "推奨意向", "再訪意向"]
-    assert len(topic_score.DRIVER_TOPICS) == 19
-    assert topic_score.DRIVER_TOPICS == topic_score.TOPIC_ORDER[:19]
+    assert (len(topic_score.DRIVER_TOPICS)
+            == len(topic_score.DEFAULT_TOPICS) - len(topic_score.OUTCOME_TOPICS))
+    # 並びは原典どおりのまま、outcome だけが抜ける（末尾3本とは限らない）
+    assert topic_score.DRIVER_TOPICS == [
+        t for t in topic_score.TOPIC_ORDER if t not in topic_score.OUTCOME_TOPICS]
     assert not set(topic_score.DRIVER_TOPICS) & set(topic_score.OUTCOME_TOPICS)
 
 
@@ -180,9 +183,11 @@ def test_slide3_shows_only_driver_topics(tmp_path):
     html = slides.slide3_competitor_compare(b)
 
     for t in topic_score.DRIVER_TOPICS:
-        assert t[:6] in html, f"19指標の {t} が出ていない"
+        assert t[:6] in html, f"主要指標の {t} が出ていない"
+    # **ラベルで見る。** 本文で見ると、ロイヤリティの定義（原典）に
+    # 「再訪意向」が出てくるので誤検出する。
     for t in topic_score.OUTCOME_TOPICS:
-        assert t not in html, f"outcome指標 {t} を出してはいけない"
+        assert f'vb-tipname">{t}<' not in html, f"outcome指標 {t} を出してはいけない"
 
 
 def test_slide3_columns_are_self_peers_and_average(tmp_path):
@@ -193,7 +198,7 @@ def test_slide3_columns_are_self_peers_and_average(tmp_path):
     )
     html = slides.slide3_competitor_compare(b)
 
-    assert "主要19指標の比較（5点満点）" in html
+    assert f"主要{len(topic_score.DRIVER_TOPICS)}指標の比較（5点満点）" in html
     assert "施設別スコアヒートマップ（5点満点）" in html
     assert "自施設だけの強み" in html and "競合に負けている項目" in html
     assert "2〜5施設を横並びで比較し、自施設の立ち位置を把握します。" in html

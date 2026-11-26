@@ -10,9 +10,8 @@ from src import kpi, topic_score
 
 
 def test_every_topic_has_a_kpi_mapping():
-    """22観点すべてに対応があること。資料の表と過不足なく一致する。"""
+    """**評価軸すべて**に対応があること。数は直書きしない（原典が変わる）。"""
     vb = [t.name for t in topic_score.DEFAULT_TOPICS]
-    assert len(vb) == 22
     missing = [t for t in vb if not kpi.kpis_for(t)]
     assert missing == [], f"対応が無い観点: {missing}"
 
@@ -46,7 +45,7 @@ def test_label():
 
 def test_reverse_lookup():
     topics = kpi.topics_for("CES")
-    assert "体験満足度" in topics and "空間の快適性" in topics
+    assert "体験満足度" in topics and "快適さ" in topics
     assert kpi.topics_for("XXX") == ()
 
 

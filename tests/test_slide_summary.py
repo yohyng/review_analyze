@@ -457,12 +457,12 @@ def test_matrix_slide_has_its_own_shape():
 
 def test_matrix_facts_split_the_axes_by_category():
     """並べ替えずに渡すと、コンテンツの話が空間設計の欄に書かれる。"""
-    b = _bundle(topic_names=["提供内容の品質", "空間の質感", "料金の適正さ"],
+    b = _bundle(topic_names=["品質", "雰囲気", "料金の適正さ"],
                 topic_values=[80.0, 40.0, 60.0],
-                overall_topic={"提供内容の品質": 60.0, "空間の質感": 60.0})
+                overall_topic={"品質": 60.0, "雰囲気": 60.0})
     got = ss.facts_for("slide5_space_detail", b)["カテゴリ別の指標"]
-    assert [x["指標"] for x in got["コンテンツ"]] == ["提供内容の品質"]
-    assert [x["指標"] for x in got["空間設計"]] == ["空間の質感"]
+    assert [x["指標"] for x in got["コンテンツ"]] == ["品質"]
+    assert [x["指標"] for x in got["空間設計"]] == ["雰囲気"]
     # 料金はどちらのカテゴリでもないので載らない
     flat = [x["指標"] for v in got.values() for x in v]
     assert "料金の適正さ" not in flat

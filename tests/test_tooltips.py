@@ -20,21 +20,27 @@ from src import db, preview, slides, topic_score
 def test_every_topic_has_a_description():
     missing = [t.name for t in topic_score.DEFAULT_TOPICS if not t.desc]
     assert not missing, f"説明の無い観点: {missing}"
-    assert len(topic_score.DEFAULT_TOPICS) == 22
 
 
-def test_descriptions_say_what_is_measured_not_just_restate_the_name():
-    """名前を言い換えただけの説明にしない。"""
+def test_descriptions_are_the_source_definitions():
+    """説明は原典「20261116 評価軸一覧」の定義そのもの。
+
+    以前は「12文字以上」を課していたが、原典の定義には「他者に勧めたいか」の
+    ような短いものがある。**原典を水増ししてまで条件を満たさないこと。**
+    見るのは「名前の言い換えになっていないか」だけにする。
+    """
     for t in topic_score.DEFAULT_TOPICS:
-        assert len(t.desc) >= 12, f"{t.name} の説明が短すぎる: {t.desc}"
-        assert t.desc != t.name
+        assert t.desc and t.desc != t.name, t.name
+        assert t.name not in t.desc or len(t.desc) > len(t.name) + 4, t.name
 
 
-def test_outcome_topics_are_marked_as_such():
-    """成果指標（体験満足度・推奨意向・再訪意向）はその旨が分かること。"""
+def test_outcome_topics_are_marked_when_rendered():
+    """成果指標である旨は**描画側で添える**（原典の定義を書き換えない）。"""
     for name in topic_score.OUTCOME_TOPICS:
         d = next(t for t in topic_score.DEFAULT_TOPICS if t.name == name)
-        assert "成果指標" in d.desc, name
+        assert "成果指標" not in d.desc, f"{name} の定義を書き換えている"
+        assert "成果指標" in slides.topic_tooltip(name), name
+    assert "成果指標" not in slides.topic_tooltip("品質")
 
 
 # --------------------------------------------------------------------------- #
@@ -44,13 +50,13 @@ def test_tooltip_is_css_only():
     """<script> は st.markdown に落とされる。JS に頼らないこと。"""
     assert "<script" not in slides.TOOLTIP_CSS
     assert ":hover" in slides.TOOLTIP_CSS
-    assert "<script" not in slides.topic_tooltip("空間の快適性")
+    assert "<script" not in slides.topic_tooltip("快適さ")
 
 
 def test_topic_tooltip_carries_the_description_and_keywords():
-    html = slides.topic_tooltip("空間の快適性")
-    assert "空間の快適性" in html
-    assert "居心地" in html                      # 説明
+    html = slides.topic_tooltip("快適さ")
+    assert "快適さ" in html
+    assert "ストレス" in html                    # 原典の定義
     assert "拾う語:" in html and "静か" in html   # 何を数えているか
 
 

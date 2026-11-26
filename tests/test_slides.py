@@ -461,13 +461,14 @@ def test_slide3_has_chart_heatmap_and_diff_panels(tmp_path):
     b = _bundle(tmp_path, n_peers=4)
     html = slides.slide3_competitor_compare(b)
     for t in ("指定競合との比較", "2〜5施設を横並びで比較し、自施設の立ち位置を把握します。",
-              "主要19指標の比較（5点満点）", "施設別スコアヒートマップ（5点満点）",
+              f"主要{len(topic_score.DRIVER_TOPICS)}指標の比較（5点満点）", "施設別スコアヒートマップ（5点満点）",
               "自施設だけの強み", "競合に負けている項目", "分析対象：5施設"):
         assert t in html, t
     for t in topic_score.DRIVER_TOPICS:
         assert t[:4] in html, t
+    # ラベルで見る（ロイヤリティの定義に「再訪意向」が出てくるため）
     for t in topic_score.OUTCOME_TOPICS:
-        assert t not in html, t
+        assert f'vb-tipname">{t}<' not in html, t
 
 
 def test_slide3_diff_values_are_five_point_scale(tmp_path):
@@ -659,9 +660,14 @@ def test_slide4_survives_no_reviews_with_dates(tmp_path):
 # --------------------------------------------------------------------------- #
 # SLIDE 5「空間・体験分析」＋詳細（PDF p9, p10）
 # --------------------------------------------------------------------------- #
-def test_space_topics_are_the_ten_axes():
-    """PDF のレーダー10軸。19指標のうち空間・体験に関わるものだけ。"""
-    assert len(topic_score.SPACE_TOPICS) == 10
+def test_space_topics_are_the_content_and_space_categories():
+    """原典7カテゴリの「コンテンツ」「空間設計」に属する軸（2026-11-15 デッキ 10P）。
+
+    **数は直書きしない。** 原典の軸が増減したら、ここも画面のラベルも追従する。
+    """
+    from src import categories as cat
+    want = set(cat.CATEGORIES["コンテンツ"]) | set(cat.CATEGORIES["空間設計"])
+    assert set(topic_score.SPACE_TOPICS) == want
     assert set(topic_score.SPACE_TOPICS) <= set(topic_score.DRIVER_TOPICS)
     # 運営側の変数（スタッフ・料金・立地・ブランド）は入れない
     for ng in ("スタッフ対応", "料金の適正さ", "立地・アクセス", "ブランド信頼感"):
@@ -686,11 +692,13 @@ def test_slide5_renders_radar_tables_and_summary(tmp_path):
         assert c["icon"] in html and c["border"] in html
 
 
-def test_slide5_detail_has_ten_rows_with_trend_badges(tmp_path):
+def test_slide5_detail_lists_every_space_axis_with_trend_badges(tmp_path):
     b = _bundle(tmp_path, n_peers=4)
     html = slides.slide5_space_detail(b)
     assert "空間体験分析" in html and "（詳細）" in html
-    assert "施設別スコアヒートマップ（10項目）" in html
+    # 見出しの件数は軸の数から出す（直書きすると原典の増減でずれる）
+    n_axes = len(topic_score.SPACE_TOPICS)
+    assert f"施設別スコアヒートマップ（{n_axes}項目）" in html
     assert "傾向" in html and "ポイント" in html
     assert "総合サマリー" in html and "スコアの見方（5点満点）" in html
     for t in topic_score.SPACE_TOPICS:
@@ -741,8 +749,8 @@ def test_space_findings_counts_axes_above_the_baseline(tmp_path):
                                               "peer1": _result(0.5)},
                              None, None, peers_override=["peer1"])
     f = slides.space_findings(b)
-    assert f["n_axes"] == 10
-    assert f["n_above"] == 10                 # 全軸で上回る
+    assert f["n_axes"] == len(topic_score.SPACE_TOPICS)
+    assert f["n_above"] == len(topic_score.SPACE_TOPICS)   # 全軸で上回る
     assert f["base_label"] == "競合平均"
     assert all(abs(v - 1.0) < 1e-6 for v in f["diffs"].values())   # (70-50)/100*5
 

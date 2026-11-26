@@ -130,7 +130,7 @@ def facts_for(slide: str, b: dict) -> dict:
         return {**common, "分析期間": b.get("period_label"),
                 "月次": rows, "変化点": cps}
     if slide == "slide5_space_detail":
-        # 10項目を**カテゴリに分けて**渡す。並べ替えずに渡すと、
+        # 「コンテンツ」「空間設計」の軸を**カテゴリに分けて**渡す。並べ替えずに渡すと、
         # コンテンツ側の話が空間設計の欄に書かれる。
         from . import categories as _cat  # noqa: PLC0415
 

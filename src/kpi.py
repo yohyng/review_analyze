@@ -57,28 +57,38 @@ LAYERS = tuple(dict.fromkeys(k.layer for k in KPIS))
 # 「再訪意向」「推奨意向」は資料では KPI コードでない語も混ざるので、
 # ここではコードに落とせるものだけを載せる。
 TOPIC_KPIS: dict[str, tuple[str, ...]] = {
-    "美的完成度": ("MHI", "ACI", "SAVI", "PAI"),
-    "空間の質感": ("SAVI", "MHI", "EVE"),
-    "空間の機能性": ("SEI", "SOI", "CES"),
-    "空間の感情的インパクト": ("EVE", "EII", "PAI"),
-    "空間の快適性": ("CES", "WCI", "CPI"),
-    "提供内容の品質": ("CES", "FDI", "SBP"),
-    "提供内容の独自性": ("FDI", "SBP", "SII"),
-    "提供内容の多様性": ("CES", "FMS", "EII"),
-    "提供内容の更新性": ("FMS", "SIE"),
-    "情報提供": ("CES", "SOI", "EII"),
+    # ── コンテンツ ──
+    "品質": ("CES", "FDI", "SBP"),
+    "多様性": ("CES", "FMS", "EII"),
+    "独自性": ("FDI", "SBP", "SII"),
+    "最新性": ("FMS", "SIE", "SII"),
+    "更新性": ("FMS", "SIE"),
+    "情報性": ("EII", "CES", "SOI"),
+    "分かりやすさ": ("CES", "SOI", "EII"),
+    # ── 空間設計 ──
+    "レイアウト": ("SEI", "SOI", "CES"),
+    "機能性": ("SEI", "SOI", "CES"),
+    "快適さ": ("CES", "WCI", "CPI"),
+    "デザインクオリティ": ("MHI", "ACI", "SAVI", "PAI"),
+    "雰囲気": ("SAVI", "MHI", "EVE"),
+    "インパクト": ("EVE", "EII", "PAI"),
+    # ── サービス ──
     "スタッフ対応": ("CES", "SSS", "SBP"),
     "スタッフ専門性": ("SSS", "SBP", "EVE"),
-    "サービスの種類": ("CES", "SOI", "D-ROI"),
-    "ブランド信頼感": ("SBP", "FDI", "SIE"),
-    "ブランドの歴史性": ("SBP", "ACI", "EVE"),
-    "料金割引・決済": ("D-ROI", "CES"),
+    "サービス種類": ("CES", "SOI", "D-ROI"),
+    # ── 価格・決済 ──
     "料金の適正さ": ("D-ROI", "CES"),
-    "立地・アクセス": ("SEI", "CES", "SOI"),
+    "料金・決済のサービス多様性": ("D-ROI", "CES"),
+    # ── アクセス ──
+    "アクセスの利便性": ("SEI", "CES", "SOI"),
+    # ── ブランド ──
+    "信頼度": ("SBP", "FDI", "SIE"),
+    "ロイヤリティ": ("FMS", "SBP", "EVE"),
+    # ── 総合評価 ──
     "体験満足度": ("CES", "EVE", "EII"),
     "比較優位性": ("FDI", "SBP", "SAVI"),
-    "再訪意向": ("FMS", "EVE", "SIE"),
     "推奨意向": ("SBP", "PAI", "CES"),
+    "再訪意向": ("FMS", "EVE", "SIE"),
 }
 
 

@@ -392,11 +392,14 @@ CREATE TABLE IF NOT EXISTS places_usage (
 CREATE TABLE IF NOT EXISTS topic_score_cache (
     facility_id   INTEGER NOT NULL REFERENCES facility(id) ON DELETE CASCADE,
     n_reviews     INTEGER NOT NULL,
+    -- 評価軸の構成（topic_score.TOPICS_VERSION）。**鍵に含めること。**
+    -- 含めないと、軸を入れ替えても古い軸の結果が返り続ける。
+    topics_version TEXT   NOT NULL DEFAULT '',
     topics_json   TEXT    NOT NULL,
     overall_score REAL    NOT NULL DEFAULT 0,
     n_sentences   INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT    DEFAULT (datetime('now')),
-    PRIMARY KEY (facility_id, n_reviews)
+    PRIMARY KEY (facility_id, n_reviews, topics_version)
 );
 
 CREATE TABLE IF NOT EXISTS text_profile_cache (
@@ -486,7 +489,7 @@ def get_conn(db_path: Optional[Path | str] = None):
 
 
 # Bump when adding an ALTER-based migration in _migrate() below.
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 
 def _migrate(conn) -> None:
@@ -554,6 +557,16 @@ def _migrate(conn) -> None:
         try:
             conn.execute("ALTER TABLE slide_summary ADD COLUMN matrix_json "
                          "TEXT NOT NULL DEFAULT '{}'")
+        except Exception:
+            pass  # 既にカラムがある
+
+    if ver < 9:
+        # 評価軸を 22 → 25 に入れ替えた（2026-11-26）。古い軸の結果を
+        # 返さないよう、鍵に軸の構成を足す。既存行は空文字のままなので
+        # 読まれなくなり、次の分析で作り直される。
+        try:
+            conn.execute("ALTER TABLE topic_score_cache ADD COLUMN "
+                         "topics_version TEXT NOT NULL DEFAULT ''")
         except Exception:
             pass  # 既にカラムがある
 
@@ -694,10 +707,12 @@ def get_topic_score_cache_bulk(conn) -> dict[tuple[int, int], dict]:
     施設数ぶんの往復になり、遅いうえに 502 を踏む機会もその回数だけ増える。
     分析の頭でまとめて読む。
     """
+    from .topic_score import TOPICS_VERSION  # noqa: PLC0415
+
     try:
         rows = conn.execute(
             "SELECT facility_id, n_reviews, topics_json, overall_score, n_sentences "
-            "FROM topic_score_cache"
+            "FROM topic_score_cache WHERE topics_version = ?", (TOPICS_VERSION,)
         ).fetchall()
     except Exception:
         return {}
@@ -739,10 +754,14 @@ def set_topic_score_cache_bulk(conn, rows: list[tuple]) -> int:
     INSERT OR REPLACE なので、まとめ送りが途中で失敗してやり直しても安全。
     書けなくても分析は続行できる（次回また計算するだけ）。
     """
+    from .topic_score import TOPICS_VERSION  # noqa: PLC0415
+
     return _insert_many(
         conn, "topic_score_cache",
-        ("facility_id", "n_reviews", "topics_json", "overall_score", "n_sentences"),
-        list(rows),
+        ("facility_id", "n_reviews", "topics_version", "topics_json",
+         "overall_score", "n_sentences"),
+        [(fid, n_rev, TOPICS_VERSION, js, sc, ns)
+         for (fid, n_rev, js, sc, ns) in rows],
     )
 
 

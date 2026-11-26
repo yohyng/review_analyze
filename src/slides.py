@@ -502,8 +502,12 @@ def _topic_tip_body(name: str, place: str, b: dict | None = None) -> str:
     if not d or not getattr(d, "desc", ""):
         return ""
 
+    # 原典（評価軸一覧）の定義をそのまま出す。成果指標である旨は定義に
+    # 書かれていないので、**ここで添える**（説明文を書き換えない）。
+    _outcome = ("　※施設の打ち手ではなく、体験の結果として現れる成果指標"
+                if name in topic_score.OUTCOME_TOPICS else "")
     head = f'<span class="vb-tipname">{escape(name)}</span>'
-    desc = escape(d.desc)
+    desc = escape(d.desc) + escape(_outcome)
     kw = (f'<span class="vb-tipkw">拾う語: '
           f'{escape("・".join(d.keywords[:8]))}</span>')
 
@@ -567,7 +571,7 @@ def tilted_axis_labels(labels: list[str], xs: list[float], *, deg: float,
                        size: float, color: str | None = None,
                        prefix: list[str] | None = None,
                        tips: bool = False, b: dict | None = None) -> str:
-    """X軸の傾いたラベル（README §3：独自指標 -90°／19指標比較 -62°）。
+    """X軸の傾いたラベル（README §3：独自指標 -90°／指標比較 -62°）。
 
     右端を軸の目盛りに合わせて、そこを支点に反時計回りへ倒す。
     """
@@ -1268,14 +1272,14 @@ _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
 
 
 def _driver_topics(b: dict) -> list[str]:
-    """このバンドルに値がある主要19指標。"""
+    """このバンドルに値がある主要指標（outcome を除いた driver 側）。"""
     from . import topic_score
     have = set(b.get("topic_names") or [])
     return [t for t in topic_score.DRIVER_TOPICS if t in have]
 
 
 def _indicator_chart(b: dict) -> str:
-    """19指標の折れ線（当施設 実線 vs 同業平均 破線）。1〜5点の固定軸。"""
+    """driver 指標の折れ線（当施設 実線 vs 同業平均 破線）。1〜5点の固定軸。"""
     topics = _driver_topics(b)
     mine = dict(zip(b.get("topic_names") or [], b.get("topic_values") or []))
     avg = b.get("overall_topic") or {}
@@ -1648,7 +1652,7 @@ def compare_columns(b: dict) -> list[tuple[str, str, dict, str]]:
 
 
 def _compare_chart(b: dict, topics: list[str]) -> str:
-    """主要19指標の折れ線（自施設・競合A〜D・同業平均）。1〜5点の固定軸。"""
+    """主要指標の折れ線（自施設・競合A〜D・同業平均）。1〜5点の固定軸。"""
     cols = compare_columns(b)
     n = len(topics)
     LO, HI = 1.0, 5.0
@@ -1682,7 +1686,7 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
         f'{g}.0</div>'
         for g in (1, 2, 3, 4, 5)
     )
-    # README §3「19指標比較 … X軸 -62°」
+    # README §3「指標比較 … X軸 -62°」
     #   ラベルは -62° 回転しているので、子として吹き出しを置くと一緒に傾いて
     #   カードを抜ける。説明は同じスライドのヒートマップ（横書きの指標名）に
     #   任せ、ここには付けない。
@@ -1708,7 +1712,7 @@ def _compare_chart(b: dict, topics: list[str]) -> str:
 
 
 def _compare_heatmap(b: dict, topics: list[str]) -> str:
-    """施設別スコアヒートマップ。行=19指標 × 列=自施設/競合A〜E/平均。
+    """施設別スコアヒートマップ。行=driver 指標 × 列=自施設/競合A〜E/平均。
 
     セルの地色は README §2 の5段階（4.2+ / 3.8+ / 3.4+ / 3.0+ / 〜2.9）。
     """
@@ -1857,6 +1861,8 @@ def _compare_bottom(b: dict, win, lose) -> str:
 
 def slide3_competitor_compare(b: dict) -> str:
     """SLIDE 3「指定競合との比較」。docs/design/slide_p06.png。"""
+    from . import topic_score  # noqa: PLC0415
+
     topics = _driver_topics(b)
     if not topics:
         return canvas(
@@ -1874,7 +1880,8 @@ def slide3_competitor_compare(b: dict) -> str:
         f'color:{T.INK};flex:none;">'
         '2〜5施設を横並びで比較し、自施設の立ち位置を把握します。</div>'
         '<div style="flex:1;display:flex;gap:1.2cqw;min-height:0;">'
-        + panel("主要19指標の比較（5点満点）", _compare_chart(b, topics),
+        + panel(f"主要{len(topic_score.DRIVER_TOPICS)}指標の比較（5点満点）",
+                _compare_chart(b, topics),
                 head_size=1.3, pad=".9cqw")
         + panel("施設別スコアヒートマップ（5点満点）", _compare_heatmap(b, topics),
                 style="width:50cqw;flex:none", head_size=1.3, pad="0")
@@ -2586,7 +2593,7 @@ def slide5_space_detail(b: dict) -> str:
         '<div style="display:flex;align-items:center;justify-content:space-between;'
         'gap:1.4cqw;flex:none;">'
         f'<span style="font-size:{T.FS["slide_lead"]}cqw;font-weight:700;'
-        f'color:{T.INK};">空間と体験の質を10の視点で評価し、'
+        f'color:{T.INK};">空間と体験の質を{len(topic_score.SPACE_TOPICS)}の視点で評価し、'
         '改善の優先ポイントを可視化します。</span>'
         f'<span style="font-size:1.22cqw;color:{T.INK_SUB};white-space:nowrap;">'
         f'分析対象：{n_fac}施設'
@@ -2603,7 +2610,7 @@ def slide5_space_detail(b: dict) -> str:
     )
     body = body_area(
         lead
-        + panel("施設別スコアヒートマップ（10項目）",
+        + panel(f"施設別スコアヒートマップ（{len(topic_score.SPACE_TOPICS)}項目）",
                 f'<div style="flex:1;min-height:0;display:flex;flex-direction:column;">'
                 f'{head}{rows}</div>', pad="0")
         + _space_bottom(b, summary, legend_card),

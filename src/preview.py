@@ -348,7 +348,7 @@ def build_bundle(
         }
 
     # マーケット傾向（この市場で評価されやすい／課題になりやすい指標）。
-    # driver 19指標の母数平均を高い順・低い順に並べる。
+    # driver 指標の母数平均を高い順・低い順に並べる。
     _mkt = [(t, overall_topic[t]) for t in topic_score.DRIVER_TOPICS if t in overall_topic]
     _mkt.sort(key=lambda x: -x[1])
     market_trend_good = [t for t, _ in _mkt[:5]]
