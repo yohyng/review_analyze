@@ -13,7 +13,7 @@ from src.ui.theme import ACCENT, ACCENT_SOFT
 
 def facility_card(name: str) -> None:
     """Render a facility info card with key stats."""
-    stats = db.facility_stats(data.get_conn(), name)
+    stats = data.facility_stats(name)        # キャッシュ（書き込みで消える）
     if not stats:
         return
     c1, c2, c3, c4 = st.columns(4)

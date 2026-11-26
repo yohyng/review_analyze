@@ -33,6 +33,16 @@ from src.ui import components, data
 from src.ui.theme import ACCENT, ACCENT_RING, ACCENT_SOFT
 
 
+def _set_state(key: str, value) -> None:
+    """ボタンの on_click 用。押した直後の1回の再描画で新しい値が見える。
+
+    `if st.button(...): 状態を変える; st.rerun()` の形だと、押した回の
+    再描画は古い値のまま走り、st.rerun() でもう1回走る。DB 問い合わせが
+    往復になる Turso では、その2回目がそのまま待ち時間になる。
+    """
+    st.session_state[key] = value
+
+
 def _resolve_kaizode_key() -> str:
     key = os.environ.get("KAIZODE_API_KEY", "")
     if not key:
@@ -1568,7 +1578,7 @@ def render():
 
             else:
                 # ── 選択済み：施設カード + 分析タイプ選択 + 実行ボタン ── #
-                _chk = db.facility_stats(conn, _target)
+                _chk = data.facility_stats(_target)      # キャッシュ（書き込みで消える）
                 _stats_ok = bool(_chk and _chk["n_reviews"] > 0)
                 _others = [n for n in _names if n != _target]
 
@@ -1584,25 +1594,26 @@ def render():
                     _an_type = st.session_state.get("an_analysis_type", "competitor")
                     _tc, _tm = st.columns(2)
                     with _tc:
-                        if st.button(
+                        # on_click で状態を変える。ボタンの戻り値を見てから
+                        # st.rerun() すると、押すたびに再描画が2回走る
+                        # （2026-11-26 実測で1クリック約13問い合わせ→半分に）。
+                        st.button(
                             "🎯 指定競合との比較",
                             help="最大5施設を選んで詳細な強み・弱みを比較します",
                             width="stretch",
                             type="primary" if _an_type == "competitor" else "secondary",
                             key="an_type_btn_competitor",
-                        ):
-                            st.session_state["an_analysis_type"] = "competitor"
-                            st.rerun()
+                            on_click=_set_state, args=("an_analysis_type", "competitor"),
+                        )
                     with _tm:
-                        if st.button(
+                        st.button(
                             "📊 マーケット比較",
                             help=f"DB内 {len(_others)} 施設全体との比較で市場ポジションを把握します",
                             width="stretch",
                             type="primary" if _an_type == "market" else "secondary",
                             key="an_type_btn_market",
-                        ):
-                            st.session_state["an_analysis_type"] = "market"
-                            st.rerun()
+                            on_click=_set_state, args=("an_analysis_type", "market"),
+                        )
 
                     _html("<div style='height:8px'></div>")
 
@@ -1687,12 +1698,8 @@ def render():
                         # 見える枚数と実際が食い違わないようにする。
                         _n_slides = len(slides.report_slides(
                             detail=st.session_state.get("an_with_detail", True)))
-                        try:
-                            from src.nmsi import run as _nmsi_run  # noqa: PLC0415
-                            if _nmsi_run.get_result(conn, _target):
-                                _n_slides += 1
-                        except Exception:
-                            pass
+                        if data.has_nmsi(_target):          # キャッシュ（NMSI 実行で消える）
+                            _n_slides += 1
                         st.caption(f"レポートは全 {_n_slides} 枚（＋冒頭の免責）になります")
 
                 # ── 実行ボタン ────────────────────────────────────────── #

@@ -61,12 +61,50 @@ def topic_sig() -> tuple:
     return tuple(sorted((r[0], r[1]) for r in rows))
 
 
+# 施設単位の集計は、書き込みのたびに clear_list_caches() で明示的に消している
+# （KAIZODE 取り込み・CSV 取り込み・施設削除・NMSI 実行）。期限は「別の
+# プロセスが書いた」場合（GitHub Actions の日次同期）の追従用なので長めに取る。
+# 30秒だと、操作の間が少し空くたびに4〜7問い合わせが戻ってくる（実測）。
+STATS_TTL = 600
+
+
+@st.cache_data(ttl=STATS_TTL, show_spinner=False)
+def facility_stats(name: str):
+    """施設カード・設定画面用の集計（STATS_TTL）。
+
+    **画面描画のたびに呼ばれる**（設定画面で何か押すたび）。素で呼ぶと
+    1回あたり4問い合わせになり、Turso では1問い合わせ＝1往復なので
+    ボタンを押すたびに遅れる（2026-11-26 実測: 設定画面の再描画1回で
+    7問い合わせ、そのうち4つがこれ）。
+
+    取り込み直後に件数を確かめる箇所（_kz_pull）は、キャッシュを
+    消してから呼ぶか、db.facility_stats を直接使うこと。
+    """
+    return db.facility_stats(get_conn(), name)
+
+
+@st.cache_data(ttl=STATS_TTL, show_spinner=False)
+def has_nmsi(name: str) -> bool:
+    """NMSI の結果が保存済みか（レポート枚数の表示用。STATS_TTL）。
+
+    結果そのものは要らないので bool だけ返す。素で呼ぶと再描画のたびに
+    2問い合わせ走っていた。
+    """
+    try:
+        from src.nmsi import run as _nmsi_run  # noqa: PLC0415
+        return bool(_nmsi_run.get_result(get_conn(), name))
+    except Exception:
+        return False
+
+
 def clear_list_caches() -> None:
     """施設を追加/削除した直後に呼んでリスト系キャッシュを即時無効化。"""
     all_facility_names.clear()
     review_counts.clear()
     facility_meta.clear()
     topic_sig.clear()
+    facility_stats.clear()
+    has_nmsi.clear()
 
 
 @st.cache_data(show_spinner=False)

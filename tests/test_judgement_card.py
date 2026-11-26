@@ -373,3 +373,43 @@ def test_no_warning_on_top_of_the_progress_card():
 def test_reselect_is_always_offered():
     blk = _selected_block()
     assert blk.count('key="an_reselect"') == 1
+
+
+# ── 再描画あたりの DB 問い合わせ（2026-11-26「画面切り替えがもっさり」） ── #
+def test_setup_screen_reads_facility_stats_through_the_cache():
+    """設定画面は何か押すたびに再描画される。素で呼ぶと1回4問い合わせ。"""
+    blk = _selected_block()
+    assert "db.facility_stats(" not in blk
+    assert "data.facility_stats(_target)" in blk
+    assert "_nmsi_run.get_result(" not in blk
+    assert "data.has_nmsi(_target)" in blk
+
+
+def test_mode_buttons_change_state_in_on_click():
+    """`if st.button: ...; st.rerun()` だと押すたびに再描画が2回走る。"""
+    blk = _selected_block()
+    for key in ("an_type_btn_competitor", "an_type_btn_market"):
+        i = blk.index(f'key="{key}"')
+        assert "on_click=_set_state" in blk[i:i + 200], key
+
+
+def test_every_write_path_clears_the_stats_cache():
+    """期限を長くしたぶん、書き込んだら必ず消すこと。"""
+    from pathlib import Path
+    adm = Path("src/ui/admin_mode.py").read_text(encoding="utf-8")
+    for anchor in ('db.delete_facility(conn, _del_fid["id"])',
+                   "inserted, skipped = db.insert_reviews(conn, fid, result.reviews)"):
+        i = adm.index(anchor)
+        assert "data.clear_list_caches()" in adm[i:i + 300], anchor
+    i = adm.index("_res = nmsi_run.analyze(")
+    assert "data.has_nmsi.clear()" in adm[i:i + 300]
+    # 取り込み（_kz_pull）は件数を見る前に消す
+    i = SRC.index("res = kaizode.sync_datasets(client, conn")
+    assert "data.clear_list_caches()" in SRC[i:i + 200]
+
+
+def test_clear_list_caches_covers_the_stats():
+    from pathlib import Path
+    d = Path("src/ui/data.py").read_text(encoding="utf-8")
+    blk = d[d.index("def clear_list_caches"):]
+    assert "facility_stats.clear()" in blk and "has_nmsi.clear()" in blk

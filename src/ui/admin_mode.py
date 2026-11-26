@@ -160,6 +160,7 @@ def render():
                         ).fetchone()
                         if _del_fid:
                             db.delete_facility(conn, _del_fid["id"])
+                            data.clear_list_caches()   # 一覧・施設カードを即時に
                         st.session_state.pop("del_confirm", None)
                         st.success(f"「{_del_target}」を削除しました。")
                         st.rerun()
@@ -405,6 +406,7 @@ def render():
                             inserted, skipped = db.insert_reviews(
                                 conn, fid, result.reviews)
                             n_axes = scoring.compute_and_store(conn, fid)
+                            data.clear_list_caches()   # 件数の表示を即時に
                         except Exception as _e:
                             logger.exception("CSV import failed for %s", facility_name)
                             # Turso には**トランザクションが無い**（commit は
@@ -474,6 +476,7 @@ def render():
                         )
                         inserted, skipped = db.insert_reviews(conn, fid, result.reviews)
                         n_axes = scoring.compute_and_store(conn, fid)
+                        data.clear_list_caches()       # 件数の表示を即時に
                         st.success(
                             f"✅ 「{facility_name}」に {inserted} 件保存"
                             f"（重複スキップ {skipped} 件）"
@@ -1097,6 +1100,7 @@ def render():
                     try:
                         _res = nmsi_run.analyze(conn, _sel, force=bool(_hit),
                                                 progress_cb=_tick)
+                        data.has_nmsi.clear()          # レポート枚数の表示を即時に
                         _bar.empty()
                         st.success(
                             f"NMSI {_res['nmsi']:.1f} — {_res['interpretation']}"
