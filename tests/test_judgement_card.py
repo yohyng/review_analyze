@@ -413,3 +413,20 @@ def test_clear_list_caches_covers_the_stats():
     d = Path("src/ui/data.py").read_text(encoding="utf-8")
     blk = d[d.index("def clear_list_caches"):]
     assert "facility_stats.clear()" in blk and "has_nmsi.clear()" in blk
+
+
+def test_hot_path_buttons_rerun_once():
+    """よく通る導線のボタンは on_click で状態を変える（再描画1回で済む）。"""
+    for key, cb in (("an_go_ready", "_set_state"), ("an_run", "_set_state"),
+                    ("an_reselect", "_reselect"), ("an_back_top", "_set_state"),
+                    ("an_back_main", "_set_state")):
+        i = SRC.index(f'key="{key}"')
+        assert f"on_click={cb}" in SRC[i:i + 250], key
+        # 戻り値を見て st.rerun() する形が残っていないこと
+        assert "st.rerun()" not in SRC[i:i + 250], key
+
+
+def test_reselect_clears_the_search_box_before_it_renders():
+    blk = SRC[SRC.index("def _reselect"):SRC.index("def _resolve_kaizode_key")]
+    assert 'st.session_state["an_target"] = None' in blk
+    assert 'st.session_state.pop("an_search", None)' in blk

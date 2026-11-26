@@ -43,6 +43,16 @@ def _set_state(key: str, value) -> None:
     st.session_state[key] = value
 
 
+def _reselect() -> None:
+    """「施設を選び直す」。on_click で呼ぶ。
+
+    検索欄（an_search）はウィジェットの key。描画のあとで消しても前の値が
+    復元されるが、**描画の前に走る on_click の中で消せば**ちゃんと空になる。
+    """
+    st.session_state["an_target"] = None
+    st.session_state.pop("an_search", None)
+
+
 def _resolve_kaizode_key() -> str:
     key = os.environ.get("KAIZODE_API_KEY", "")
     if not key:
@@ -506,10 +516,9 @@ def _onboard_panel(conn, p, meta: dict) -> None:
     _b1, _b2, _b3 = st.columns([1, 2, 1])
     with _b2:
         if p.action == onboard.READY:
-            if st.button(p.label, type="primary", width="stretch",
-                         key="an_go_ready"):
-                st.session_state["an_target"] = p.facility
-                st.rerun()
+            st.button(p.label, type="primary", width="stretch",
+                      key="an_go_ready",
+                      on_click=_set_state, args=("an_target", p.facility))
             return
 
         # ここから先は収集が要る（EMPTY / NEW）
@@ -1709,21 +1718,18 @@ def render():
                     if _stats_ok:
                         if _run_block:
                             st.info(_run_block)
-                        if st.button("この内容で分析する", type="primary",
-                                     width="stretch", key="an_run",
-                                     disabled=bool(_run_block)):
-                            st.session_state["an_screen"] = "running"
-                            st.rerun()
+                        st.button("この内容で分析する", type="primary",
+                                  width="stretch", key="an_run",
+                                  disabled=bool(_run_block),
+                                  on_click=_set_state, args=("an_screen", "running"))
                     else:
                         # 収集中は進捗カードが状況を言うので、警告を重ねない。
                         if not st.session_state.get(f"an_kz_ongoing::{_target}"):
                             st.caption("この施設の口コミはまだありません。"
                                        "下の判定を見て、取得してから分析します。")
                         _kz_collect_section(conn, _target)
-                    if st.button("← 施設を選び直す", width="stretch", key="an_reselect"):
-                        st.session_state["an_target"] = None
-                        st.session_state.pop("an_search", None)
-                        st.rerun()
+                    st.button("← 施設を選び直す", width="stretch", key="an_reselect",
+                              on_click=_reselect)
 
     # ══════════════════════════════════════════════════════════════════════ #
     # RUNNING (analysis + report generation)
@@ -1944,9 +1950,8 @@ def render():
         _has_v5 = bool(_path_v5 and Path(_path_v5).exists())
         _hc1, _hc2, _hc3 = st.columns([1, 1, 1] if _has_v5 else [1, 1, 0.001])
         with _hc1:
-            if st.button("← 設定に戻る", key="an_back_top", width="stretch"):
-                st.session_state["an_screen"] = "setup"
-                st.rerun()
+            st.button("← 設定に戻る", key="an_back_top", width="stretch",
+                      on_click=_set_state, args=("an_screen", "setup"))
         with _hc2:
             if _result_path and Path(_result_path).exists():
                 with open(_result_path, "rb") as _f:
@@ -2239,6 +2244,5 @@ def render():
                         st.markdown(f"- {item}")
 
         st.divider()
-        if st.button("← 設定に戻って別の施設を分析する", key="an_back_main"):
-            st.session_state["an_screen"] = "setup"
-            st.rerun()
+        st.button("← 設定に戻って別の施設を分析する", key="an_back_main",
+                  on_click=_set_state, args=("an_screen", "setup"))
