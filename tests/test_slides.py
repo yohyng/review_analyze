@@ -1380,6 +1380,73 @@ def test_compare_bottom_falls_back_when_no_summary(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# SLIDE 4 下段の AI 要約（2026-11-15 デッキ 9P）
+# --------------------------------------------------------------------------- #
+def _timeline_bullets():
+    return {"slide4_timeline": {"bullets": [
+        "**期間を通じてプラスが優勢。**ポジティブが上回った月が多い。",
+        "**'25/07 にネガティブへ転じた。**口コミ3件と少ない。",
+        "**直近はプラス幅が戻っている。**'26/03 以降は続いている。",
+    ]}}
+
+
+def test_timeline_shows_the_summary_when_present(tmp_path):
+    b = _bundle(tmp_path)
+    b["slide_summaries"] = _timeline_bullets()
+    html = slides.slide4_timeline(b)
+    assert "この推移から言えること" in html
+    assert "期間を通じてプラスが優勢" in html
+    assert "主な変化点と評価変動要因" in html   # 変化点カードは残す
+
+
+def test_timeline_has_no_empty_strip_without_a_summary(tmp_path):
+    """未生成なら帯ごと出さない。空の枠は何を待っているか分からない。"""
+    b = _bundle(tmp_path)
+    b.pop("slide_summaries", None)
+    html = slides.slide4_timeline(b)
+    assert "この推移から言えること" not in html
+    assert "主な変化点と評価変動要因" in html
+
+
+def test_timeline_change_point_block_shrinks_for_the_summary(tmp_path):
+    """帯を足すぶんカードを詰める。足さないなら元の高さに戻す。"""
+    b = _bundle(tmp_path)
+    b.pop("slide_summaries", None)
+    assert "height:17cqw" in slides.slide4_timeline(b)
+    b["slide_summaries"] = _timeline_bullets()
+    html = slides.slide4_timeline(b)
+    assert "height:17cqw" not in html and "height:13.6cqw" in html
+
+
+def test_timeline_facts_carry_counts_with_the_scores():
+    """件数を落とさない。1件の月と50件の月が同じ重みで読まれる。"""
+    from src import slide_summary as ss
+    b = {"target": "デモ", "monthly_series": [
+        ("2025-01", 3, 0.5, -0.1, 0.4, 4.2),
+        ("2025-02", 40, 0.2, -0.3, -0.1, 3.1),
+    ]}
+    rows = ss.facts_for("slide4_timeline", b)["月次"]
+    assert rows[0] == {"月": "2025-01", "口コミ件数": 3, "ポジティブ": 0.5,
+                       "ネガティブ": -0.1, "差分": 0.4}
+    assert rows[1]["口コミ件数"] == 40
+
+
+def test_timeline_facts_take_change_points_as_objects_or_dicts():
+    from src import slide_summary as ss
+
+    class _CP:
+        ym, direction, delta_pt, n_reviews = "2025-07", "down", -1.86, 3
+        keywords = ["混雑", "工事"]
+
+    b = {"target": "デモ", "change_points": [_CP(), {"ym": "2026-02",
+         "direction": "down", "delta_pt": -1.0, "n_reviews": 3,
+         "keywords": []}]}
+    cps = ss.facts_for("slide4_timeline", b)["変化点"]
+    assert cps[0]["月"] == "2025-07" and cps[0]["語"] == ["混雑", "工事"]
+    assert cps[1]["月"] == "2026-02"
+
+
+# --------------------------------------------------------------------------- #
 # SLIDE 3（詳細）競合ごとの評価差分（2026-11-15 デッキ 7P）
 # --------------------------------------------------------------------------- #
 def _peer_summary(names):

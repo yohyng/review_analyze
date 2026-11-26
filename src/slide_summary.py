@@ -113,9 +113,20 @@ def facts_for(slide: str, b: dict) -> dict:
     if slide.startswith("slide3"):
         return {**common, "競合": b.get("peer_names"), "強み弱み": topics(5)}
     if slide == "slide4_timeline":
-        return {**common, "推移": (b.get("review_trend") or [])[-12:],
-                "変化点": [c.get("label") if isinstance(c, dict) else str(c)
-                        for c in (b.get("change_points") or [])][:4]}
+        # **件数も渡す。** ポジ／ネガのスコアだけ見せると、口コミ1件の月と
+        # 50件の月が同じ重みで読まれ、「〜月に不満が増えた」と書かれてしまう。
+        rows = [{"月": ym, "口コミ件数": n,
+                 "ポジティブ": round(pos, 2), "ネガティブ": round(neg, 2),
+                 "差分": round(diff, 2)}
+                for (ym, n, pos, neg, diff, *_rest) in (b.get("monthly_series") or [])]
+        cps = []
+        for c in (b.get("change_points") or []):
+            get = (c.get if isinstance(c, dict) else lambda k, d=None: getattr(c, k, d))
+            cps.append({"月": get("ym"), "向き": get("direction"),
+                        "変化pt": get("delta_pt"), "口コミ件数": get("n_reviews"),
+                        "語": list(get("keywords") or [])[:6]})
+        return {**common, "分析期間": b.get("period_label"),
+                "月次": rows, "変化点": cps}
     if slide.startswith("slide5"):
         return {**common, "空間10観点": topics(5)}
     if slide == "slide6_voices":
@@ -317,10 +328,51 @@ PEER_DIFF_PROMPT = """あなたは施設の競合比較を行うデータアナ�
   "hypothesis": "対象施設で評価されやすい体験と、競合ほど評価に表れにくい点"}}]}}"""
 
 
+# 9P下段「時間軸分析」の要約。利用部門が書いた指示をそのまま採用した
+# （2026-11-15 のデッキ由来）。件数と割合を併記させる、1件の口コミを
+# 傾向に広げない、スコアが動いた原因と断定しない、という決めが先にあった。
+#
+# **口コミ原文は渡していない。** 原文の指示には代表口コミを使う手順が
+# あるが、ここは月次の数字と変化点の語だけで書かせる。
+TIMELINE_PROMPT = """あなたは施設の口コミを分析するデータアナリストです。
+月別の推移を読み、期間全体の傾向、評価が動いた月、その前後に何が起きて
+いるかを、改善担当者向けに箇条書き3点でまとめてください。
+
+ページ: {title}
+
+月別のスコアと件数:
+{facts}
+
+### 分析手順
+1. **期間全体の傾向** どちらの評価が優勢な月が多いかを確認し、期間を通じて
+   繰り返し現れる傾向を示す。
+2. **最も重要な変化とその背景** プラス・マイナスが逆転した月、または差分が
+   大きく動いた月を選ぶ。前月と比べ、好評が減ったのか、不満が増えたのか、
+   両方が動いたのかを確認する。
+3. **直近の状態** 期間の終わりに近い数か月がどちらに向いているかを示す。
+
+### 記述ルール
+- 該当する月を明記する。取り上げた語は「」で囲む。
+- **1件の口コミは「1件あった」と記述する。口コミ件数が月によって異なる
+  場合は、件数をあわせて示す。** 件数の少ない月の動きを、施設全体の傾向に
+  広げない。
+- 差分がプラスのまま低下した場合は「プラス幅が縮んだ」と書く。
+  ネガティブ側が上回った場合に「ネガティブに転じた」と書く。
+- **スコアが動いた原因とは断定しない。** 同じ月に見られた変化として書く。
+- 要因を特定できる材料がない場合は、確認できた評価の動きまでを記述する。
+  口コミ原文は渡していない。**具体的な場面や原文の内容を補わない。**
+
+### 出力形式
+次のJSONだけを返す。各要素は「**短い見立て。**該当する月と、確認できた
+動きを1〜2文で示す。」の形にする。
+{{"bullets": ["...", "...", "..."]}}"""
+
+
 PROMPTS = {
     "slide3_competitor_compare": SLIDE3_PROMPT,
     "slide2_market_position": SLIDE2_PROMPT,
     "slide3_competitor_detail": PEER_DIFF_PROMPT,
+    "slide4_timeline": TIMELINE_PROMPT,
 }
 
 # 返ってくる形。ページごとに違うので、判定を1か所にまとめる。
@@ -331,6 +383,7 @@ SHAPES = {
     "slide3_competitor_compare": "bullets",
     "slide2_market_position": "categories",
     "slide3_competitor_detail": "peers",
+    "slide4_timeline": "bullets",
 }
 
 # 後方互換。**この2つは SHAPES から導く**（別々に持つと必ずずれる）。

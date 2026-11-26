@@ -2143,17 +2143,30 @@ def slide4_timeline(b: dict) -> str:
         + '<div style="flex:1;display:flex;padding:1cqw;min-height:0;">'
         + _posneg_chart(series, points) + '</div></div>'
     )
+    # 要約帯を出すぶん、変化点カードを詰める（カード下部が空いている）。
+    cp_h = 13.6 if _ai_bullets(b, "slide4_timeline") else 17
     cp_block = (
-        '<div style="height:17cqw;flex:none;display:flex;flex-direction:column;'
+        f'<div style="height:{cp_h}cqw;flex:none;display:flex;flex-direction:column;'
         'gap:.7cqw;">'
         + _tag_head("主な変化点と評価変動要因")
         + '<div style="flex:1;display:flex;min-height:0;">'
         + _change_point_cards(points) + '</div></div>'
     )
+    # 2026-11-15 のデッキ 9P下段「この表から言えることの要約」。
+    # 変化点カードは残す（月ごとの影響量はここにしか無い）。要約が未生成の
+    # ときは帯ごと出さない。**空の枠を置くと、何を待っているか分からない。**
+    bullets = _ai_bullets(b, "slide4_timeline")
+    summary = (
+        '<div style="height:9.4cqw;flex:none;">'
+        + panel("この推移から言えること", bullets,
+                head_size=1.25, pad=".5cqw 1.2cqw")
+        + '</div>'
+    ) if bullets else ""
+
     meta = f"分析期間：{period}" if period else ""
     return canvas(
         slide_header("4", "時間軸分析", meta),
-        body_area(sub + chart_card + cp_block,
+        body_area(sub + chart_card + cp_block + summary,
                   top=T.BODY_TOP_TIGHT, column=True, gap=.9),
         footer("※スコアは5点満点を−1〜+1のスケールに変換して集計",
                tagline="顧客の声を、戦略と成長へ。"),
