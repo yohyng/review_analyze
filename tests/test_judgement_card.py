@@ -226,3 +226,111 @@ def test_card_warns_about_an_empty_collection():
     html = am._judgement_card(pf, pr, "")
     assert "既存の収集は0件" in html
     assert "既存の収集あり" not in html
+
+
+# ── 取り直すと増えるか（2026-11-26「年月が経って件数が増えている」） ── #
+def test_extra_estimate_is_the_gap_to_the_google_total():
+    # Google 1,600 件 ×0.9 = 1,440 見込み、KAIZODE 1,240 件 → 差 200
+    assert precheck.extra_estimate(1600, 1240) == 200
+
+
+def test_extra_estimate_needs_both_numbers():
+    assert precheck.extra_estimate(None, 1240) is None
+    assert precheck.extra_estimate(1600, None) is None
+
+
+def test_extra_estimate_never_goes_negative():
+    assert precheck.extra_estimate(1000, 1240) == 0
+
+
+def test_small_gaps_are_noise():
+    """Google の総数には星だけの評価も入る。小さな差で取り直させない。"""
+    assert not precheck.worth_refresh(10, 1240)        # 30件未満
+    assert not precheck.worth_refresh(50, 2000)        # 5%未満（100件）
+    assert precheck.worth_refresh(200, 1240)
+    assert not precheck.worth_refresh(0, 1240)
+
+
+def _exact_pf(n=1240):
+    return precheck.build(facility="館", place_id="p", remaining=9999,
+                          limit=9999, known_count=n)
+
+
+def _probe_done(did="d", n=1240, status=kaizode.STATUS_DONE):
+    return kaizode.Probe(datasets=[{"dataset_id": did, "dataset_name": "館",
+                                    "status": status}],
+                         counts={did: n} if status == kaizode.STATUS_DONE else {},
+                         known_count=n if status == kaizode.STATUS_DONE else None)
+
+
+def test_card_shows_the_estimate_before_refreshing(monkeypatch):
+    monkeypatch.setattr(am.st, "session_state", {})
+    html = am._judgement_card(_exact_pf(), _probe_done(), "", google_count=1600)
+    assert "追加の見込み" in html and "約 200 件" in html and "目安" in html
+
+
+def test_card_hides_the_estimate_when_the_gap_is_noise(monkeypatch):
+    monkeypatch.setattr(am.st, "session_state", {})
+    html = am._judgement_card(_exact_pf(), _probe_done(), "", google_count=1390)
+    assert "追加の見込み" not in html
+
+
+def test_card_hides_the_estimate_without_a_google_count(monkeypatch):
+    monkeypatch.setattr(am.st, "session_state", {})
+    html = am._judgement_card(_exact_pf(), _probe_done(), "")
+    assert "追加の見込み" not in html
+
+
+def test_refresh_running_then_done_gives_an_exact_diff(monkeypatch):
+    """取り直す前の件数と後の件数の差を「確定」として出す。"""
+    ss = {am._refresh_key("d"): {"before": 1240, "seen_running": False}}
+    monkeypatch.setattr(am.st, "session_state", ss)
+
+    running = _probe_done(status=10)
+    # 進行中を見たら覚える（_kz_probe と同じ処理）
+    for d in running.datasets:
+        rec = ss.get(am._refresh_key(d["dataset_id"]))
+        if rec is not None and d["status"] != kaizode.STATUS_DONE:
+            rec["seen_running"] = True
+    assert am._refresh_state(running)[0] == "running"
+    html = am._judgement_card(_exact_pf(), running, "")
+    assert "再収集中" in html
+
+    done = _probe_done(n=1530)
+    st_ = am._refresh_state(done)
+    assert st_ == ("done", 1240, 1530)
+    html = am._judgement_card(_exact_pf(1530), done, "", google_count=1600)
+    assert "増えた件数" in html and "+290 件" in html and "確定" in html
+    assert "追加の見込み" not in html          # 確定が出たら目安は出さない
+
+
+def test_done_without_seeing_it_run_is_not_called_exact(monkeypatch):
+    """頼んだ直後で、まだ動いていないだけかもしれない。+0件と言わない。"""
+    ss = {am._refresh_key("d"): {"before": 1240, "seen_running": False}}
+    monkeypatch.setattr(am.st, "session_state", ss)
+    pr = _probe_done()
+    assert am._refresh_state(pr)[0] == "pending"
+    html = am._judgement_card(_exact_pf(), pr, "")
+    assert "依頼済み" in html and "増えた件数" not in html
+
+
+def test_probe_marks_a_refresh_as_seen_running():
+    block = SRC[SRC.index("def _kz_probe"):SRC.index("def _refresh_key")]
+    assert 'rec["seen_running"] = True' in block
+
+
+def test_refresh_reruns_the_same_collection_not_a_new_one():
+    """取り直しは rerun。新しい収集を作ると二重発注になる。"""
+    block = SRC[SRC.index("def _kz_refresh"):SRC.index("def _refresh_controls")]
+    assert ".rerun_dataset(did)" in block
+    assert "_kz_order(" not in block and "create_dataset" not in block
+    # 取り直す前の件数を覚え、状態を読み直す
+    assert '{"before": before, "seen_running": False}' in block
+    assert 'st.session_state.pop(f"an_kz_probe::{query}", None)' in block
+
+
+def test_refresh_button_is_offered_in_both_flows():
+    for fn, nxt in (("def _collect_flow", "# ── Background thread"),
+                    ("def _kz_collect_section", "def _peer_add_panel")):
+        block = SRC[SRC.index(fn):SRC.index(nxt)]
+        assert "_refresh_controls(" in block, fn

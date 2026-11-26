@@ -358,6 +358,7 @@ def _kz_collect_section(conn, query: str) -> None:
                 "facility_name": _facility_name,
             }
             st.rerun()
+    _refresh_controls(key, _facility_name, _probe, _reuse, "section")
 
 
 def _peer_add_panel(conn, names: list, target: str, selected: list) -> None:
@@ -640,8 +641,78 @@ def _kz_probe(conn, kzkey: str, query: str):
             kaizode.add_monthly_usage(conn, pr.probe_cost)
         except Exception:
             pass
+    # 取り直しを頼んだ収集が「進行中」に変わったのを見たら覚えておく。
+    # 見ないまま「完了」を読むと、頼んだ直後でまだ動いていないだけかもしれず、
+    # 前と同じ件数を「増加 +0 件（確定）」と言ってしまう。
+    for d in pr.datasets:
+        rec = st.session_state.get(_refresh_key(d.get("dataset_id")))
+        if rec is not None and d.get("status") != kaizode.STATUS_DONE:
+            rec["seen_running"] = True
     st.session_state[ck] = pr
     return pr
+
+
+def _refresh_key(dataset_id) -> str:
+    return f"an_kz_refresh::{dataset_id}"
+
+
+def _refresh_state(probe):
+    """取り直しの状況。(状態, 前の件数, 今の件数) を返す。頼んでいなければ None。
+
+    状態: "running"（取り直し中）/ "done"（終わって差が確定）/
+          "pending"（頼んだがまだ KAIZODE 側の状態が変わっていない）
+    """
+    if not probe:
+        return None
+    for d in probe.datasets:
+        did = d.get("dataset_id")
+        rec = st.session_state.get(_refresh_key(did))
+        if rec is None:
+            continue
+        if d.get("status") != kaizode.STATUS_DONE:
+            return ("running", rec.get("before"), None)
+        if not rec.get("seen_running"):
+            return ("pending", rec.get("before"), None)
+        return ("done", rec.get("before"), probe.counts.get(did))
+    return None
+
+
+def _kz_refresh(kzkey: str, query: str, ds: dict, before) -> bool:
+    """KAIZODE に同じ収集の取り直しを頼む（新しい収集は作らない）。
+
+    取り直す前の件数を覚えておき、終わったあとの件数との差を「確定」の
+    増加として出す。取り込みは差分なので、枠を使うのは増えたぶんだけ。
+    """
+    did = ds.get("dataset_id") or ""
+    try:
+        kaizode.KaizodeClient(api_key=kzkey).rerun_dataset(did)
+    except kaizode.KaizodeError as e:
+        st.error(f"取り直しを依頼できませんでした: {e}")
+        return False
+    st.session_state[_refresh_key(did)] = {"before": before, "seen_running": False}
+    st.session_state.pop(f"an_kz_probe::{query}", None)   # 状態を読み直す
+    return True
+
+
+def _refresh_controls(kzkey: str, query: str, probe, reuse, role: str) -> None:
+    """「最新分を取り直す」と「状況を更新」。"""
+    state = _refresh_state(probe)
+    if state and state[0] in ("running", "pending"):
+        if st.button("KAIZODE の状況を更新", width="stretch",
+                     key=f"an_kz_reload_{role}"):
+            st.session_state.pop(f"an_kz_probe::{query}", None)
+            st.rerun()
+        return
+    if reuse is None or reuse.get("status") != kaizode.STATUS_DONE:
+        return
+    if state and state[0] == "done":
+        return                      # 取り直したばかり
+    if st.button("最新分を取り直す（KAIZODE で再収集）", width="stretch",
+                 key=f"an_kz_refresh_{role}"):
+        before = (probe.counts.get(reuse.get("dataset_id"))
+                  if probe else None)
+        if _kz_refresh(kzkey, query, reuse, before):
+            st.rerun()
 
 
 def _reusable(probe):
@@ -669,11 +740,12 @@ def _go_label(role: str, reuse) -> str:
     # ボタンは動作だけを短く言う（細い列で2行に折れないように）。
     # 「取り込んで」だと何を取り込むのか分からない。データの出どころを書く。
     if role == "target":
-        return "KAIZODEのデータで分析する" if done else "収集の完了を待って分析する"
-    return "KAIZODEのデータで比較に追加" if done else "収集の完了を待って比較に追加"
+        return "KAIZODEのデータで分析する" if done else "完了を待って分析する"
+    return "KAIZODEのデータで比較に追加" if done else "完了を待って比較に追加"
 
 
-def _judgement_card(pf, probe, facility: str, address: str = "") -> str:
+def _judgement_card(pf, probe, facility: str, address: str = "",
+                    google_count=None) -> str:
     """「取れそうか」を1枚にまとめる。
 
     これまでは「既存の収集」「候補カード」「チェックの箇条書き」と3か所に
@@ -715,6 +787,11 @@ def _judgement_card(pf, probe, facility: str, address: str = "") -> str:
         rows += row("KAIZODE", "既存の収集は0件", "warn",
                     "収集は完了していますが口コミが取れていません。"
                     "新しく取得します")
+    elif _refresh_state(probe) is not None:
+        # 取り直し中。「収集が進行中」と別行の「再収集中」が二重に出ないよう、
+        # ここは既存の収集であることだけ言う（状況は下の「取り直し」行）。
+        _names = "／".join(str(d.get("dataset_name") or "") for d in probe.datasets[:2])
+        rows += row("KAIZODE", "既存の収集あり（取り直し中）", "warn", _names)
     elif probe.has_existing:
         rows += row("KAIZODE", "収集が進行中", "warn",
                     "完了していないため、件数はまだ確定しません")
@@ -731,6 +808,25 @@ def _judgement_card(pf, probe, facility: str, address: str = "") -> str:
     else:
         rows += row("取得見込み", f"約 {pf.expected:,} 件", "ink",
                     "概算（Google の口コミ数から）")
+
+    # ②' 取り直すと増えるか。**取り直す前は目安、後は確定**で書き分ける。
+    _rs = _refresh_state(probe)
+    if _rs and _rs[0] == "running":
+        rows += row("取り直し", "KAIZODE で再収集中", "warn",
+                    f"取り直す前は {_rs[1]:,} 件。終わったら増えた件数を出します"
+                    if _rs[1] is not None else "終わったら増えた件数を出します")
+    elif _rs and _rs[0] == "pending":
+        rows += row("取り直し", "依頼済み", "warn",
+                    "KAIZODE 側の状態がまだ変わっていません。少し待って更新してください")
+    elif _rs and _rs[0] == "done" and _rs[1] is not None and _rs[2] is not None:
+        _d = _rs[2] - _rs[1]
+        rows += row("増えた件数", f"{_d:+,} 件", "ok" if _d > 0 else "ink",
+                    f"確定（取り直す前 {_rs[1]:,} 件 → 今 {_rs[2]:,} 件）")
+    elif pf.exact:
+        _x = precheck.extra_estimate(google_count, pf.expected)
+        if precheck.worth_refresh(_x, pf.expected):
+            rows += row("追加の見込み", f"約 {_x:,} 件", "warn",
+                        "目安（Google の今の件数との差）")
 
     # ③ 枠
     _q = next((c for c in pf.checks if c.key == "quota"), None)
@@ -831,7 +927,8 @@ def _collect_flow(conn, p, kzkey: str, role: str = "target") -> None:
     _reuse = _reusable(_probe)
 
     # 施設名と住所はこの上（プランの見出し）に出ているので、カードでは省く。
-    _html(_judgement_card(_pf, _probe, ""))
+    _html(_judgement_card(_pf, _probe, "",
+                          google_count=(_sel.review_count if _sel else None)))
 
     _b_back, _b_go = st.columns([1, 2])
     with _b_back:
@@ -864,6 +961,7 @@ def _collect_flow(conn, p, kzkey: str, role: str = "target") -> None:
                 if role == "target":
                     st.session_state["an_target"] = _reg
                 st.rerun()
+    _refresh_controls(kzkey, _name, _probe, _reuse, role)
     if _reuse is not None and not _pf.blocked:
         # 収集の照合は名前の部分一致なので、別の施設を拾っている可能性がある。
         # カードに名前を出したうえで、違うときの逃げ道を残す。

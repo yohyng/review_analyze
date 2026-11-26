@@ -175,3 +175,31 @@ def build(*, facility: str, place_id: str = "", review_count: int | None = None,
                          + "）。二重発注になるかもしれません"))
 
     return pf
+
+
+# ── 取り直すと増えそうか（2026-11-26） ───────────────────────────── #
+# KAIZODE の収集は、収集した時点の写し。Google 側ではその後も口コミが
+# 増えるが、**増えた件数を取り直す前に正確に知る方法は無い**（Google は
+# 今の総数しか返さない）。ここで出すのは目安。取り直した後の確定値は
+# UI 側が「取り直す前の件数」と「後の件数」の差で出す。
+REFRESH_MIN_GAP = 30          # これ未満の差は誤差として扱う
+REFRESH_MIN_RATIO = 0.05      # 既存件数の 5% 未満の差も誤差として扱う
+
+
+def extra_estimate(google_count: int | None, known_count: int | None) -> int | None:
+    """取り直すと増えそうな件数の目安。出せないときは None。
+
+    Google の総数に EXPECT_RATIO を掛けた見込みから、KAIZODE が今持って
+    いる件数を引く。Google の総数には本文の無い星だけの評価も入るので、
+    **目安以上のものとして扱わないこと**。負になったら 0。
+    """
+    if google_count is None or known_count is None:
+        return None
+    return max(0, int(google_count * EXPECT_RATIO) - int(known_count))
+
+
+def worth_refresh(extra: int | None, known_count: int | None) -> bool:
+    """目安の差が、誤差と言えない大きさか。"""
+    if not extra or known_count is None:
+        return False
+    return extra >= max(REFRESH_MIN_GAP, int(known_count * REFRESH_MIN_RATIO))
