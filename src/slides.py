@@ -1802,24 +1802,38 @@ def _compare_heatmap(b: dict, topics: list[str]) -> str:
         )
         + '</div>'
     )
-    rows = "".join(
-        f'<div style="flex:1;display:flex;align-items:center;min-height:0;'
-        f'border-bottom:1px solid {T.TABLE_HEAD};">'
-        f'<div style="flex:none;width:{_HM_LABEL_W};padding:0 .6cqw;'
-        f'font-size:1.02cqw;color:{T.INK};white-space:nowrap;'
-        'overflow:hidden;text-overflow:ellipsis;">'
-        f'{topic_tooltip(t, place="right", b=b)}</div>'
-        + "".join(
-            '<div style="flex:1;align-self:stretch;display:flex;align-items:center;'
-            'justify-content:center;font-size:1.1cqw;'
-            f'background:{T.heat_bg(_score5(sc.get(t, 50.0)), is_self=i == 0)};'
-            f'color:{T.ACCENT if i == 0 else T.INK_SUB};'
-            f'font-weight:{800 if i == 0 else 500};">{_pt5(sc.get(t, 50.0))}</div>'
-            for i, (_l, _n, sc, _c) in enumerate(cols)
+    def _row(t: str) -> str:
+        # 行内の相対位置で塗る（2026-11-26）。絶対しきい値（3.0/3.4/…）だと
+        # 口コミの感情スコアは 2.4〜3.0 に集まるため全セルが同色になり、
+        # ヒートマップとして何も読めなかった。平均列は基準の計算から外す。
+        vals = [_score5(sc.get(t)) for _l, _n, sc, _c in cols[:-1]
+                if sc.get(t) is not None]
+        c0 = (sum(vals) / len(vals)) if vals else 0.0
+        sp = max((abs(v - c0) for v in vals), default=0.0)
+        if sp < 0.02:
+            sp = 0.0                 # その軸で差が無い行は塗らない
+        return (
+            f'<div style="flex:1;display:flex;align-items:center;min-height:0;'
+            f'border-bottom:1px solid {T.TABLE_HEAD};">'
+            f'<div style="flex:none;width:{_HM_LABEL_W};padding:0 .6cqw;'
+            f'font-size:1.02cqw;color:{T.INK};white-space:nowrap;'
+            'overflow:hidden;text-overflow:ellipsis;">'
+            f'{topic_tooltip(t, place="right", b=b)}</div>'
+            + "".join(
+                '<div style="flex:1;align-self:stretch;display:flex;'
+                'align-items:center;justify-content:center;font-size:1.1cqw;'
+                f'background:{T.heat_rel(_score5(sc.get(t)), c0, sp)};'
+                f'color:{T.ACCENT if i == 0 else T.INK};'
+                f'font-weight:{800 if i == 0 else 500};'
+                + (f'border-left:1px solid {T.ACCENT};'
+                   f'border-right:1px solid {T.ACCENT};' if i == 0 else "")
+                + f'">{_pt5(sc.get(t, 50.0))}</div>'
+                for i, (_l, _n, sc, _c) in enumerate(cols)
+            )
+            + '</div>'
         )
-        + '</div>'
-        for t in topics
-    )
+
+    rows = "".join(_row(t) for t in topics)
     return ('<div style="flex:1;min-height:0;display:flex;flex-direction:column;">'
             f'{head}{rows}</div>')
 
@@ -2743,6 +2757,8 @@ def slide5_space_detail(b: dict) -> str:
         f'<div style="display:flex;background:{T.TABLE_HEAD};flex:none;'
         f'border-bottom:1px solid {T.CARD_LINE};font-size:1.16cqw;font-weight:700;'
         f'color:{T.INK_SUB};">'
+        f'<div style="width:7cqw;flex:none;{cell}text-align:left;'
+        'padding-left:.6cqw;white-space:nowrap;">カテゴリ</div>'
         f'<div style="width:2.6cqw;flex:none;{cell}padding-left:0;'
         'padding-right:0;">No.</div>'
         f'<div style="width:11.5cqw;flex:none;{cell}text-align:left;'
@@ -2758,11 +2774,29 @@ def slide5_space_detail(b: dict) -> str:
         )
         + '</div>'
     )
+    from . import categories as _cat_mod  # noqa: PLC0415
+
+    cat_of = {t: _cat_mod.category_of(t) or "" for t in axes}
+    _cat_idx = {c: i for i, c in enumerate(dict.fromkeys(cat_of.values()))}
+    _prev_cat = ""
     rows = ""
     for i, t in enumerate(axes, 1):
+        # 行内の相対位置で塗る。center は施設列の平均（平均列は除く）。
+        _vals = [_score5(sc.get(t)) for lb, _n, sc, _c in cols[:-1]
+                 if sc.get(t) is not None]
+        _c0 = (sum(_vals) / len(_vals)) if _vals else 0.0
+        _sp = max((abs(v - _c0) for v in _vals), default=0.0)
+        if _sp < 0.02:                      # その軸で差が無い行は塗らない
+            _sp = 0.0
+        _cat = cat_of.get(t, "")
         rows += (
             f'<div style="flex:1;display:flex;align-items:stretch;min-height:0;'
             f'border-bottom:1px solid {T.TABLE_HEAD};">'
+            # 大項目はそのまとまりの先頭行にだけ出す
+            f'<div style="width:7cqw;flex:none;padding:0 .6cqw;display:flex;'
+            f'align-items:center;font-size:1.0cqw;font-weight:800;color:{T.NAVY};'
+            f'background:{T.ACCENT_SOFT if _cat_idx.get(_cat, 0) % 2 == 0 else "transparent"};">'
+            f'{escape(_cat) if _cat != _prev_cat else ""}</div>'
             '<div style="width:2.6cqw;flex:none;display:flex;align-items:center;'
             'justify-content:center;">'
             f'<span style="width:1.5cqw;height:1.5cqw;'
@@ -2776,10 +2810,13 @@ def slide5_space_detail(b: dict) -> str:
             + "".join(
                 '<div style="flex:1;display:flex;align-items:center;'
                 'justify-content:center;'
-                f'background:{T.heat_bg(_score5(sc.get(t, 50.0)), is_self=k == 0)};'
-                f'color:{T.ACCENT if k == 0 else T.INK_SUB};'
+                f'background:{T.heat_rel(_score5(sc.get(t)), _c0, _sp)};'
+                f'color:{T.ACCENT if k == 0 else T.INK};'
                 f'font-size:{"1.05" if k == 0 else ".98"}cqw;'
-                f'font-weight:{800 if k == 0 else 400};">'
+                f'font-weight:{800 if k == 0 else 500};'
+                + (f'border-left:1px solid {T.ACCENT};'
+                   f'border-right:1px solid {T.ACCENT};' if k == 0 else "")
+                + '">'
                 f'{_pt5(sc.get(t, 50.0))}</div>'
                 for k, (lb, _n, sc, _c) in enumerate(cols)
             )
@@ -2788,6 +2825,7 @@ def slide5_space_detail(b: dict) -> str:
             # はみ出していた。差の方向は数字と地色で読める。
             + '</div>'
         )
+        _prev_cat = _cat
 
     legend = "".join(
         '<span style="display:flex;align-items:center;gap:.35cqw;'

@@ -1766,3 +1766,39 @@ def test_partial_last_month_is_excluded():
     # 件数がそろっていれば拾う
     rows[-1] = ("2025-09", 50, 0.0, 0.0, 0.0, 2.5)
     assert [c.ym for c in timeline.detect_change_points(rows)] == ["2025-09"]
+
+
+# ── ヒートマップの色（2026-11-26「ヒートマップの意味をなしてない」）──── #
+def test_heat_rel_separates_values_in_a_narrow_range():
+    """実データは 2.4〜3.0 に集まる。絶対しきい値では全セル同色になる。"""
+    from src import report_theme as RT
+    vals = [2.59, 2.52, 2.81, 2.70, 2.62, 2.60]
+    c0 = sum(vals) / len(vals)
+    sp = max(abs(v - c0) for v in vals)
+    colours = {RT.heat_rel(v, c0, sp) for v in vals}
+    assert len(colours) == len(vals)          # 値ごとに色が分かれる
+    assert "232,56,106" in RT.heat_rel(max(vals), c0, sp)   # 高い＝ピンク
+    assert "46,91,216" in RT.heat_rel(min(vals), c0, sp)    # 低い＝ブルー
+
+
+def test_heat_rel_leaves_a_flat_row_blank():
+    """差が無い行に濃淡を付けない（無い差を読ませない）。"""
+    from src import report_theme as RT
+    assert RT.heat_rel(2.6, 2.6, 0.0) == "#FFFFFF"
+    assert RT.heat_rel(None, 2.6, 0.3) == "#FFFFFF"
+
+
+def test_heatmaps_use_the_relative_colour(tmp_path):
+    from pathlib import Path
+    src = Path("src/slides.py").read_text(encoding="utf-8")
+    assert "T.heat_bg(" not in src          # 絶対しきい値はもう使わない
+    assert src.count("T.heat_rel(") == 2    # スライド3と5の両方
+
+
+def test_slide5_detail_shows_the_category_column(tmp_path):
+    """大項目（コンテンツ／空間設計）を左の段に出す。"""
+    b = _bundle(tmp_path, n_peers=4)
+    html = slides.slide5_space_detail(b)
+    assert "カテゴリ" in html
+    i = html.index("カテゴリ")
+    assert html.index("評価項目", i) > i     # カテゴリ列が評価項目より左

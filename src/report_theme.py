@@ -76,6 +76,31 @@ HEAT_LOW    = "#E2EBF9"
 HEAT_LOW_W  = "#EDF3FC"
 
 
+# 行ごとの相対ヒートマップ（2026-11-26）。
+#   heat_bg() は 3.0/3.4/3.8/4.2 の絶対しきい値で塗る。口コミの感情スコアは
+#   実データで 2.4〜3.0 に集まるため、**全セルが同じ色**になり、ヒートマップ
+#   として何も読めなくなっていた（名古屋6館で確認）。
+#   ここでは「その行（評価軸）の中での位置」で塗る。平均より上はピンク、
+#   下はブルー、離れているほど濃く。施設間の高低がそのまま色になる。
+_REL_HIGH = (232, 56, 106)    # ACCENT
+_REL_LOW = (46, 91, 216)      # BLUE
+REL_MAX_ALPHA = 0.34
+
+
+def heat_rel(v: float | None, center: float, spread: float, *,
+             max_alpha: float = REL_MAX_ALPHA) -> str:
+    """行内の相対位置を背景色に。center からの隔たりを spread で正規化する。
+
+    spread が 0 に近い（その軸で差が無い）行は、色を付けずに白のままにする。
+    わずかな差を濃淡にすると、無い差を読ませてしまう。
+    """
+    if v is None or spread <= 0:
+        return "#FFFFFF"
+    d = max(-1.0, min(1.0, (v - center) / spread))
+    r, g, b = _REL_HIGH if d >= 0 else _REL_LOW
+    return f"rgba({r},{g},{b},{abs(d) * max_alpha:.3f})"
+
+
 def heat_bg(v5: float | None, *, is_self: bool = False) -> str:
     """5点満点のスコアをヒートマップの背景色に。ReviewLens.dc.html:2028 と同じ段階。"""
     if v5 is None:
