@@ -46,8 +46,20 @@ class Check:
 class Preflight:
     checks: list = field(default_factory=list)
     expected: int | None = None     # 取り込みで使いそうな件数（不明は None）
+    exact: bool = False             # expected が確定値か（KAIZODE に聞けた）
     remaining: int = 0
     limit: int = 0
+
+    @property
+    def volume_note(self) -> str:
+        """件数の横に出す但し書き。確定と概算を**必ず区別する**。
+
+        枠を使うかどうかの判断なので、0.9 を掛けた見積もりを確定値の顔で
+        出してはいけない。
+        """
+        if self.expected is None:
+            return "件数不明"
+        return "確定" if self.exact else "概算"
 
     @property
     def blocked(self) -> bool:
@@ -77,7 +89,8 @@ def expected_reviews(review_count: int | None) -> int | None:
 
 def build(*, facility: str, place_id: str = "", review_count: int | None = None,
           remaining: int = 0, limit: int = 0, already: int = 0,
-          existing_datasets: list | None = None) -> Preflight:
+          existing_datasets: list | None = None,
+          known_count: int | None = None) -> Preflight:
     """発注前の確認項目を組み立てる。
 
     facility          … これから集める施設名
@@ -86,9 +99,17 @@ def build(*, facility: str, place_id: str = "", review_count: int | None = None,
     remaining / limit … 今月の KAIZODE 残枠と上限
     already           … その施設について DB に既にある口コミ数
     existing_datasets … KAIZODE 側に既にある同名の収集
+    known_count       … KAIZODE に直接聞けた**確定**件数（聞けなければ None）
+
+    known_count があるときは Google からの見積もりを使わない。
+    EXPECT_RATIO を掛けた概算より、KAIZODE が「これだけ持っている」と
+    答えた数のほうが正しい。
     """
-    exp = expected_reviews(review_count)
-    pf = Preflight(expected=exp, remaining=int(remaining), limit=int(limit))
+    exact = known_count is not None
+    exp = (max(0, int(known_count)) if exact
+           else expected_reviews(review_count))
+    pf = Preflight(expected=exp, exact=exact,
+                   remaining=int(remaining), limit=int(limit))
     add = pf.checks.append
 
     # ── 1. 施設が1件に特定できているか ───────────────────────── #
@@ -101,7 +122,16 @@ def build(*, facility: str, place_id: str = "", review_count: int | None = None,
     ))
 
     # ── 2. 口コミ数が分かっているか ─────────────────────────── #
-    if review_count is None:
+    if exact:
+        # KAIZODE に既にあるぶんを直接数えた。Google の件数は参考に留める。
+        add(Check("volume", "分析に足りる件数がある",
+                  ok=exp >= THIN_REVIEWS,
+                  detail=(f"KAIZODE 側に {exp:,} 件（確定）"
+                          if exp >= THIN_REVIEWS else
+                          f"KAIZODE 側に {exp:,} 件（確定）。"
+                          f"{THIN_REVIEWS} 件未満は信頼区間が広くなり、"
+                          f"傾向として読めません")))
+    elif review_count is None:
         add(Check("volume", "口コミ数が分かっている", ok=False,
                   detail="Google から件数を取得できませんでした。"
                          "何件消費するか読めません"))
@@ -129,7 +159,8 @@ def build(*, facility: str, place_id: str = "", review_count: int | None = None,
                          f"（残り {pf.after:,} 件）"))
     else:
         add(Check("quota", "今月の枠に収まる", ok=True,
-                  detail=f"残枠 {pf.remaining:,} 件 → {pf.after:,} 件になる見込み"))
+                  detail=f"残枠 {pf.remaining:,} 件 → {pf.after:,} 件になる"
+                         + ("" if exact else "見込み")))
 
     # ── 4. 二重に集めようとしていないか ─────────────────────── #
     if already > 0:

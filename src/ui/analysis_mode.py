@@ -84,12 +84,19 @@ def _ftype(role: str) -> str:
 
 
 def _collect_label(role: str) -> str:
+    # 細い列で2行に折れないよう短くする。何が起きるかは下の注記に書く。
     if role == "peer":
-        return "この施設を比較施設として集める"
-    return "この施設の口コミを集めて分析する"
+        return "集めて比較施設に追加"
+    return "集めて分析する"
 
 
-def _collect_note(role: str, remaining: int) -> str:
+def _collect_note(role: str, remaining: int, reuse=None) -> str:
+    if reuse is not None:
+        # 既存の収集を使うときは発注しない。「収集」と書くと二重発注に見える。
+        done = reuse.get("status") == kaizode.STATUS_DONE
+        first = "取り込み" if done else "収集の完了を待って取り込み"
+        last = "比較施設に追加します" if role == "peer" else "分析まで自動で進みます"
+        return f"押すと、{first} → {last}（新しい発注はしません）"
     if role == "peer":
         return (f"押すと、施設を登録 → 口コミを収集 → 取り込み → 比較施設に"
                 f"追加します（残枠 {remaining:,} 件）")
@@ -249,9 +256,6 @@ def _kz_collect_section(conn, query: str) -> None:
         st.warning("KAIZODE APIキーが未設定です（管理 → 📡 KAIZODE連携 で設定してください）。")
         return
 
-    _rem = kaizode.monthly_remaining(conn)
-    st.caption(f"今月のKAIZODE残枠: {_rem:,} / {kaizode.monthly_limit(conn):,} 件")
-
     # ── 進行中の収集があれば、そちらを優先表示 ────────────────── #
     _ongoing_key = f"an_kz_ongoing::{query}"
     _ongoing = st.session_state.get(_ongoing_key)
@@ -259,34 +263,23 @@ def _kz_collect_section(conn, query: str) -> None:
         _kz_progress_tracker(conn, key, _ongoing["dataset_id"], _ongoing["facility_name"], query)
         return
 
-    # ── KAIZODE側にこの施設の収集が既にあるか ──────────────────── #
-    _mkey = f"an_kz_match::{query}"
-    if _mkey not in st.session_state:
-        try:
-            client = kaizode.KaizodeClient(api_key=key)
-            st.session_state[_mkey] = kaizode.match_datasets(
-                client.list_datasets(), query)
-        except kaizode.KaizodeError:
-            st.session_state[_mkey] = []
-    _matches = st.session_state.get(_mkey) or []
-    if _matches:
-        st.markdown("**既存の収集:**")
-        for _m in _matches:
-            _lbl = _m.get("status_label", "")
-            _done = _m.get("status") == kaizode.STATUS_DONE
-            _icon = "✅" if _done else "⏳"
-            st.caption(f"{_icon} 「{_m.get('dataset_name')}」— {_lbl}")
-        _html("<div style='height:8px'></div>")
-
-    # ── STEP 1: URL/施設名入力 ────────────────────────────────── #
-    _ikey = f"an_kz_input::{query}"
-    _inp = st.text_input(
-        "Google MapsのURL または 施設名を入力",
-        key="an_kz_url_input",
-        placeholder="例: https://www.google.com/maps/search/... または 施設名",
-    )
-    if not _inp:
-        return
+    # ── STEP 1: 対象の確定 ────────────────────────────────────── #
+    #   ここに来る時点で施設は選ばれている。**打ち直させない。**
+    #   以前は空の入力欄を出していたので、ヒーロー画面で名前を入れた人が
+    #   同じ名前をもう一度打つことになっていた。
+    #   URL で指し直したい人のためだけに、畳んだ欄を残す。
+    #
+    #   key は施設名ごとに分ける。使い回すとウィジェットが前の施設の値を
+    #   復元して、別の施設に発注してしまう（session_state から消しても戻る）。
+    _ikey = f"an_kz_url_input::{query}"
+    with st.expander("URL で指定し直す（同名の別施設を避けたいとき）",
+                     expanded=False):
+        _ovr = st.text_input(
+            "Google マップの URL",
+            key=_ikey,
+            placeholder="例: https://www.google.com/maps/place/...",
+        )
+    _inp = (_ovr or "").strip() or query
 
     # ── 自動抽出 + プレビュー ──────────────────────────────────── #
     _parsed_name = geocode.parse_maps_url(_inp)
@@ -330,27 +323,32 @@ def _kz_collect_section(conn, query: str) -> None:
     else:
         _maps_url = kaizode.maps_search_url(_facility_name)
 
-    st.caption(f"🏢 {_resolved['name'] if _resolved and _resolved.get('name') else _facility_name}"
-               f"  ·  {_addr}")
-    if _resolved and _resolved.get("url"):
-        st.success("✅ Google マップで施設を特定しました（この1件に対して発注します）")
-    elif not _typed_url and not places.get_api_key():
-        st.info(
-            "GOOGLE_MAPS_API_KEY が未設定のため、施設名での検索URLを使います。"
-            "同名の別施設を拾う可能性があるので、Google マップの URL を"
-            "貼るほうが確実です。"
-        )
-    elif not _typed_url:
-        st.warning(
-            "Google マップで施設を特定できませんでした。名前での検索URLを使います。"
-            "確実にするには Google マップの URL を貼ってください。"
-        )
-    st.text_input("KAIZODE に渡す Google マップ URL", value=_maps_url,
-                  key="an_kz_resolved_url", disabled=True)
+    # ── STEP 2: 取れそうかの判定（1枚） ─────────────────────── #
+    _disp = (_resolved.get("name") if _resolved else "") or _facility_name
+    _probe = _kz_probe(conn, key, _facility_name)
+    _pf = precheck.build(
+        facility=_disp,
+        # URL を貼られたときは、その URL が1件を指している（作り直さない）
+        place_id=((_resolved or {}).get("place_id") or ("url" if _typed_url else "")),
+        review_count=None,      # resolve は件数を返さない（安い SKU のため）
+        remaining=kaizode.monthly_remaining(conn),
+        limit=kaizode.monthly_limit(conn),
+        already=onboard._review_count(conn, _facility_name),
+        known_count=(_probe.known_count if _probe else None),
+    )
+    _reuse = _reusable(_probe)
+    _html(_judgement_card(_pf, _probe, _disp,
+                          "" if _addr == "(情報なし)" else _addr))
 
-    if st.button("📡 今すぐ集める", key="an_kz_order", type="primary",
-                 width="stretch"):
-        _dsid = _kz_order(conn, key, _maps_url, _facility_name)
+    if _pf.blocked:
+        st.button("枠が足りません", disabled=True, width="stretch",
+                  key="an_kz_order_blocked")
+    elif st.button(_go_label("target", _reuse) if _reuse
+                   else "この条件で取得して分析する",
+                   key="an_kz_order", type="primary", width="stretch"):
+        # 既存の収集があれば発注しない（二重発注を避ける）
+        _dsid = (_reuse.get("dataset_id") if _reuse
+                 else _kz_order(conn, key, _maps_url, _facility_name))
         if _dsid:
             # 確定した place_id は覚えておく（保存が許されている唯一のもの）
             if _resolved and _resolved.get("place_id"):
@@ -619,6 +617,149 @@ def _nearest(cands: list, link):
     return partial[0] if partial else None
 
 
+def _kz_probe(conn, kzkey: str, query: str):
+    """KAIZODE 側に同じ施設の収集があるか、あるなら何件かを確かめる。
+
+    **1施設につき1回だけ**。件数を聞くのに1件引かれる（count_reviews）ので、
+    画面の再描画ごとに聞くと枠が静かに減る。session_state に覚える。
+
+    引かれたぶんは、その場で帳簿に付ける。付け忘れると残枠の表示が
+    実態より多くなり、「収まる」と言ってから途中で止まる。
+    """
+    if not kzkey or not query:
+        return None
+    ck = f"an_kz_probe::{query}"
+    if ck in st.session_state:
+        return st.session_state[ck]
+    try:
+        pr = kaizode.probe_facility(kaizode.KaizodeClient(api_key=kzkey), query)
+    except kaizode.KaizodeError as e:
+        pr = kaizode.Probe(error=str(e))
+    if pr.probe_cost:
+        try:
+            kaizode.add_monthly_usage(conn, pr.probe_cost)
+        except Exception:
+            pass
+    st.session_state[ck] = pr
+    return pr
+
+
+def _reusable(probe):
+    """発注せずに使える KAIZODE の収集。無ければ None。
+
+    完了済みを優先する（すぐ取り込める）。無ければ進行中のもの
+    （新しく発注すると二重になる。完了を待てばよい）。
+    """
+    if not probe or probe.error:
+        return None
+    if probe.ready:
+        return probe.ready[0]
+    return probe.datasets[0] if probe.datasets else None
+
+
+def _go_label(role: str, reuse) -> str:
+    """ボタンの文言。**新規発注か、既存の取り込みかを言い分ける。**"""
+    if reuse is None:
+        return _collect_label(role)
+    done = reuse.get("status") == kaizode.STATUS_DONE
+    # カードの KAIZODE 行に「既存の収集あり／進行中」と出ているので、
+    # ボタンは動作だけを短く言う（細い列で2行に折れないように）。
+    if role == "target":
+        return "取り込んで分析する" if done else "完了を待って分析する"
+    return "取り込んで比較に追加" if done else "完了を待って比較に追加"
+
+
+def _judgement_card(pf, probe, facility: str, address: str = "") -> str:
+    """「取れそうか」を1枚にまとめる。
+
+    これまでは「既存の収集」「候補カード」「チェックの箇条書き」と3か所に
+    散っていて、枠を使うかどうかを決めるのに目が往復していた。
+    """
+    def row(label: str, value: str, tone: str = "ink", note: str = "") -> str:
+        col = {"ok": "#1B7F4B", "warn": "#B26B00", "ng": "#B3261E",
+               "ink": "#16202B"}[tone]
+        # 置き場所は細い列（中央寄せの 1/2 幅）。ラベル・値・注記を横に
+        # 並べると注記が2行に折れて読めないので、注記は値の下に回す。
+        return (
+            '<div class="vb-jrow" style="display:flex;gap:10px;'
+            'align-items:baseline;padding:6px 0;">'
+            '<span style="flex:none;width:72px;font-size:11.5px;color:#8A9098;">'
+            f'{escape(label)}</span>'
+            '<span style="flex:1;min-width:0;">'
+            f'<span style="font-size:14px;font-weight:700;color:{col};">'
+            f'{escape(value)}</span>'
+            + (f'<span style="display:block;font-size:11.5px;color:#8A9098;'
+               f'line-height:1.45;margin-top:1px;">{escape(note)}</span>'
+               if note else "")
+            + '</span></div>'
+        )
+
+    rows = ""
+
+    # ① KAIZODE に既にあるか
+    if probe is None:
+        rows += row("KAIZODE", "未確認", "ink", "APIキーが未設定です")
+    elif probe.error:
+        rows += row("KAIZODE", "確認できず", "warn", probe.error[:60])
+    elif probe.ready:
+        _names = "／".join(str(d.get("dataset_name") or "") for d in probe.ready[:2])
+        rows += row("KAIZODE", "既存の収集あり", "ok", _names)
+    elif probe.has_existing:
+        rows += row("KAIZODE", "収集が進行中", "warn",
+                    "完了していないため、件数はまだ確定しません")
+    else:
+        rows += row("KAIZODE", "新規", "ink", "この施設の収集はまだありません")
+
+    # ② 何件取れそうか。**確定と概算を必ず書き分ける。**
+    if pf.expected is None:
+        rows += row("取得見込み", "不明", "warn",
+                    "件数が読めないため、枠の判定ができません")
+    elif pf.exact:
+        rows += row("取得見込み", f"{pf.expected:,} 件", "ok",
+                    "確定（KAIZODE に問い合わせた実数）")
+    else:
+        rows += row("取得見込み", f"約 {pf.expected:,} 件", "ink",
+                    "概算（Google の口コミ数から）")
+
+    # ③ 枠
+    _q = next((c for c in pf.checks if c.key == "quota"), None)
+    if _q is not None:
+        _tone = "ok" if _q.ok else ("ng" if _q.blocking else "warn")
+        rows += row("今月の残枠", f"{pf.remaining:,} 件", _tone, _q.detail)
+
+    # ④ 人しか判断できないもの（取り違え・二重取得）だけ残す
+    for c in pf.checks:
+        if c.key in ("quota", "volume") or c.ok:
+            continue
+        rows += row({"identity": "施設の特定",
+                     "duplicate": "すでにある口コミ",
+                     "dataset": "二重発注"}.get(c.key, c.label),
+                    "要確認", "ng" if c.blocking else "warn", c.detail)
+
+    # 見出しは任意。上で施設名と住所を出している画面では二重になるので省く。
+    _head = ""
+    if facility:
+        _head = (
+            f'<div style="font-size:15px;font-weight:800;color:#16202B;">'
+            f'{escape(facility)}</div>'
+            + (f'<div style="font-size:11.5px;color:#8A9098;margin:1px 0 6px;">'
+               f'{escape(address)}</div>' if address else
+               '<div style="height:6px"></div>')
+        )
+    # 行の間の罫線。先頭行の上には引かない（見出しが無いと空の線が浮く）。
+    _sep = '<div style="border-top:1px solid #EDEFF3;"></div>'
+    rows = rows.replace('<div class="vb-jrow"', _sep + '<div class="vb-jrow"')
+    if rows.startswith(_sep):
+        rows = rows[len(_sep):]
+    if _head:
+        rows = _sep + rows
+    return (
+        '<div style="border:1px solid #E4E3DD;border-radius:12px;'
+        'padding:8px 14px 6px;background:#fff;margin:6px 0 10px;">'
+        + _head + rows + '</div>'
+    )
+
+
 def _collect_flow(conn, p, kzkey: str, role: str = "target") -> None:
     """施設名 → Google で候補を検索 → 候補を選ぶ → 確認 → 発注。
 
@@ -664,6 +805,8 @@ def _collect_flow(conn, p, kzkey: str, role: str = "target") -> None:
     # ── STEP 4: 確認 ───────────────────────────────────────── #
     _name = (_sel.name if _sel else "") or p.facility
     _already = onboard._review_count(conn, _name)
+    # KAIZODE に既にあるなら、Google からの概算ではなく実数で判定する。
+    _probe = _kz_probe(conn, kzkey, _name)
     _pf = precheck.build(
         facility=_name,
         place_id=(_sel.place_id if _sel else p.place_id),
@@ -671,13 +814,13 @@ def _collect_flow(conn, p, kzkey: str, role: str = "target") -> None:
         remaining=kaizode.monthly_remaining(conn),
         limit=kaizode.monthly_limit(conn),
         already=_already,
+        # 既存の収集は**再利用する**ので、二重発注の警告は出さない。
+        known_count=(_probe.known_count if _probe else None),
     )
+    _reuse = _reusable(_probe)
 
-    if _sel:
-        _html(_candidate_card_html(_sel, chosen=True))
-    for _c in _pf.checks:
-        _icon = "✅" if _c.ok else ("⛔" if _c.blocking else "⚠️")
-        st.caption(f"{_icon} **{_c.label}** — {_c.detail}")
+    # 施設名と住所はこの上（プランの見出し）に出ているので、カードでは省く。
+    _html(_judgement_card(_pf, _probe, ""))
 
     _b_back, _b_go = st.columns([1, 2])
     with _b_back:
@@ -688,14 +831,17 @@ def _collect_flow(conn, p, kzkey: str, role: str = "target") -> None:
         if _pf.blocked:
             st.button("枠が足りません", disabled=True, width="stretch",
                       key=f"an_go_blocked_{role}")
-        elif st.button(_collect_label(role), type="primary",
+        elif st.button(_go_label(role, _reuse), type="primary",
                        width="stretch", key=f"an_go_collect_{role}"):
             if _sel:
                 p.place_id = _sel.place_id
                 p.facility = _name
                 p.maps_url = _sel.maps_url
             _reg = onboard.register(conn, p, ftype=_ftype(role))
-            _dsid = _kz_order(conn, kzkey, onboard.collect_url(p), _reg)
+            # KAIZODE に既にあるなら**発注しない**。その収集を追いかけるだけ。
+            #   完了済みなら追跡がすぐ完了を見て取り込み → 分析へ進む。
+            _dsid = (_reuse.get("dataset_id") if _reuse
+                     else _kz_order(conn, kzkey, onboard.collect_url(p), _reg))
             if _dsid:
                 data.clear_list_caches()
                 st.session_state.pop(_pick_key, None)
@@ -707,7 +853,28 @@ def _collect_flow(conn, p, kzkey: str, role: str = "target") -> None:
                 if role == "target":
                     st.session_state["an_target"] = _reg
                 st.rerun()
-    st.caption(_collect_note(role, _pf.remaining))
+    if _reuse is not None and not _pf.blocked:
+        # 収集の照合は名前の部分一致なので、別の施設を拾っている可能性がある。
+        # カードに名前を出したうえで、違うときの逃げ道を残す。
+        if st.button("別の施設なので新しく取得する", width="stretch",
+                     key=f"an_go_fresh_{role}"):
+            if _sel:
+                p.place_id = _sel.place_id
+                p.facility = _name
+                p.maps_url = _sel.maps_url
+            _reg = onboard.register(conn, p, ftype=_ftype(role))
+            _dsid = _kz_order(conn, kzkey, onboard.collect_url(p), _reg)
+            if _dsid:
+                data.clear_list_caches()
+                st.session_state.pop(_pick_key, None)
+                st.session_state[f"an_kz_ongoing::{_reg}"] = {
+                    "dataset_id": _dsid, "facility_name": _reg,
+                    "auto_analyze": role == "target", "role": role,
+                }
+                if role == "target":
+                    st.session_state["an_target"] = _reg
+                st.rerun()
+    st.caption(_collect_note(role, _pf.remaining, _reuse))
 
 
 # ── Background thread: steps ③–⑥ ─────────────────────────────────────────── #

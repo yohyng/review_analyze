@@ -67,11 +67,14 @@ def test_collecting_a_peer_needs_login_and_a_key():
 def test_peer_collection_does_not_hijack_the_target():
     """比較施設として集めたのに分析対象が差し替わる、を防ぐ。"""
     flow = _flows()
-    # 対象施設のときだけ an_target を差し替える（URL経路・候補経路の両方）
-    assert flow.count('if role == "target":') == 2
-    for m in re.finditer(r'if role == "target":\n(\s*)st\.session_state\["an_target"\]',
-                         flow):
-        assert m                     # 直後の行が an_target の代入であること
+    # 対象施設のときだけ an_target を差し替える。
+    #   件数を決め打ちにしない（経路が増えるたびに壊れる）。代わりに
+    #   **an_target への代入が、すべて role の判定の直下にある**ことを見る。
+    assigns = flow.count('st.session_state["an_target"] =')
+    guarded = len(re.findall(
+        r'if role == "target":\n\s*st\.session_state\["an_target"\] =', flow))
+    assert assigns >= 2                 # URL経路・候補経路の両方にある
+    assert guarded == assigns, "role を見ずに分析対象を差し替えている経路がある"
 
     pull = _src("def _kz_pull", "@st.fragment")
     assert 'if _ong.get("role") == "peer":' in pull

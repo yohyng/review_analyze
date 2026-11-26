@@ -597,3 +597,58 @@ def monthly_remaining(conn, month: Optional[str] = None,
     if limit is None:
         limit = monthly_limit(conn)
     return max(0, limit - get_monthly_usage(conn, month))
+
+
+# ---------------------------------------------------------------------- #
+# 発注前の「取れそうか」判定
+# ---------------------------------------------------------------------- #
+@dataclass
+class Probe:
+    """KAIZODE 側にこの施設の収集が既にあるか、あるなら何件か。
+
+    **件数を聞くのに1件引かれる**（count_reviews）。呼び出し側は帳簿に
+    付けること。ここでは通信だけを行い、帳簿は触らない（conn を持たせると
+    テストから呼べなくなるため）。probe_cost に実際に引いた件数を入れる。
+    """
+    datasets: list = field(default_factory=list)   # 名前が一致した収集
+    known_count: Optional[int] = None              # 取り込める確定件数
+    probe_cost: int = 0
+    error: str = ""
+
+    @property
+    def has_existing(self) -> bool:
+        return bool(self.datasets)
+
+    @property
+    def ready(self) -> list:
+        return [d for d in self.datasets if d.get("status") == STATUS_DONE]
+
+
+def probe_facility(client: "KaizodeClient", query: str) -> Probe:
+    """施設名から、KAIZODE 側の収集を探して件数まで確かめる。
+
+    完了済みの収集が見つかったときだけ件数を聞く。走っている最中のものは
+    まだ増えるので、確定値として扱わない。
+    """
+    try:
+        matches = match_datasets(client.list_datasets(), query)
+    except KaizodeError as e:
+        return Probe(error=str(e))
+    pr = Probe(datasets=matches)
+    done = pr.ready
+    if not done:
+        return pr
+    total = 0
+    for ds in done:
+        try:
+            n = client.count_reviews(ds.get("dataset_id") or "")
+        except KaizodeError as e:
+            pr.error = str(e)
+            return pr
+        pr.probe_cost += 1          # count_reviews は limit=1 で1件引く
+        if n is None:
+            # 1つでも読めなければ合計は名乗れない。概算に落とす。
+            return pr
+        total += n
+    pr.known_count = total
+    return pr
