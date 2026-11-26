@@ -612,6 +612,7 @@ class Probe:
     """
     datasets: list = field(default_factory=list)   # 名前が一致した収集
     known_count: Optional[int] = None              # 取り込める確定件数
+    counts: dict = field(default_factory=dict)     # dataset_id → 件数（不明は None）
     probe_cost: int = 0
     error: str = ""
 
@@ -622,6 +623,23 @@ class Probe:
     @property
     def ready(self) -> list:
         return [d for d in self.datasets if d.get("status") == STATUS_DONE]
+
+    @property
+    def usable(self) -> list:
+        """完了済みで、**中身がある**収集。件数不明は使える側に倒す。
+
+        完了していても 0 件の収集はある（URL が施設を指していなかった等）。
+        それを「既存の収集あり」として再利用すると、取り込むものが無いまま
+        分析に進めず止まる（2026-11-26 に名古屋市美術館で実際に起きた）。
+        """
+        return [d for d in self.ready
+                if self.counts.get(d.get("dataset_id")) != 0]
+
+    @property
+    def empty_ready(self) -> list:
+        """完了済みだが 0 件の収集。再利用しない。"""
+        return [d for d in self.ready
+                if self.counts.get(d.get("dataset_id")) == 0]
 
 
 def probe_facility(client: "KaizodeClient", query: str) -> Probe:
@@ -638,17 +656,18 @@ def probe_facility(client: "KaizodeClient", query: str) -> Probe:
     done = pr.ready
     if not done:
         return pr
-    total = 0
     for ds in done:
+        did = ds.get("dataset_id") or ""
         try:
-            n = client.count_reviews(ds.get("dataset_id") or "")
+            n = client.count_reviews(did)
         except KaizodeError as e:
             pr.error = str(e)
             return pr
         pr.probe_cost += 1          # count_reviews は limit=1 で1件引く
-        if n is None:
-            # 1つでも読めなければ合計は名乗れない。概算に落とす。
-            return pr
-        total += n
-    pr.known_count = total
+        pr.counts[did] = n
+    # 中身のある収集だけで合計する。1つでも読めなければ合計は名乗らない
+    # （概算に落とす）。中身のある収集が無ければ確定値も無い。
+    vals = [pr.counts.get(d.get("dataset_id")) for d in pr.usable]
+    if vals and all(v is not None for v in vals):
+        pr.known_count = sum(vals)
     return pr

@@ -652,9 +652,12 @@ def _reusable(probe):
     """
     if not probe or probe.error:
         return None
-    if probe.ready:
-        return probe.ready[0]
-    return probe.datasets[0] if probe.datasets else None
+    if probe.usable:
+        return probe.usable[0]
+    # 0 件で完了した収集は使わない。進行中があればそれを待つ。
+    running = [d for d in probe.datasets
+               if d.get("status") != kaizode.STATUS_DONE]
+    return running[0] if running else None
 
 
 def _go_label(role: str, reuse) -> str:
@@ -664,9 +667,10 @@ def _go_label(role: str, reuse) -> str:
     done = reuse.get("status") == kaizode.STATUS_DONE
     # カードの KAIZODE 行に「既存の収集あり／進行中」と出ているので、
     # ボタンは動作だけを短く言う（細い列で2行に折れないように）。
+    # 「取り込んで」だと何を取り込むのか分からない。データの出どころを書く。
     if role == "target":
-        return "取り込んで分析する" if done else "完了を待って分析する"
-    return "取り込んで比較に追加" if done else "完了を待って比較に追加"
+        return "KAIZODEのデータで分析する" if done else "収集の完了を待って分析する"
+    return "KAIZODEのデータで比較に追加" if done else "収集の完了を待って比較に追加"
 
 
 def _judgement_card(pf, probe, facility: str, address: str = "") -> str:
@@ -701,9 +705,16 @@ def _judgement_card(pf, probe, facility: str, address: str = "") -> str:
         rows += row("KAIZODE", "未確認", "ink", "APIキーが未設定です")
     elif probe.error:
         rows += row("KAIZODE", "確認できず", "warn", probe.error[:60])
-    elif probe.ready:
-        _names = "／".join(str(d.get("dataset_name") or "") for d in probe.ready[:2])
+    elif probe.usable:
+        _names = "／".join(str(d.get("dataset_name") or "") for d in probe.usable[:2])
         rows += row("KAIZODE", "既存の収集あり", "ok", _names)
+    elif probe.empty_ready and not [d for d in probe.datasets
+                                    if d.get("status") != kaizode.STATUS_DONE]:
+        # 完了済みだが中身が無い。「あり」と緑で出すと、押せば分析できると
+        # 読める。実際は取り込むものが無いので、新しく取得する。
+        rows += row("KAIZODE", "既存の収集は0件", "warn",
+                    "収集は完了していますが口コミが取れていません。"
+                    "新しく取得します")
     elif probe.has_existing:
         rows += row("KAIZODE", "収集が進行中", "warn",
                     "完了していないため、件数はまだ確定しません")

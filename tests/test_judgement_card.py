@@ -167,7 +167,7 @@ def test_button_says_whether_it_orders_or_imports():
     """押す前に、発注なのか取り込みなのかが分かること。"""
     done = {"dataset_id": "d", "status": kaizode.STATUS_DONE}
     run = {"dataset_id": "r", "status": 10}
-    assert "取り込んで分析" in am._go_label("target", done)
+    assert am._go_label("target", done) == "KAIZODEのデータで分析する"
     assert "完了を待って分析" in am._go_label("target", run)
     assert "比較に追加" in am._go_label("peer", done)
     assert am._go_label("target", None) == am._collect_label("target")
@@ -187,3 +187,42 @@ def test_wrong_match_has_a_way_out():
     """照合は名前の部分一致。別の施設を拾っていたら新しく取り直せること。"""
     block = SRC[SRC.index("def _collect_flow"):SRC.index("# ── Background thread")]
     assert "別の施設なので新しく取得する" in block
+
+
+
+# ── 0件で完了した収集（2026-11-26 名古屋市美術館で実際に起きた） ──── #
+def _done(did):
+    return {"dataset_id": did, "dataset_name": "館", "status": kaizode.STATUS_DONE}
+
+
+def test_empty_finished_collection_is_not_reused():
+    """中身の無い収集を「既存あり」として使うと、取り込むものが無く止まる。"""
+    pr = kaizode.Probe(datasets=[_done("e")], counts={"e": 0})
+    assert pr.empty_ready and not pr.usable
+    assert am._reusable(pr) is None             # → 新規取得に戻る
+
+
+def test_empty_collection_is_skipped_for_one_with_reviews():
+    pr = kaizode.Probe(datasets=[_done("e"), _done("f")], counts={"e": 0, "f": 300})
+    assert am._reusable(pr)["dataset_id"] == "f"
+
+
+def test_probe_does_not_call_zero_an_exact_count():
+    """0件しか無いなら確定値は出さない（Google の概算に落とす）。"""
+    class C:
+        def list_datasets(self):
+            return [_done("e")]
+
+        def count_reviews(self, did, published_since=None):
+            return 0
+    pr = kaizode.probe_facility(C(), "館")
+    assert pr.known_count is None and pr.counts == {"e": 0}
+    assert pr.probe_cost == 1
+
+
+def test_card_warns_about_an_empty_collection():
+    pf = precheck.build(facility="館", remaining=5000, limit=5000)
+    pr = kaizode.Probe(datasets=[_done("e")], counts={"e": 0})
+    html = am._judgement_card(pf, pr, "")
+    assert "既存の収集は0件" in html
+    assert "既存の収集あり" not in html
