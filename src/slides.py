@@ -2322,8 +2322,11 @@ def slide4_timeline(b: dict) -> str:
         + '<div style="flex:1;display:flex;padding:1cqw;min-height:0;">'
         + _posneg_chart(series, points) + '</div></div>'
     )
-    # 要約帯を出すぶん、変化点カードを詰める（カード下部が空いている）。
-    cp_h = 13.6 if _ai_bullets(b, "slide4_timeline") else 17
+    # 要約があるときは**変化点カードを出さない**（2026-11-26 の指示）。
+    #   カードの本文は「要因は口コミ本文からは特定していません」で固定だった。
+    #   月ごとの話題の増減は要約側で書けるので、そちらに場所を譲る。
+    #   変化点そのものはグラフ上の ①②③ バッジで分かる。
+    cp_h = 17
     cp_block = (
         f'<div style="height:{cp_h}cqw;flex:none;display:flex;flex-direction:column;'
         'gap:.7cqw;">'
@@ -2336,17 +2339,20 @@ def slide4_timeline(b: dict) -> str:
     # ときは帯ごと出さない。**空の枠を置くと、何を待っているか分からない。**
     bullets = _ai_bullets(b, "slide4_timeline")
     summary = (
-        '<div style="height:9.4cqw;flex:none;">'
+        '<div style="flex:1;min-height:0;display:flex;">'
         + panel("この推移から言えること", bullets,
-                head_size=1.25, pad=".5cqw 1.2cqw")
+                head_size=1.3, pad=".7cqw 1.4cqw")
         + '</div>'
     ) if bullets else ""
 
     meta = f"分析期間：{period}" if period else ""
+    # 要約があるときはグラフを固定高にして、残りを要約に回す。
+    body = (sub + f'<div style="height:21cqw;flex:none;display:flex;">'
+            + chart_card + '</div>' + summary) if bullets else (
+        sub + chart_card + cp_block)
     return canvas(
         slide_header("4", "時間軸分析", meta),
-        body_area(sub + chart_card + cp_block + summary,
-                  top=T.BODY_TOP_TIGHT, column=True, gap=.9),
+        body_area(body, top=T.BODY_TOP_TIGHT, column=True, gap=.9),
         footer("※スコアは5点満点を−1〜+1のスケールに変換して集計",
                tagline="顧客の声を、戦略と成長へ。"),
     )

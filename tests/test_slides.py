@@ -1480,7 +1480,10 @@ def test_timeline_shows_the_summary_when_present(tmp_path):
     html = slides.slide4_timeline(b)
     assert "この推移から言えること" in html
     assert "期間を通じてプラスが優勢" in html
-    assert "主な変化点と評価変動要因" in html   # 変化点カードは残す
+    # 変化点カードは出さない（2026-11-26）。本文が「要因は特定していません」
+    # で固定だったので、月ごとの話題の増減を書く要約に場所を譲った。
+    assert "主な変化点と評価変動要因" not in html
+    assert "要因は口コミ本文からは特定していません" not in html
 
 
 def test_timeline_has_no_empty_strip_without_a_summary(tmp_path):
@@ -1492,14 +1495,12 @@ def test_timeline_has_no_empty_strip_without_a_summary(tmp_path):
     assert "主な変化点と評価変動要因" in html
 
 
-def test_timeline_change_point_block_shrinks_for_the_summary(tmp_path):
-    """帯を足すぶんカードを詰める。足さないなら元の高さに戻す。"""
+def test_timeline_keeps_the_change_point_cards_without_a_summary(tmp_path):
+    """要約が無いときだけ変化点カードを出す（面を空にしない）。"""
     b = _bundle(tmp_path)
     b.pop("slide_summaries", None)
-    assert "height:17cqw" in slides.slide4_timeline(b)
-    b["slide_summaries"] = _timeline_bullets()
     html = slides.slide4_timeline(b)
-    assert "height:17cqw" not in html and "height:13.6cqw" in html
+    assert "主な変化点と評価変動要因" in html and "height:17cqw" in html
 
 
 def test_timeline_facts_carry_counts_with_the_scores():
