@@ -744,6 +744,26 @@ def _go_label(role: str, reuse) -> str:
     return "KAIZODEのデータで比較に追加" if done else "完了を待って比較に追加"
 
 
+def _dataset_note(datasets: list) -> str:
+    """収集名に、最終更新日と定期取得の有無を添える。
+
+    一覧（GET /datasets）は updated_at と is_scheduled を返す。どれだけ前の
+    収集か、KAIZODE が自動で取り直しているかが分かれば、取り直すかどうかを
+    決めやすい。updated_at は名前の変更でも動くので「最終更新」と書く
+    （「最終収集」とは言わない）。
+    """
+    d = datasets[0]
+    parts = ["／".join(str(x.get("dataset_name") or "") for x in datasets[:2])]
+    upd = str(d.get("updated_at") or "")[:10]
+    if upd:
+        parts.append(f"最終更新 {upd}")
+    if d.get("is_scheduled") is True:
+        parts.append("定期取得オン")
+    elif d.get("is_scheduled") is False:
+        parts.append("定期取得オフ")
+    return " · ".join(p for p in parts if p)
+
+
 def _judgement_card(pf, probe, facility: str, address: str = "",
                     google_count=None) -> str:
     """「取れそうか」を1枚にまとめる。
@@ -778,8 +798,7 @@ def _judgement_card(pf, probe, facility: str, address: str = "",
     elif probe.error:
         rows += row("KAIZODE", "確認できず", "warn", probe.error[:60])
     elif probe.usable:
-        _names = "／".join(str(d.get("dataset_name") or "") for d in probe.usable[:2])
-        rows += row("KAIZODE", "既存の収集あり", "ok", _names)
+        rows += row("KAIZODE", "既存の収集あり", "ok", _dataset_note(probe.usable))
     elif probe.empty_ready and not [d for d in probe.datasets
                                     if d.get("status") != kaizode.STATUS_DONE]:
         # 完了済みだが中身が無い。「あり」と緑で出すと、押せば分析できると

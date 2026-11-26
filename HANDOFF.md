@@ -153,6 +153,12 @@ UI 実体は `src/ui/` パッケージに分割: `theme.py`（CSS/デザイン�
   - `--sync` … **status=30 のみ**差分DL→施設ごとに `upsert_facility`+`insert_reviews`（回収）。`--category`/`--ftype`/`--full`/`--dataset-id` オプションあり
 - **`.github/workflows/kaizode-sync.yml`**: 毎日 JST 3:00 に `--sync` を実行（`workflow_dispatch` で手動も可）。必要 Secrets: `KAIZODE_API_KEY` / `TURSO_URL` / `TURSO_TOKEN`。
 - **管理画面「📡 KAIZODE連携」ページ（v0.10.0）**: ログイン後のみ到達。3タブ＝収集状況（一覧）/収集を発注（施設名,URL,since を行入力）/DBへ取り込み（差分同期・category指定可）。同期の実体は CLI と共通の `kaizode.sync_datasets()`。**APIキーは secrets/環境変数を優先し、無ければ「セッション限り」のパスワード入力**（DB・ファイルに保存しない、末尾4桁のみ表示、破棄ボタンあり）。
+- **公式マニュアルで確認した仕様（2026-11-26）**: https://kaizode-v2.scorobo.ai/manual/ （API は `/manual/api/`）。リポジトリに OpenAPI は無い。
+  - **再取得（`POST /datasets/{id}/rerun`）は差分の追加**。取得済みは重複登録せず、新しいものだけ足して自動で解析する。解析完了（status 30）かつ URL 設定済みのデータセットでのみ実行可。Free プランは1回1URL・直近1か月が対象。再送対策に `operationId` と `Idempotency-Key`（同じ UUID）を付ける。
+  - **`GET /datasets` は URL ごとの `review_count`（保存済みレビュー件数）を返す**。件数はこれで分かるので、口コミを1件ダウンロードして数える必要は無い（`kaizode.saved_count`）。ほかに `updated_at`・`is_scheduled`（定期取得）も返す。
+  - **KAIZODE 側に「定期取得」がある**（契約による）。オンにすると KAIZODE が自動で取り直す。こちらの日次同期（`kaizode-sync.yml`）は取り込み専任で、取り直しはしない。
+  - 費用はプランの「利用枠」と「超過単価」。再取得がどれだけ枠を使うかはマニュアルに数字が無い。
+  - 最新の抽出履歴に0件の URL があると、KAIZODE の一覧に警告アイコンが出る。0件の収集は再利用しない（`Probe.usable`）。
 - サンプル: `data/kaizode/facilities.sample.csv`。テスト: `tests/test_kaizode.py`（モックセッションで13本）。
 
 #### ヒーロー画面（一般ユーザー向け）の収集導線（`src/ui/analysis_mode.py` `_kz_collect_section` 系・v0.21.0で刷新）

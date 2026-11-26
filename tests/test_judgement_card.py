@@ -334,3 +334,15 @@ def test_refresh_button_is_offered_in_both_flows():
                     ("def _kz_collect_section", "def _peer_add_panel")):
         block = SRC[SRC.index(fn):SRC.index(nxt)]
         assert "_refresh_controls(" in block, fn
+
+
+def test_card_shows_last_update_and_schedule(monkeypatch):
+    monkeypatch.setattr(am.st, "session_state", {})
+    pr = kaizode.Probe(datasets=[{"dataset_id": "d", "dataset_name": "館",
+                                  "status": kaizode.STATUS_DONE,
+                                  "updated_at": "2026-03-12T04:00:00Z",
+                                  "is_scheduled": False}],
+                       counts={"d": 1240}, known_count=1240)
+    html = am._judgement_card(_exact_pf(), pr, "")
+    assert "最終更新 2026-03-12" in html and "定期取得オフ" in html
+    assert "最終収集" not in html          # updated_at は名前変更でも動く

@@ -111,13 +111,15 @@ class KaizodeClient:
         if wait > 0:
             time.sleep(wait)
 
-    def _request(self, method: str, path: str, *, params=None, json=None) -> dict:
+    def _request(self, method: str, path: str, *, params=None, json=None,
+                 headers: Optional[dict] = None) -> dict:
         url = f"{self.base_url}{path}"
+        hdrs = {"x-api-key": self.api_key, **(headers or {})}
         for attempt in range(self.max_retries + 1):
             self._throttle()
             resp = self._session.request(
                 method, url,
-                headers={"x-api-key": self.api_key},
+                headers=hdrs,
                 params=params, json=json, timeout=60,
             )
             self._last_request_at = time.monotonic()
@@ -151,9 +153,27 @@ class KaizodeClient:
             json={"dataset_name": dataset_name, "urls": urls},
         ).get("data", {})
 
-    def rerun_dataset(self, dataset_id: str, urls: Optional[list[dict]] = None) -> dict:
-        body = {"urls": urls} if urls else None
-        return self._request("POST", f"/datasets/{dataset_id}/rerun", json=body).get("data", {})
+    def rerun_dataset(self, dataset_id: str, urls: Optional[list[dict]] = None,
+                      operation_id: Optional[str] = None) -> dict:
+        """同じデータセットでレビューを取り直す（KAIZODE の「レビュー再取得」）。
+
+        マニュアル（/manual/guides/collect-again/）より:
+          - **差分取得**。取得済みのレビューは重複登録せず、新しいものを追加する
+          - 解析完了（status 30）かつ URL が設定されたデータセットでのみ実行できる
+          - Free プランでは1回につき1URL、直近1か月以内が対象
+
+        _request は 429 のとき同じ POST を送り直す。送り直しで取り直しが
+        二重に走らないよう、**operationId と Idempotency-Key に同じ UUID** を
+        付ける（API リファレンスの指定どおり）。
+        """
+        import uuid  # noqa: PLC0415
+
+        op = operation_id or str(uuid.uuid4())
+        body: dict = {"operationId": op}
+        if urls:
+            body["urls"] = urls
+        return self._request("POST", f"/datasets/{dataset_id}/rerun", json=body,
+                             headers={"Idempotency-Key": op}).get("data", {})
 
     # ------------------------------------------------------------------ #
     # レビュー（ページネーション＋差分取得）
@@ -642,11 +662,30 @@ class Probe:
                 if self.counts.get(d.get("dataset_id")) == 0]
 
 
+def saved_count(ds: dict) -> Optional[int]:
+    """データセット一覧に載っている「保存済みレビュー件数」の合計。
+
+    一覧（GET /datasets）は URL ごとに review_count を返す（API リファレンス）。
+    これで分かれば、口コミを1件ダウンロードして数える必要が無い（枠を使わない）。
+    1つでも欠けていれば None（合計を名乗らない）。
+    """
+    urls = ds.get("urls")
+    if not isinstance(urls, list) or not urls:
+        return None
+    vals = [u.get("review_count") for u in urls if isinstance(u, dict)]
+    if not vals or any(not isinstance(v, int) for v in vals):
+        return None
+    return sum(vals)
+
+
 def probe_facility(client: "KaizodeClient", query: str) -> Probe:
     """施設名から、KAIZODE 側の収集を探して件数まで確かめる。
 
     完了済みの収集が見つかったときだけ件数を聞く。走っている最中のものは
     まだ増えるので、確定値として扱わない。
+
+    件数はまず一覧の review_count から取る（**無料**）。載っていないときだけ
+    count_reviews で聞く（1件ダウンロードするので枠を1件使う）。
     """
     try:
         matches = match_datasets(client.list_datasets(), query)
@@ -658,12 +697,14 @@ def probe_facility(client: "KaizodeClient", query: str) -> Probe:
         return pr
     for ds in done:
         did = ds.get("dataset_id") or ""
-        try:
-            n = client.count_reviews(did)
-        except KaizodeError as e:
-            pr.error = str(e)
-            return pr
-        pr.probe_cost += 1          # count_reviews は limit=1 で1件引く
+        n = saved_count(ds)
+        if n is None:
+            try:
+                n = client.count_reviews(did)
+            except KaizodeError as e:
+                pr.error = str(e)
+                return pr
+            pr.probe_cost += 1      # count_reviews は limit=1 で1件引く
         pr.counts[did] = n
     # 中身のある収集だけで合計する。1つでも読めなければ合計は名乗らない
     # （概算に落とす）。中身のある収集が無ければ確定値も無い。
