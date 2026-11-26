@@ -346,3 +346,30 @@ def test_card_shows_last_update_and_schedule(monkeypatch):
     html = am._judgement_card(_exact_pf(), pr, "")
     assert "最終更新 2026-03-12" in html and "定期取得オフ" in html
     assert "最終収集" not in html          # updated_at は名前変更でも動く
+
+
+# ── 口コミが無い間は設定を出さない（2026-11-26「情報量多すぎて煩雑」） ── #
+def _selected_block():
+    i = SRC.index("# ── 選択済み：施設カード + 分析タイプ選択 + 実行ボタン ──")
+    return SRC[i:SRC.index("# RUNNING (analysis + report generation)", i)]
+
+
+def test_setup_controls_wait_for_reviews():
+    """比較の方式・比較施設・レポート構成は、口コミが入ってから出す。"""
+    blk = _selected_block()
+    gate = blk.index("if _stats_ok:")
+    for label in ("指定競合との比較", "マーケット比較", "比較施設を選択",
+                  "「詳細」ページも作る", "レポートは全"):
+        assert blk.index(label) > gate, label
+
+
+def test_no_warning_on_top_of_the_progress_card():
+    """収集中は進捗カードが状況を言う。警告を重ねない。"""
+    blk = _selected_block()
+    assert 'st.warning("この施設には口コミデータがありません。")' not in blk
+    assert 'if not st.session_state.get(f"an_kz_ongoing::{_target}"):' in blk
+
+
+def test_reselect_is_always_offered():
+    blk = _selected_block()
+    assert blk.count('key="an_reselect"') == 1

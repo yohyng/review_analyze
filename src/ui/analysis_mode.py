@@ -1575,120 +1575,125 @@ def render():
                 _html(_selected_card_html(_target, _meta))
                 _html("<div style='height:20px'></div>")
 
-                # ── 分析タイプ選択（2択カード）──────────────────────── #
-                _an_type = st.session_state.get("an_analysis_type", "competitor")
-                _tc, _tm = st.columns(2)
-                with _tc:
-                    if st.button(
-                        "🎯 指定競合との比較",
-                        help="最大5施設を選んで詳細な強み・弱みを比較します",
-                        width="stretch",
-                        type="primary" if _an_type == "competitor" else "secondary",
-                        key="an_type_btn_competitor",
-                    ):
-                        st.session_state["an_analysis_type"] = "competitor"
-                        st.rerun()
-                with _tm:
-                    if st.button(
-                        "📊 マーケット比較",
-                        help=f"DB内 {len(_others)} 施設全体との比較で市場ポジションを把握します",
-                        width="stretch",
-                        type="primary" if _an_type == "market" else "secondary",
-                        key="an_type_btn_market",
-                    ):
-                        st.session_state["an_analysis_type"] = "market"
-                        st.rerun()
-
-                _html("<div style='height:8px'></div>")
-
-                # 「指定競合」を選んだのに1件も選ばないまま実行すると、
-                # 警告なく市場全体比較のスライドが出る（順位も基準値もDB全施設）。
-                # 「競合と比べた資料」のつもりで作ったものを、そうでないまま
-                # 外に出してしまうので、実行を止めて選ばせる。
+                # 口コミがまだ無い間は、比較の方式・比較施設・レポート構成を出さない。
+                # どれも口コミが入るまで決めようがなく、収集の状況が埋もれる
+                # （2026-11-26「情報量多すぎて煩雑」）。取り込めたら自動で出る。
                 _run_block = ""
+                if _stats_ok:
+                    # ── 分析タイプ選択（2択カード）──────────────────────── #
+                    _an_type = st.session_state.get("an_analysis_type", "competitor")
+                    _tc, _tm = st.columns(2)
+                    with _tc:
+                        if st.button(
+                            "🎯 指定競合との比較",
+                            help="最大5施設を選んで詳細な強み・弱みを比較します",
+                            width="stretch",
+                            type="primary" if _an_type == "competitor" else "secondary",
+                            key="an_type_btn_competitor",
+                        ):
+                            st.session_state["an_analysis_type"] = "competitor"
+                            st.rerun()
+                    with _tm:
+                        if st.button(
+                            "📊 マーケット比較",
+                            help=f"DB内 {len(_others)} 施設全体との比較で市場ポジションを把握します",
+                            width="stretch",
+                            type="primary" if _an_type == "market" else "secondary",
+                            key="an_type_btn_market",
+                        ):
+                            st.session_state["an_analysis_type"] = "market"
+                            st.rerun()
 
-                if _an_type == "competitor":
-                    if _others:
-                        # 既定値は置かない。facility.type は target/comparison の
-                        # 2値しかなく「どの施設の競合か」を持つ列が無い。しかも
-                        # KAIZODE 同期で入る施設は全部 comparison になるので、
-                        # facilities_by_type(conn,"comparison")[:5] は
-                        # 「名前順で先頭5件」でしかない。それを競合として黙って
-                        # 採用した資料が出るほうが害が大きい。
-                        # （v0.53.0 以前は既定を書いていたが、app.py が
-                        #   an_peers に [] を必ず入れるため一度も効いていなかった）
-                        _prev_sel = [p for p in
-                                     st.session_state.get("an_peers") or []
-                                     if p in _others][:5]
-                        _selected_peers = st.multiselect(
-                            "比較施設を選択（最大5件）",
-                            options=_others,
-                            default=_prev_sel,
-                            max_selections=5,
-                            key=peer_widget_key(),
-                            placeholder="施設名を入力して絞り込む...",
-                        )
-                        st.session_state["an_peers"] = _selected_peers
-                        st.session_state["an_mode"] = "compare" if _selected_peers else "single"
-                        st.session_state["an_axis_label"] = "比較施設の平均"
-                        _peer_add_panel(conn, _names, _target, _selected_peers)
-                        if not _selected_peers:
-                            _run_block = (
-                                "比較する施設を1件以上選んでください。"
-                                "選ばずに進めると、指定競合ではなく**市場全体**"
-                                "との比較になります（それでよければ"
-                                "「📊 マーケット比較」を選んでください）。"
+                    _html("<div style='height:8px'></div>")
+
+                    # 「指定競合」を選んだのに1件も選ばないまま実行すると、
+                    # 警告なく市場全体比較のスライドが出る（順位も基準値もDB全施設）。
+                    # 「競合と比べた資料」のつもりで作ったものを、そうでないまま
+                    # 外に出してしまうので、実行を止めて選ばせる。
+                    _run_block = ""
+
+                    if _an_type == "competitor":
+                        if _others:
+                            # 既定値は置かない。facility.type は target/comparison の
+                            # 2値しかなく「どの施設の競合か」を持つ列が無い。しかも
+                            # KAIZODE 同期で入る施設は全部 comparison になるので、
+                            # facilities_by_type(conn,"comparison")[:5] は
+                            # 「名前順で先頭5件」でしかない。それを競合として黙って
+                            # 採用した資料が出るほうが害が大きい。
+                            # （v0.53.0 以前は既定を書いていたが、app.py が
+                            #   an_peers に [] を必ず入れるため一度も効いていなかった）
+                            _prev_sel = [p for p in
+                                         st.session_state.get("an_peers") or []
+                                         if p in _others][:5]
+                            _selected_peers = st.multiselect(
+                                "比較施設を選択（最大5件）",
+                                options=_others,
+                                default=_prev_sel,
+                                max_selections=5,
+                                key=peer_widget_key(),
+                                placeholder="施設名を入力して絞り込む...",
                             )
+                            st.session_state["an_peers"] = _selected_peers
+                            st.session_state["an_mode"] = "compare" if _selected_peers else "single"
+                            st.session_state["an_axis_label"] = "比較施設の平均"
+                            _peer_add_panel(conn, _names, _target, _selected_peers)
+                            if not _selected_peers:
+                                _run_block = (
+                                    "比較する施設を1件以上選んでください。"
+                                    "選ばずに進めると、指定競合ではなく**市場全体**"
+                                    "との比較になります（それでよければ"
+                                    "「📊 マーケット比較」を選んでください）。"
+                                )
+                        else:
+                            st.info(
+                                "DBに比較できる施設がまだありません。"
+                                "下から探して追加できます。"
+                            )
+                            st.session_state["an_mode"] = "single"
+                            st.session_state["an_peers"] = []
+                            _peer_add_panel(conn, _names, _target, [])
                     else:
-                        st.info(
-                            "DBに比較できる施設がまだありません。"
-                            "下から探して追加できます。"
+                        st.caption(
+                            f"比較対象: DB内の全施設（{len(_others)} 施設）"
+                            " — 市場全体での順位・スコア分布を表示します"
                         )
-                        st.session_state["an_mode"] = "single"
-                        st.session_state["an_peers"] = []
-                        _peer_add_panel(conn, _names, _target, [])
-                else:
-                    st.caption(
-                        f"比較対象: DB内の全施設（{len(_others)} 施設）"
-                        " — 市場全体での順位・スコア分布を表示します"
-                    )
-                    st.session_state["an_peers"] = _others
-                    st.session_state["an_mode"] = "compare"
-                    st.session_state["an_axis_label"] = "DB全体の平均"
+                        st.session_state["an_peers"] = _others
+                        st.session_state["an_mode"] = "compare"
+                        st.session_state["an_axis_label"] = "DB全体の平均"
 
-                # ── LLM キー（任意）─────────────────────────────────── #
-                if not llm.get_api_key():
-                    with st.expander("Gemini API キー（LLMインサイト、任意）", expanded=False):
-                        st.text_input(
-                            "Gemini API キー", type="password", key="an_api_key",
-                            help="aistudio.google.com で無料取得できます。省略可。",
-                            label_visibility="collapsed",
+                    # ── LLM キー（任意）─────────────────────────────────── #
+                    if not llm.get_api_key():
+                        with st.expander("Gemini API キー（LLMインサイト、任意）", expanded=False):
+                            st.text_input(
+                                "Gemini API キー", type="password", key="an_api_key",
+                                help="aistudio.google.com で無料取得できます。省略可。",
+                                label_visibility="collapsed",
+                            )
+
+                    # ── レポートの構成 ────────────────────────────────────── #
+                    #    「（詳細）」の3枚はプランナー向けの掘り下げページ。
+                    #    相手や場面によっては要らないので、ここで外せるようにする。
+                    _html("<div style='height:10px'></div>")
+                    _dc1, _dc2, _dc3 = st.columns([1, 2, 1])
+                    with _dc2:
+                        st.toggle(
+                            "「詳細」ページも作る",
+                            value=st.session_state.get("an_with_detail", True),
+                            key="an_with_detail",
+                            help="市場内ポジション（詳細）／指定競合との比較（詳細）／"
+                                 "空間体験分析（詳細）の3枚。オフにすると7枚構成になります。",
                         )
-
-                # ── レポートの構成 ────────────────────────────────────── #
-                #    「（詳細）」の3枚はプランナー向けの掘り下げページ。
-                #    相手や場面によっては要らないので、ここで外せるようにする。
-                _html("<div style='height:10px'></div>")
-                _dc1, _dc2, _dc3 = st.columns([1, 2, 1])
-                with _dc2:
-                    st.toggle(
-                        "「詳細」ページも作る",
-                        value=st.session_state.get("an_with_detail", True),
-                        key="an_with_detail",
-                        help="市場内ポジション（詳細）／指定競合との比較（詳細）／"
-                             "空間体験分析（詳細）の3枚。オフにすると7枚構成になります。",
-                    )
-                    # NMSI が計算済みならレポートは1枚増える。押す前に
-                    # 見える枚数と実際が食い違わないようにする。
-                    _n_slides = len(slides.report_slides(
-                        detail=st.session_state.get("an_with_detail", True)))
-                    try:
-                        from src.nmsi import run as _nmsi_run  # noqa: PLC0415
-                        if _nmsi_run.get_result(conn, _target):
-                            _n_slides += 1
-                    except Exception:
-                        pass
-                    st.caption(f"レポートは全 {_n_slides} 枚（＋冒頭の免責）になります")
+                        # NMSI が計算済みならレポートは1枚増える。押す前に
+                        # 見える枚数と実際が食い違わないようにする。
+                        _n_slides = len(slides.report_slides(
+                            detail=st.session_state.get("an_with_detail", True)))
+                        try:
+                            from src.nmsi import run as _nmsi_run  # noqa: PLC0415
+                            if _nmsi_run.get_result(conn, _target):
+                                _n_slides += 1
+                        except Exception:
+                            pass
+                        st.caption(f"レポートは全 {_n_slides} 枚（＋冒頭の免責）になります")
 
                 # ── 実行ボタン ────────────────────────────────────────── #
                 _html("<div style='height:14px'></div>")
@@ -1703,7 +1708,10 @@ def render():
                             st.session_state["an_screen"] = "running"
                             st.rerun()
                     else:
-                        st.warning("この施設には口コミデータがありません。")
+                        # 収集中は進捗カードが状況を言うので、警告を重ねない。
+                        if not st.session_state.get(f"an_kz_ongoing::{_target}"):
+                            st.caption("この施設の口コミはまだありません。"
+                                       "下の判定を見て、取得してから分析します。")
                         _kz_collect_section(conn, _target)
                     if st.button("← 施設を選び直す", width="stretch", key="an_reselect"):
                         st.session_state["an_target"] = None
