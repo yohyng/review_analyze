@@ -1698,3 +1698,41 @@ def test_category_panel_works_without_summaries(tmp_path):
 def test_category_panel_says_so_when_scores_are_missing():
     html = slides._category_body({"category_scores": []})
     assert "算出できていません" in html
+
+
+# ── 変化点の検出（2026-11-26「無理に3つ用意しなくていい」）────────── #
+def _series(vals, n=40):
+    """[(ym, n, pos, neg, diff, avg5), ...] を作る。avg5 だけ使われる。"""
+    return [(f"2025-{i+1:02d}", n, 0.0, 0.0, 0.0, v) for i, v in enumerate(vals)]
+
+
+def test_stable_series_has_no_change_points():
+    """普段どおりの揺れしかない系列では、変化点を作らない。"""
+    from src import timeline
+    vals = [4.0, 4.05, 3.98, 4.02, 4.01, 3.99, 4.03, 4.0, 4.02, 3.97]
+    assert timeline.detect_change_points(_series(vals)) == []
+
+
+def test_a_real_move_is_still_detected():
+    from src import timeline
+    vals = [4.0, 4.0, 4.0, 4.0, 3.2, 4.0, 4.0, 4.0]
+    cps = timeline.detect_change_points(_series(vals))
+    assert [c.ym for c in cps] == ["2025-05"]
+
+
+def test_small_months_need_a_bigger_move():
+    """件数の少ない月は平均が偶然で振れる。同じ動きでも変化点にしない。"""
+    from src import timeline
+    vals = [4.0, 4.0, 4.0, 4.0, 3.6, 4.0, 4.0, 4.0]
+    assert timeline.detect_change_points(_series(vals, n=100))   # 100件なら拾う
+    assert not timeline.detect_change_points(_series(vals, n=5))  # 5件なら拾わない
+
+
+def test_partial_last_month_is_excluded():
+    """月の途中までしか入っていない最終月を変化点にしない。"""
+    from src import timeline
+    rows = _series([4.0] * 8, n=50) + [("2025-09", 6, 0.0, 0.0, 0.0, 2.5)]
+    assert timeline.detect_change_points(rows) == []
+    # 件数がそろっていれば拾う
+    rows[-1] = ("2025-09", 50, 0.0, 0.0, 0.0, 2.5)
+    assert [c.ym for c in timeline.detect_change_points(rows)] == ["2025-09"]
