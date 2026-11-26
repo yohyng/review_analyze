@@ -98,6 +98,15 @@ for _k, _v in {
         st.session_state[_k] = _v
 
 
+# ログインを外しているとき（VOICEBAUM_DISABLE_AUTH）。
+#   **モード分岐より前で立てること。** 管理モードの中だけで立てていたため、
+#   分析モードでは外れず、「🔐 ログインして続ける」が出たままだった。
+#   分析モード側にも admin_authed を見る入口が3つある（収集・PROFILE編集）。
+# 既定では外れない（auth.auth_disabled() は環境変数を明示したときだけ True）。
+if auth.auth_disabled() and not st.session_state.get("admin_authed"):
+    st.session_state["admin_authed"] = True
+    st.session_state["admin_email"] = "（認証なし）"
+
 _is_an = st.session_state["app_mode"] == "analysis"
 
 
@@ -140,12 +149,7 @@ else:
     # ── 管理モードはログイン必須（メール＋パスワードのアカウント制）── #
     #   ・新規登録は招待コード SIGNUP_CODE を知っている人だけ（登録ゲート）
     #   ・ADMIN_PASSWORD は「最初の1人を作る/ロックアウト回避」用の非常口
-    # 一時的にログインを外している場合（切り分け用）。
-    # 既定では外れない。外れている間は画面に出し続けて、戻し忘れを防ぐ。
-    if auth.auth_disabled() and not st.session_state.get("admin_authed"):
-        st.session_state["admin_authed"] = True
-        st.session_state["admin_email"] = "（認証なし）"
-
+    # ログインを外している場合のバイパスは、モード分岐より前で済んでいる。
     if not st.session_state.get("admin_authed"):
         try:
             _n_users = auth.count_users(conn)

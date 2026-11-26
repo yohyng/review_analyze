@@ -186,3 +186,32 @@ def test_the_gate_is_wired_to_the_switch():
     assert "auth.auth_disabled() and not st.session_state" in src
     # 警告バナーは置かない
     assert "ログインを外しています" not in src
+
+
+def test_the_bypass_runs_before_the_mode_branch():
+    """**モード分岐より前**で立てること。
+
+    管理モードの else 節の中だけで立てていたため、分析モードでは外れず、
+    「🔐 ログインして続ける」が出たままだった。分析モードにも
+    admin_authed を見る入口が3つある（収集2つと PROFILE 編集）。
+    """
+    from pathlib import Path
+
+    src = Path("app.py").read_text(encoding="utf-8")
+    bypass = src.index("auth.auth_disabled() and not st.session_state")
+    assert bypass < src.index('_is_an = st.session_state["app_mode"]')
+    # 立てる場所は1か所だけ（分岐ごとに持つと必ず片方が漏れる）
+    assert src.count("auth.auth_disabled() and not st.session_state") == 1
+    # インデントされていない＝どのモードでも通る
+    line_start = src.rfind("\n", 0, bypass) + 1
+    assert src[line_start:bypass] == "if ", src[line_start:bypass]
+
+
+def test_analysis_mode_gates_read_the_same_flag():
+    """分析モード側の入口が別のフラグを見ていないこと。"""
+    from pathlib import Path
+
+    src = Path("src/ui/analysis_mode.py").read_text(encoding="utf-8")
+    assert src.count('st.session_state.get("admin_authed")') >= 2
+    for label in ("ログインして続ける", "ログインして収集する"):
+        assert label in src, label
