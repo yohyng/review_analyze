@@ -2672,6 +2672,64 @@ def _space_bottom(b: dict, summary: str, legend_card: str) -> str:
             + summary + legend_card + '</div>')
 
 
+def _axis_glossary(names: list[str] | None = None) -> str:
+    """評価軸の定義表（カテゴリ｜No.｜評価項目｜定義）。
+
+    2026-11-15 デッキ 2P「評価軸の説明」と同じ体裁。定義は原典
+    「20261116 評価軸一覧」の文言そのまま（topic_score.TopicDef.desc）。
+
+    names を渡すとその軸だけに絞る（10P は コンテンツ＋空間設計 の13軸）。
+    番号は**原典の通し番号**を使う。絞り込んでも振り直さない。
+    """
+    from . import categories as cat, topic_score  # noqa: PLC0415
+
+    want = set(names) if names else None
+    no = {t.name: i for i, t in enumerate(topic_score.DEFAULT_TOPICS, 1)}
+    desc = {t.name: t.desc for t in topic_score.DEFAULT_TOPICS}
+
+    head = (
+        f'<div style="display:flex;flex:none;background:{T.TABLE_HEAD};'
+        f'font-size:.95cqw;font-weight:700;color:{T.INK_SUB};'
+        f'border-bottom:1px solid {T.CARD_LINE};">'
+        '<div style="flex:none;width:6.6cqw;padding:.35cqw .5cqw;">カテゴリ</div>'
+        '<div style="flex:none;width:2.4cqw;padding:.35cqw 0;'
+        'text-align:center;">No.</div>'
+        '<div style="flex:none;width:8.4cqw;padding:.35cqw .5cqw;">評価項目</div>'
+        '<div style="flex:1;min-width:0;padding:.35cqw .5cqw;">定義</div></div>'
+    )
+
+    out = ""
+    for ci, (cname, members) in enumerate(cat.CATEGORIES.items()):
+        rows = [m for m in members if want is None or m in want]
+        if not rows:
+            continue
+        for k, m in enumerate(rows):
+            out += (
+                '<div style="flex:1;display:flex;align-items:stretch;'
+                f'min-height:0;border-bottom:1px solid {T.TABLE_HEAD};">'
+                # カテゴリ名はそのまとまりの先頭行にだけ出す
+                f'<div style="flex:none;width:6.6cqw;padding:.2cqw .5cqw;'
+                f'display:flex;align-items:center;font-size:1.0cqw;'
+                f'font-weight:800;color:{T.NAVY};'
+                f'background:{T.ACCENT_SOFT if ci % 2 == 0 else "transparent"};">'
+                f'{escape(cname) if k == 0 else ""}</div>'
+                f'<div style="flex:none;width:2.4cqw;display:flex;'
+                f'align-items:center;justify-content:center;font-size:.95cqw;'
+                f'color:{T.INK_SUB};font-variant-numeric:tabular-nums;">'
+                f'{no.get(m, "")}</div>'
+                f'<div style="flex:none;width:8.4cqw;padding:.2cqw .5cqw;'
+                f'display:flex;align-items:center;font-size:.98cqw;'
+                f'font-weight:700;color:{T.INK};line-height:1.2;">'
+                f'{escape(m)}</div>'
+                f'<div style="flex:1;min-width:0;padding:.2cqw .5cqw;'
+                f'display:flex;align-items:center;font-size:.9cqw;'
+                f'line-height:1.3;color:{T.INK_SUB};">'
+                f'{escape(desc.get(m, ""))}</div></div>'
+            )
+    return (f'<div style="flex:1;min-height:0;display:flex;'
+            f'flex-direction:column;">{head}{out}</div>')
+
+
 def slide5_space_detail(b: dict) -> str:
     """SLIDE 5「空間体験分析（詳細）」。docs/design/slide_p10.png。"""
     from . import topic_score
@@ -2685,42 +2743,36 @@ def slide5_space_detail(b: dict) -> str:
         f'<div style="display:flex;background:{T.TABLE_HEAD};flex:none;'
         f'border-bottom:1px solid {T.CARD_LINE};font-size:1.16cqw;font-weight:700;'
         f'color:{T.INK_SUB};">'
-        f'<div style="width:3cqw;flex:none;{cell}">No.</div>'
-        f'<div style="flex:1.8;{cell}text-align:left;padding-left:.7cqw;">評価項目</div>'
+        f'<div style="width:2.6cqw;flex:none;{cell}padding-left:0;'
+        'padding-right:0;">No.</div>'
+        f'<div style="width:11.5cqw;flex:none;{cell}text-align:left;'
+        'padding-left:.5cqw;white-space:nowrap;">評価項目</div>'
         + "".join(
-            f'<div style="flex:1;{cell}'
-            f'color:{T.ACCENT if i == 0 else T.INK_SUB};white-space:nowrap;">'
-            f'{escape(lb)}</div>'
-            for i, (lb, _n, _s, _col) in enumerate(cols)
+            # 施設名は省略せず2行に折る（同じ頭の名前が並ぶため）
+            '<div style="flex:1;min-width:0;padding:.35cqw .1cqw;'
+            'text-align:center;white-space:normal;line-height:1.2;'
+            f'font-size:.9cqw;'
+            f'color:{T.ACCENT if i == 0 else T.INK_SUB};">'
+            f'{escape(nm)}</div>'
+            for i, (lb, nm, _s, _col) in enumerate(cols)
         )
-        + f'<div style="width:5.4cqw;flex:none;{cell}">傾向</div>'
-        f'<div style="flex:2.4;{cell}text-align:left;padding-left:.7cqw;">'
-        'ポイント</div></div>'
+        + '</div>'
     )
     rows = ""
     for i, t in enumerate(axes, 1):
-        d5 = f["diffs"].get(t, 0.0)
-        badge, key = _trend_badge(d5)
-        style = T.TREND_BADGES[key]
-        point = (
-            f'{f["base_label"]}を {abs(d5):.2f}pt 上回り、強みとして機能'
-            if d5 >= 0.15 else
-            f'{f["base_label"]}を {abs(d5):.2f}pt 下回り、改善余地あり'
-            if d5 <= -0.15 else
-            f'{f["base_label"]}と同水準（差 {d5:+.2f}pt）'
-        )
         rows += (
             f'<div style="flex:1;display:flex;align-items:stretch;min-height:0;'
             f'border-bottom:1px solid {T.TABLE_HEAD};">'
-            '<div style="width:3cqw;flex:none;display:flex;align-items:center;'
+            '<div style="width:2.6cqw;flex:none;display:flex;align-items:center;'
             'justify-content:center;">'
-            f'<span style="width:1.7cqw;height:1.7cqw;'
-            f'border-radius:50%;background:{T.ACCENT};color:#fff;font-size:1.1cqw;'
+            f'<span style="width:1.5cqw;height:1.5cqw;'
+            f'border-radius:50%;background:{T.ACCENT};color:#fff;font-size:.95cqw;'
             'font-weight:700;display:flex;align-items:center;justify-content:center;">'
             f'{i}</span></div>'
-            f'<div style="flex:1.8;padding:0 .7cqw;display:flex;align-items:center;'
-            f'font-size:1.22cqw;font-weight:600;color:{T.INK};overflow:hidden;'
-            f'text-overflow:ellipsis;white-space:nowrap;">{escape(t)}</div>'
+            f'<div style="width:11.5cqw;flex:none;padding:0 .5cqw;display:flex;'
+            f'align-items:center;font-size:1.0cqw;font-weight:600;color:{T.INK};'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+            f'{escape(t)}</div>'
             + "".join(
                 '<div style="flex:1;display:flex;align-items:center;'
                 'justify-content:center;'
@@ -2731,16 +2783,10 @@ def slide5_space_detail(b: dict) -> str:
                 f'{_pt5(sc.get(t, 50.0))}</div>'
                 for k, (lb, _n, sc, _c) in enumerate(cols)
             )
-            + '<div style="width:5.4cqw;flex:none;display:flex;align-items:center;'
-            'justify-content:center;">'
-            f'<span style="background:{style["bg"]};'
-            f'color:{style["fg"]};border:1px solid {style["border"]};'
-            'border-radius:.3cqw;padding:.2cqw .6cqw;font-size:1.1cqw;'
-            f'font-weight:700;">{badge}</span></div>'
-            f'<div style="flex:2.4;padding:0 .7cqw;display:flex;align-items:center;'
-            f'font-size:1.16cqw;color:{T.INK_SUB};'
-            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
-            f'{escape(point)}</div></div>'
+            # 「傾向」バッジと「ポイント」列は外した（2026-11-26）。
+            # 左に評価軸の定義表を置いたぶん幅が半分になり、右端が枠外に
+            # はみ出していた。差の方向は数字と地色で読める。
+            + '</div>'
         )
 
     legend = "".join(
@@ -2789,6 +2835,9 @@ def slide5_space_detail(b: dict) -> str:
         'スコアの見方（5点満点）</span>'
         f'<div style="display:flex;flex-wrap:wrap;gap:.5cqw 1cqw;">{legend}</div></div>'
     )
+    # スコア表は**1枚で全幅**（2026-11-26）。評価軸の定義表を左に置いて
+    # みたが、スコア表の幅が半分になって右端が枠外に出た。定義は
+    # ツールチップで読めるので、ここは表を大きく出すことを優先する。
     body = body_area(
         lead
         + panel(f"施設別スコアヒートマップ（{len(topic_score.SPACE_TOPICS)}項目）",

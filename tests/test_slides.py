@@ -720,19 +720,49 @@ def test_slide5_renders_radar_tables_and_summary(tmp_path):
         assert c["icon"] in html and c["border"] in html
 
 
-def test_slide5_detail_lists_every_space_axis_with_trend_badges(tmp_path):
+def test_slide5_detail_lists_every_space_axis(tmp_path):
     b = _bundle(tmp_path, n_peers=4)
     html = slides.slide5_space_detail(b)
     assert "空間体験分析" in html and "（詳細）" in html
     # 見出しの件数は軸の数から出す（直書きすると原典の増減でずれる）
     n_axes = len(topic_score.SPACE_TOPICS)
     assert f"施設別スコアヒートマップ（{n_axes}項目）" in html
-    assert "傾向" in html and "ポイント" in html
+    for t in topic_score.SPACE_TOPICS:
+        assert t in html, t
+    # スコア表は1枚で全幅。定義表は置かない（2026-11-26）
+    assert "評価軸の定義" not in html
+
+
+def test_axis_glossary_uses_the_source_numbering(tmp_path):
+    """通し番号は原典のもの。絞り込んでも振り直さない。"""
+    from src import categories as cat
+    html = slides._axis_glossary(topic_score.SPACE_TOPICS)
+    for t in topic_score.SPACE_TOPICS:
+        d = next(x for x in topic_score.DEFAULT_TOPICS if x.name == t)
+        assert d.desc in html, t          # 定義は原典の文言そのまま
+    assert "コンテンツ" in html and "空間設計" in html
+    # 1 と 13 が出て、14 以降（サービス）は出ない
+    assert ">1<" in html and ">13<" in html
+    assert "スタッフ対応" not in html
+
+
+def test_axis_glossary_without_a_filter_lists_every_axis():
+    html = slides._axis_glossary()
+    for t in topic_score.DEFAULT_TOPICS:
+        assert t.name in html, t.name
+    for c in ("コンテンツ", "空間設計", "サービス", "価格・決済",
+              "アクセス", "ブランド", "総合評価"):
+        assert c in html, c
+
+
+def test_slide5_detail_falls_back_to_the_template_summary_without_one(tmp_path):
+    """まとめが未生成なら、従来の総合サマリーと凡例を出す。"""
+    b = _bundle(tmp_path, n_peers=4)
+    b.pop("slide_summaries", None)
+    html = slides.slide5_space_detail(b)
     assert "総合サマリー" in html and "スコアの見方（5点満点）" in html
     for t in topic_score.SPACE_TOPICS:
         assert t in html
-    # 傾向バッジは3種のいずれか
-    assert any(x in html for x in ("強み", "課題", "良好"))
 
 
 def test_competitor_mode_does_not_duplicate_peer_and_industry_average(tmp_path):
